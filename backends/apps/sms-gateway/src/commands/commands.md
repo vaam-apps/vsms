@@ -21,4 +21,14 @@ that subcommand's own file — `seed_dispatch::seed_dispatch_core` and
 `pub(crate)` because `bootstrap::bootstrap_command` reuses them directly
 rather than re-deriving their logic (see `bootstrap.rs`'s own doc for why).
 
+# Which subcommands read the YAML configuration (VSC-1)
+
+Two take `--config`/`--profile` (`SMS_CONFIG`/`SMS_PROFILE`): `serve`, whose
+pepper, pool size, rate limits and providers are in `config/application*.yml`,
+and `mtn-subscribe-dlr`, whose credentials are the `providers[code=mtn_cm]`
+entry of the same document. Every other subcommand is a one-shot operator action
+on the database and reads no deployment configuration; their arguments stay
+arguments. `main.rs` refuses a retired flag (`sms_config::RETIRED`) before clap
+parses.
+
 <!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->

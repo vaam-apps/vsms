@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use cratestack::FilterExpr;
 use cratestack::sqlx::postgres::PgPoolOptions;
 use sms_api::schema::{Cratestack, provider as provider_filter};
+use sms_config::{Binary, Providers};
 use sms_provider::SmsProvider;
 use tracing::info;
 
@@ -19,6 +20,11 @@ use sms_api::system_context;
 /// `Command::Serve`'s flags. See `Command::Serve`'s own doc comment in
 /// `main.rs` — the enum variant carries the "why", this struct only
 /// carries the flags themselves.
+///
+/// Process plumbing only (VSC-1): where to listen, where the database and the
+/// signing keys are, and which YAML configuration to read. Everything else a
+/// deployment decides - the pepper, the pool size, the rate limits, every
+/// provider - is in `config/application*.yml` (`sms_config`).
 #[derive(Debug, clap::Args)]
 pub(crate) struct ServeArgs {
     /// Address to listen on. Loopback by default: TLS terminates at a Caddy
@@ -44,10 +50,6 @@ pub(crate) struct ServeArgs {
     #[arg(long, env = "DATABASE_URL", hide_env_values = true)]
     pub(crate) database_url: String,
 
-    /// Maximum pooled connections.
-    #[arg(long, env = "SMS_DB_MAX_CONNECTIONS", default_value_t = 10)]
-    pub(crate) max_connections: u32,
-
     /// The signed transport's server keys (VS-3): every generated route
     /// answers only a `COSE_Sign1`-sealed request, and seals its answer with
     /// `--envelope-signing-key-file`. Both files are required; the process
@@ -55,184 +57,9 @@ pub(crate) struct ServeArgs {
     #[command(flatten)]
     pub(crate) envelope_keys: crate::commands::server_keys::EnvelopeKeyArgs,
 
-    /// `OAuth2` `client_credentials` client id for Orange Cameroon's
-    /// SMS API. Optional as of #61's MTN wiring — this binary always
-    /// serves the DLR route (#34), but "always needs a provider to parse
-    /// against" now means *at least one* configured adapter, not
-    /// specifically Orange; see [`build_dlr_router`]'s own
-    /// at-least-one-provider check for the enforcement this loosening
-    /// moved to. Previously required unconditionally, unlike
-    /// `sms-worker`'s own copy of this flag (optional there, only needed
-    /// when `dispatch` is selected) — that asymmetry is gone now that
-    /// both binaries express the same "credentials are needed only if
-    /// this adapter is the one in use" shape, just against a different
-    /// gate (`dispatch` selection there, "no other adapter configured"
-    /// here).
-    #[arg(long, env = "ORANGE_CM_CLIENT_ID")]
-    pub(crate) orange_client_id: Option<String>,
-
-    /// Paired with `orange_client_id`. Never logged.
-    #[arg(long, env = "ORANGE_CM_CLIENT_SECRET", hide_env_values = true)]
-    pub(crate) orange_client_secret: Option<String>,
-
-    /// E.164 without the `tel:` scheme.
-    #[arg(long, env = "ORANGE_CM_SENDER_NUMBER")]
-    pub(crate) orange_sender_number: Option<String>,
-
-    /// Overridable so a real Orange sandbox (not just this crate's own
-    /// `wiremock`-backed tests) can be pointed at without a code change.
-    #[arg(
-        long,
-        env = "ORANGE_CM_BASE_URL",
-        default_value = "https://api.orange.com"
-    )]
-    pub(crate) orange_base_url: String,
-
-    /// The `OAuth2` `client_credentials` client id for MTN's direct API
-    /// (MADAPI) — see `sms-provider-mtn`'s module doc for the real,
-    /// vendored contract this replaces the previous aggregator-shaped
-    /// static-Bearer-key auth with. Optional, the same shape as the
-    /// Orange trio above — this binary needs *a* provider configured,
-    /// not specifically this one. Paired with the other `--mtn-*` flags
-    /// below — see [`build_dlr_router`]'s own all-or-none check.
-    #[arg(long, env = "MTN_CLIENT_ID")]
-    pub(crate) mtn_client_id: Option<String>,
-
-    /// Paired with `mtn_client_id`. Never logged.
-    #[arg(long, env = "MTN_CLIENT_SECRET", hide_env_values = true)]
-    pub(crate) mtn_client_secret: Option<String>,
-
-    /// The approved short code MADAPI's own `outboundSMSMessageRequest.serviceCode`
-    /// requires unconditionally on every submit (see
-    /// `sms_provider_mtn::MtnConfig::service_code`'s own doc). Part of
-    /// the all-or-none set: unlike `--mtn-sender-id` below, MADAPI's own
-    /// Swagger marks this field mandatory, not optional.
-    #[arg(long, env = "MTN_SERVICE_CODE")]
-    pub(crate) mtn_service_code: Option<String>,
-
-    /// The approved alphanumeric sender ID MTN submits under, used only
-    /// as a fallback when a specific message's own resolved sender is
-    /// empty (see `sms_provider_mtn::MtnProvider::sender_address`'s own
-    /// doc). **Not** part of the all-or-none set below, unlike every
-    /// other `--mtn-*` flag: MADAPI's own Swagger marks `senderAddress`
-    /// optional ("This field is optional... if a senderAddress is used
-    /// rather than the serviceCode, then the senderAddress value must be
-    /// passed as well" — implying its *absence* is a fully valid
-    /// request, using `serviceCode` alone), so requiring an operator to
-    /// set this would enforce a constraint MADAPI itself doesn't have.
-    #[arg(long, env = "MTN_SENDER_ID")]
-    pub(crate) mtn_sender_id: Option<String>,
-
-    /// MADAPI's API host — now a real, documented default
-    /// (`https://api.mtn.com`, matching the vendored Swagger's own
-    /// `host`), unlike the previous aggregator shape which had none to
-    /// bake in. Not part of the all-or-none set: it always has a usable
-    /// value, configured or not, the same shape `--orange-base-url`
-    /// already has.
-    #[arg(long, env = "MTN_BASE_URL", default_value = "https://api.mtn.com")]
-    pub(crate) mtn_base_url: String,
-
-    /// The submission rate this specific MADAPI contract allows, in
-    /// messages per second — not published anywhere in the vendored
-    /// Swagger (see `sms_provider_mtn::MtnConfig::tps_ceiling`'s own
-    /// doc), so this stays required alongside the other `--mtn-*` flags
-    /// rather than defaulted — this repo's own standing preference is no
-    /// default that invents a fact.
-    #[arg(long, env = "MTN_TPS_CEILING")]
-    pub(crate) mtn_tps_ceiling: Option<f64>,
-
-    /// What one segment costs on this contract, in XAF. `Decimal`, never
-    /// a float — this is money. Same required-together reasoning as
-    /// `--mtn-tps-ceiling` above.
-    #[arg(long, env = "MTN_COST_PER_SEGMENT_XAF")]
-    pub(crate) mtn_cost_per_segment_xaf: Option<rust_decimal::Decimal>,
-
-    /// Whether this specific MADAPI relationship has an alphanumeric
-    /// sender registered and approved with MTN. Defaults to `false` —
-    /// the safer default per
-    /// `sms_provider_mtn::MtnConfig::supports_alphanumeric_sender`'s own
-    /// doc: an unregistered alphanumeric sender risks silent rewriting
-    /// or dropping by MTN, not a clean rejection this adapter could
-    /// classify. Not part of the all-or-none check — it has a safe
-    /// default whether or not MTN is configured at all.
-    #[arg(
-        long,
-        env = "MTN_SUPPORTS_ALPHANUMERIC_SENDER",
-        default_value_t = false
-    )]
-    pub(crate) mtn_supports_alphanumeric_sender: bool,
-
-    /// The SNS topic AWS End User Messaging publishes delivery events to
-    /// (`arn:aws:sns:<region>:<account>:<name>`). Setting it serves
-    /// `POST /dlr/aws_sms`: every delivery is authenticated against this
-    /// exact topic and SNS's signature before it is ingested. A
-    /// subscription confirmation is never confirmed by the gateway: it is
-    /// logged with the command that confirms it. The gateway needs no AWS
-    /// credentials — sending happens in `sms-worker`.
-    #[arg(long, env = "AWS_SMS_EVENTS_TOPIC_ARN")]
-    pub(crate) aws_sms_events_topic_arn: Option<String>,
-
-    /// **Demo and test builds only** (the off-by-default `fake-aws` cargo
-    /// feature; no release image has this flag). Fetch SNS signing
-    /// certificates from this base URL (an `sms-fake-aws` process) instead
-    /// of from AWS, so receipts that fake signs are accepted. Every other
-    /// check on a receipt still applies. A blank value counts as unset.
-    #[cfg(feature = "fake-aws")]
-    #[arg(long, env = "AWS_SMS_FAKE_SNS_CERT_BASE")]
-    pub(crate) aws_sms_fake_sns_cert_base: Option<String>,
-
-    /// #134: the server-held pepper behind `Message.msisdnHash`/
-    /// `Message.bodyHash` — real secret material, config only, never
-    /// the database, a migration, or a log line (see `sms_api::pepper`'s
-    /// module doc for the scheme and the rotation consequence).
-    /// Required unconditionally and validated (minimum length) before
-    /// this process does anything else, so a missing or trivially weak
-    /// pepper fails loudly at startup — never silently at the first
-    /// `sendMessage` call. Never logged: `HashPepper`'s own `Debug`
-    /// impl redacts it even if this struct were ever printed.
-    #[arg(long, env = "SMS_HASH_PEPPER", hide_env_values = true)]
-    pub(crate) hash_pepper: String,
-
-    /// #153: how long a cached `Idempotency-Key` response stays
-    /// replayable before a repeat with the same key is treated as a
-    /// brand-new request. Matches `docs/architecture.md` §4.5's own
-    /// figure (24h) as the default.
-    #[arg(long, env = "SMS_IDEMPOTENCY_TTL_SECS", default_value_t = 24 * 60 * 60)]
-    pub(crate) idempotency_ttl_secs: u64,
-
-    /// #153: per-principal token-bucket capacity for
-    /// `sms_api::router`'s `RateLimitLayer` — the burst a caller can
-    /// spend before throttling kicks in. Matches §4.5's own suggested
-    /// default; see `sms_api::default_rate_limit_config`'s doc for why
-    /// that default is safe against this workspace's actual live-suite
-    /// call volume.
-    #[arg(long, env = "SMS_RATE_LIMIT_BURST", default_value_t = 120)]
-    pub(crate) rate_limit_burst: u32,
-
-    /// #153: refill rate, in tokens/second, for the same bucket.
-    #[arg(long, env = "SMS_RATE_LIMIT_REFILL_PER_SECOND", default_value_t = 2.0)]
-    pub(crate) rate_limit_refill_per_second: f64,
-
-    /// #163: burst capacity for `sms_api::router`'s second, coarser
-    /// `RateLimitLayer` — keyed on the real TCP peer
-    /// (`ConnectInfo<SocketAddr>`, populated because this arm serves
-    /// through `into_make_service_with_connect_info` below), not the
-    /// unverified `sub` claim `--rate-limit-burst` above buckets by.
-    /// Closes the gap that layer's own doc names: a caller willing to
-    /// forge a fresh `sub` per request gets a fresh bucket from that
-    /// layer alone; this one bounds the aggregate regardless. See
-    /// `sms_api::default_source_rate_limit_config`'s own doc for why
-    /// its default is sized differently from `--rate-limit-burst`'s.
-    #[arg(long, env = "SMS_SOURCE_RATE_LIMIT_BURST", default_value_t = 1200)]
-    pub(crate) source_rate_limit_burst: u32,
-
-    /// #163: refill rate, in tokens/second, for the same bucket.
-    #[arg(
-        long,
-        env = "SMS_SOURCE_RATE_LIMIT_REFILL_PER_SECOND",
-        default_value_t = 10.0
-    )]
-    pub(crate) source_rate_limit_refill_per_second: f64,
+    /// The YAML deployment configuration (VSC-1).
+    #[command(flatten)]
+    pub(crate) config: sms_config::ConfigArgs,
 }
 
 /// `Provider.id` for the row matching `provider.key()` — resolved once at
@@ -268,177 +95,25 @@ async fn resolve_provider_row_id(
     })
 }
 
-/// `Command::Serve`'s body, pulled out of `main`'s own `match` for the
-/// `clippy::too_many_lines` reason. Takes `ServeArgs` directly rather than
-/// the whole `Command`: `main`'s own dispatch already extracts it from
-/// `Command::Serve` at the match site.
-/// The four `--orange-*` values `serve` needs to construct the adapter.
-/// Grouped into one struct purely so [`build_dlr_router`] takes a single
-/// argument rather than four positional `String`s of the same type, which
-/// is the shape most likely to be silently mis-ordered at a call site.
-struct OrangeCredentials {
-    client_id: String,
-    client_secret: String,
-    sender_number: String,
-    base_url: String,
-}
-
-/// `Ok(None)` when none of the three Orange flags are set at all — a
-/// deployment that only wired up MTN. `Err` when only *some* are set —
-/// mirrors `sms-worker`'s own `orange_provider`
-/// (`backends/apps/sms-worker/src/main.rs`) all-or-none check exactly, since
-/// both binaries build the identical `OrangeCmConfig` from the identical
-/// flags, just at a different point in each one's own startup sequence.
-fn orange_credentials(
-    client_id: Option<String>,
-    client_secret: Option<String>,
-    sender_number: Option<String>,
-    base_url: String,
-) -> Result<Option<OrangeCredentials>> {
-    match (client_id, client_secret, sender_number) {
-        (Some(client_id), Some(client_secret), Some(sender_number)) => {
-            Ok(Some(OrangeCredentials {
-                client_id,
-                client_secret,
-                sender_number,
-                base_url,
-            }))
-        }
-        (None, None, None) => Ok(None),
-        _ => anyhow::bail!(
-            "--orange-client-id, --orange-client-secret and --orange-sender-number must all be \
-             set together, or none of them"
-        ),
-    }
-}
-
-/// The `--mtn-*` values `serve` needs to construct the MADAPI adapter.
-/// `sender_id` and `base_url` are excluded from the all-or-none tuple
-/// [`mtn_credentials`] checks — see that function's own doc for why each
-/// one individually has a safe, always-usable value regardless of
-/// whether MTN is otherwise configured.
-struct MtnCredentials {
-    client_id: String,
-    client_secret: String,
-    service_code: String,
-    sender_id: Option<String>,
-    base_url: String,
-    tps_ceiling: f64,
-    cost_per_segment_xaf: rust_decimal::Decimal,
-    supports_alphanumeric_sender: bool,
-}
-
-/// The four raw `--orange-*` values, grouped like [`RawMtnArgs`] below so
-/// [`orange_credentials`]'s inputs travel together.
-struct RawOrangeArgs {
-    client_id: Option<String>,
-    client_secret: Option<String>,
-    sender_number: Option<String>,
-    base_url: String,
-}
-
-/// [`mtn_credentials`]'s own raw input, one field per `--mtn-*` flag —
-/// grouped into a struct rather than eight positional parameters
-/// because a plain eight-argument function trips clippy's own
-/// `too_many_arguments` threshold (7), and a named-field struct reads
-/// better at both ends than `#[allow(...)]`ing it away would. Built once
-/// in [`serve_command`] straight out of `ServeArgs`'s own destructured
-/// `mtn_*` fields.
-struct RawMtnArgs {
-    client_id: Option<String>,
-    client_secret: Option<String>,
-    service_code: Option<String>,
-    tps_ceiling: Option<f64>,
-    cost_per_segment_xaf: Option<rust_decimal::Decimal>,
-    sender_id: Option<String>,
-    supports_alphanumeric_sender: bool,
-    base_url: String,
-}
-
-/// `Ok(None)` when none of the five required `--mtn-*` flags
-/// (`client_id`/`client_secret`/`service_code`/`tps_ceiling`/
-/// `cost_per_segment_xaf`) are set at all — a deployment that only wired
-/// up Orange, or neither. `Err` when only *some* are set. Mirrors
-/// `sms-worker::mtn_provider`'s identical check.
-///
-/// `sender_id` is threaded through unconditionally, not gated by this
-/// match: MADAPI's own Swagger marks `senderAddress` optional (see
-/// `ServeArgs::mtn_sender_id`'s own doc), so this crate must never
-/// require an operator to set it. `supports_alphanumeric_sender` is
-/// threaded straight from the CLI's own `default_value_t = false` for
-/// the identical reason it always was — it has a safe default regardless
-/// of whether MTN is configured at all. `base_url` is threaded through
-/// unconditionally too, now that it carries a real default
-/// (`https://api.mtn.com`) rather than needing an operator-supplied
-/// value the way the previous, host-less aggregator shape did.
-fn mtn_credentials(args: RawMtnArgs) -> Result<Option<MtnCredentials>> {
-    let RawMtnArgs {
-        client_id,
-        client_secret,
-        service_code,
-        tps_ceiling,
-        cost_per_segment_xaf,
-        sender_id,
-        supports_alphanumeric_sender,
-        base_url,
-    } = args;
-    match (
-        client_id,
-        client_secret,
-        service_code,
-        tps_ceiling,
-        cost_per_segment_xaf,
-    ) {
-        (
-            Some(client_id),
-            Some(client_secret),
-            Some(service_code),
-            Some(tps_ceiling),
-            Some(cost),
-        ) => Ok(Some(MtnCredentials {
-            client_id,
-            client_secret,
-            service_code,
-            sender_id,
-            base_url,
-            tps_ceiling,
-            cost_per_segment_xaf: cost,
-            supports_alphanumeric_sender,
-        })),
-        (None, None, None, None, None) => Ok(None),
-        _ => anyhow::bail!(
-            "--mtn-client-id, --mtn-client-secret, --mtn-service-code, --mtn-tps-ceiling and \
-             --mtn-cost-per-segment-xaf must all be set together, or none of them"
-        ),
-    }
-}
-
 /// Builds however many adapters were configured and the DLR router that
 /// dispatches onto whichever ones are present — at least one, since this
 /// binary always serves the DLR route (#34) and a route with nothing
-/// behind it can never usefully answer a callback. Both credential sets
-/// are optional individually (see [`orange_credentials`]/
-/// [`mtn_credentials`]); this function is what turns "neither is set" into
-/// a startup failure rather than a route that 404s every real callback
-/// forever.
+/// behind it can never usefully answer a callback. Each provider is
+/// optional individually (an absent `providers` entry); this function is what
+/// turns "none is configured" into a startup failure rather than a route that
+/// 404s every real callback forever.
 ///
-/// Extracted from [`serve_command`] rather than inlined: that function
-/// crossed clippy's `too_many_lines` threshold (106/100) once #194's
-/// console-client wiring landed on top of the existing setup, and this is
-/// the one self-contained block in it — every value it touches is
-/// provider-shaped, and nothing after it reads either config or the bare
-/// `provider` handles again. Suppressing the lint instead would have
-/// hidden the next fifty lines of growth too.
+/// Every adapter's config comes from `sms_config`, the same conversion the
+/// worker uses, so the two binaries cannot build a provider differently.
 async fn build_dlr_router(
     db: &Cratestack,
     sys: &cratestack::CratestackContext,
-    orange: Option<OrangeCredentials>,
-    mtn: Option<MtnCredentials>,
-    aws_sms: Option<sms_provider_aws_sms::AwsSmsProvider>,
+    providers_config: &Providers,
+    profile: &str,
 ) -> Result<axum::Router> {
     let mut providers = Vec::new();
 
-    if let Some(aws_sms) = aws_sms {
+    if let Some(aws_sms) = aws_sms_receiver(providers_config.aws_sms.as_ref(), profile)? {
         let provider: Arc<dyn SmsProvider> = Arc::new(aws_sms);
         let provider_row_id = resolve_provider_row_id(db, sys, provider.as_ref()).await?;
         providers.push(dlr::DlrProvider {
@@ -447,15 +122,10 @@ async fn build_dlr_router(
         });
     }
 
-    if let Some(orange) = orange {
-        let mut orange_config = sms_provider_orange_cm::OrangeCmConfig::production(
-            orange.client_id,
-            orange.client_secret,
-            orange.sender_number,
+    if let Some(orange) = &providers_config.orange_cm {
+        let provider: Arc<dyn SmsProvider> = Arc::new(
+            sms_provider_orange_cm::OrangeCmProvider::new(orange.to_provider_config()),
         );
-        orange_config.base_url = orange.base_url;
-        let provider: Arc<dyn SmsProvider> =
-            Arc::new(sms_provider_orange_cm::OrangeCmProvider::new(orange_config));
         let provider_row_id = resolve_provider_row_id(db, sys, provider.as_ref()).await?;
         providers.push(dlr::DlrProvider {
             provider,
@@ -463,26 +133,9 @@ async fn build_dlr_router(
         });
     }
 
-    if let Some(mtn) = mtn {
-        let mtn_config = sms_provider_mtn::MtnConfig {
-            client_id: mtn.client_id,
-            client_secret: mtn.client_secret,
-            service_code: mtn.service_code,
-            sender_id: mtn.sender_id,
-            base_url: mtn.base_url,
-            tps_ceiling: mtn.tps_ceiling,
-            cost_per_segment_xaf: mtn.cost_per_segment_xaf,
-            supports_alphanumeric_sender: mtn.supports_alphanumeric_sender,
-            // Same values `sms-provider-orange-cm::OrangeCmConfig::production`
-            // bakes in — no `MtnConfig` equivalent exists to default
-            // these from, and nothing about either timeout is
-            // provider-specific. Mirrors `sms-worker::mtn_provider`'s
-            // identical choice.
-            connect_timeout: std::time::Duration::from_secs(10),
-            request_timeout: std::time::Duration::from_secs(30),
-        };
+    if let Some(mtn) = &providers_config.mtn_cm {
         let provider: Arc<dyn SmsProvider> =
-            Arc::new(sms_provider_mtn::MtnProvider::new(mtn_config));
+            Arc::new(sms_provider_mtn::MtnProvider::new(mtn.to_provider_config()));
         let provider_row_id = resolve_provider_row_id(db, sys, provider.as_ref()).await?;
         providers.push(dlr::DlrProvider {
             provider,
@@ -492,87 +145,52 @@ async fn build_dlr_router(
 
     if providers.is_empty() {
         anyhow::bail!(
-            "at least one provider must be configured to serve the DLR route: either \
-             --orange-client-id, --orange-client-secret and --orange-sender-number, or \
-             --mtn-client-id, --mtn-client-secret, --mtn-service-code, --mtn-tps-ceiling and \
-             --mtn-cost-per-segment-xaf, or --aws-sms-events-topic-arn (or their env vars)"
+            "at least one provider must be configured to serve the DLR route: a `providers` entry with `code: orange_cm` or `code: mtn_cm`, or `code: aws_sms` with `settings.events_topic_arn` (config/application*.yml)"
         );
     }
 
     Ok(dlr::router(db.clone(), sys.clone(), providers))
 }
 
-/// Resolves both provider credential sets and builds the DLR router and
-/// the `/readyz` router that needs the same pooled `db` handle. Pulled
-/// out of [`serve_command`] purely to keep it under clippy's
-/// `too_many_lines` limit, the same recurring growth shape
-/// [`build_dlr_router`]'s and [`build_op_state`]'s own doc comments
-/// already record — this time it was MTN's own `--mtn-client-secret`/
-/// `--mtn-service-code` split landing on top of an already-tight budget.
-/// Reads every provider flag off `args` itself, so adding a provider
-/// grows neither this signature nor [`serve_command`].
-async fn build_provider_routers(
-    db: &Cratestack,
-    sys: &cratestack::CratestackContext,
-    args: &ServeArgs,
-) -> Result<(axum::Router, axum::Router)> {
-    let orange = RawOrangeArgs {
-        client_id: args.orange_client_id.clone(),
-        client_secret: args.orange_client_secret.clone(),
-        sender_number: args.orange_sender_number.clone(),
-        base_url: args.orange_base_url.clone(),
-    };
-    let mtn = RawMtnArgs {
-        client_id: args.mtn_client_id.clone(),
-        client_secret: args.mtn_client_secret.clone(),
-        service_code: args.mtn_service_code.clone(),
-        tps_ceiling: args.mtn_tps_ceiling,
-        cost_per_segment_xaf: args.mtn_cost_per_segment_xaf,
-        sender_id: args.mtn_sender_id.clone(),
-        supports_alphanumeric_sender: args.mtn_supports_alphanumeric_sender,
-        base_url: args.mtn_base_url.clone(),
-    };
-    let orange = orange_credentials(
-        orange.client_id,
-        orange.client_secret,
-        orange.sender_number,
-        orange.base_url,
-    )?;
-    let mtn = mtn_credentials(mtn)?;
-    let aws_sms = aws_sms_receiver(args)?;
-    let dlr_router = build_dlr_router(db, sys, orange, mtn, aws_sms).await?;
-    // #157: /readyz needs the same pooled handle every other router
-    // shares — cloned here, before `sms_api::router` (in `serve_command`)
-    // takes `db` by value as its own last use.
-    let health_router = health::router(db.clone());
-    Ok((dlr_router, health_router))
-}
-
 /// The AWS receipt receiver, when an events topic is configured.
 ///
-/// In a `fake-aws` build, `--aws-sms-fake-sns-cert-base` swaps where signing
+/// In a `fake-aws` build, `settings.fake_sns_cert_base` swaps where signing
 /// certificates are fetched from; see [`fake_aws_receiver`]. A release build
-/// has neither the flag nor the code.
-fn aws_sms_receiver(args: &ServeArgs) -> Result<Option<sms_provider_aws_sms::AwsSmsProvider>> {
+/// has neither the key's effect nor the code: it refuses the key, as it
+/// refused the flag (the flag did not parse), so no deployment of it can be
+/// told to trust a certificate authority that is not AWS's.
+fn aws_sms_receiver(
+    aws: Option<&sms_config::AwsSms>,
+    profile: &str,
+) -> Result<Option<sms_provider_aws_sms::AwsSmsProvider>> {
+    let Some(aws) = aws else {
+        return Ok(None);
+    };
     #[cfg(feature = "fake-aws")]
     {
+        // Only the release build's refusal below names the profile.
+        let _ = profile;
         tracing::warn!(
-            "this sms-gateway was built with the `fake-aws` feature, for demos and tests only; \
-             a release image is never built with it"
+            "this sms-gateway was built with the `fake-aws` feature, for demos and tests only; a release image is never built with it"
         );
-        if let Some(base) = args
-            .aws_sms_fake_sns_cert_base
-            .as_deref()
-            .filter(|base| !base.trim().is_empty())
-        {
-            return fake_aws_receiver(args.aws_sms_events_topic_arn.clone(), base).map(Some);
+        if let Some(base) = aws.fake_sns_cert_base.as_deref() {
+            return fake_aws_receiver(aws.events_topic_arn.clone(), base).map(Some);
         }
     }
-    args.aws_sms_events_topic_arn
+    #[cfg(not(feature = "fake-aws"))]
+    if aws.fake_sns_cert_base.is_some() {
+        // The profile is named because the usual cause is the wrong one: a
+        // release image run without SMS_PROFILE loads the `dev` profile, whose
+        // overlay points at the local fakes.
+        anyhow::bail!(
+            "providers[code=aws_sms].settings.fake_sns_cert_base is set, but this sms-gateway was built without the `fake-aws` feature and cannot be told to trust a fake SNS certificate authority. Remove the key. The `{profile}` profile is loaded; if that is not the profile you meant, set SMS_PROFILE (or pass --profile)."
+        );
+    }
+    aws.events_topic_arn
         .clone()
         .map(|topic_arn| {
             sms_provider_aws_sms::AwsSmsProvider::receiver(topic_arn)
-                .context("--aws-sms-events-topic-arn")
+                .context("providers[code=aws_sms].settings.events_topic_arn")
         })
         .transpose()
 }
@@ -587,12 +205,13 @@ pub(crate) fn fake_aws_receiver(
     cert_base: &str,
 ) -> Result<sms_provider_aws_sms::AwsSmsProvider> {
     let topic_arn = topic_arn.context(
-        "--aws-sms-fake-sns-cert-base needs --aws-sms-events-topic-arn: it changes how AWS \
-         receipts are verified, and without a topic there are none",
+        "providers[code=aws_sms].settings.fake_sns_cert_base needs \
+         providers[code=aws_sms].settings.events_topic_arn: it changes how AWS receipts are \
+         verified, and without a topic there are none",
     )?;
     let http = sms_fake_aws::RedirectSnsHttp::new(cert_base)
         .map_err(anyhow::Error::msg)
-        .context("--aws-sms-fake-sns-cert-base")?;
+        .context("providers[code=aws_sms].settings.fake_sns_cert_base")?;
     tracing::warn!(
         cert_base,
         topic_arn,
@@ -600,30 +219,32 @@ pub(crate) fn fake_aws_receiver(
          accepted if the fake signed them. Never run this against a real deployment."
     );
     sms_provider_aws_sms::AwsSmsProvider::receiver_with(topic_arn, Arc::new(http))
-        .context("--aws-sms-events-topic-arn")
+        .context("providers[code=aws_sms].settings.events_topic_arn")
 }
 
 pub(crate) async fn serve_command(args: ServeArgs) -> Result<()> {
-    // Deliberately not one big `let ServeArgs { .. } = args;` up front —
-    // that pattern alone used to span 27 source lines, and clippy's own
-    // `too_many_lines` counts them. Every field the two `.await`s below
-    // need (`hash_pepper`, `database_url`, `max_connections`,
-    // every `orange_*`/`mtn_*` flag) is read or moved straight off `args`
-    // instead; the one destructure at the bottom, once `args` no longer
-    // needs to be a value the two helpers below can still read from,
-    // binds only what's left — a genuine reduction in this function's own
-    // line count, not just a relocation of the same lines. Partial moves
-    // off an owned, non-`Drop` struct are ordinary, sound Rust: nothing
-    // here reads `args` as a whole again after any individual field is
-    // taken.
-    //
+    // VSC-1: the configuration is read before anything else is touched - before
+    // the keys, before the database. A retired variable, an unset `${VAR}` or a
+    // provider with a key missing stops the process here, naming the YAML key,
+    // and nothing has been connected to yet.
+    let config = args
+        .config
+        .load(Binary::Gateway)
+        .context("loading the YAML configuration")?;
+    info!(
+        deployment = %config.deployment.name,
+        livemode = config.deployment.livemode,
+        public_base_url = %config.deployment.public_base_url,
+        profile = %args.config.profile,
+        "configuration loaded"
+    );
+
     // #134: validated before anything else in this branch runs — failing
     // loudly on a missing/too-short pepper at startup, not at the first
-    // `sendMessage` call. `clap`'s own `env`/required handling already
-    // refuses a *missing* value before this line is ever reached; this is
-    // the length check clap can't express.
-    let pepper = sms_api::HashPepper::new(args.hash_pepper.clone())
-        .context("SMS_HASH_PEPPER is invalid — see sms_api::pepper's module doc")?;
+    // `sendMessage` call. The loader refuses a missing or unset value; this is
+    // the length check it can't express.
+    let pepper = sms_api::HashPepper::new(config.security()?.hash_pepper.expose().to_owned())
+        .context("security.hash_pepper is invalid — see sms_api::pepper's module doc")?;
 
     // VS-3: the same fail-fast stance for the signed transport's keys. A
     // gateway that cannot seal its answers must not start, and there is no
@@ -633,7 +254,7 @@ pub(crate) async fn serve_command(args: ServeArgs) -> Result<()> {
     server_keys::log_public_keys(&server_keys);
 
     let pool = PgPoolOptions::new()
-        .max_connections(args.max_connections)
+        .max_connections(config.database.gateway_max_connections)
         .connect(&args.database_url)
         .await
         .context("connecting to Postgres")?;
@@ -652,28 +273,31 @@ pub(crate) async fn serve_command(args: ServeArgs) -> Result<()> {
     // own module doc for the full mechanism.
     sms_api::webhooks::register_subscribers(&db);
 
-    let (dlr_router, health_router) = build_provider_routers(&db, &sys, &args).await?;
+    let dlr_router = build_dlr_router(&db, &sys, &config.providers, &args.config.profile).await?;
+    // #157: /readyz needs the same pooled handle every other router
+    // shares — cloned here, before `sms_api::router` takes `db` by value as
+    // its own last use.
+    let health_router = health::router(db.clone());
 
     let ServeArgs {
         listen,
         metrics_listen,
-        idempotency_ttl_secs,
-        rate_limit_burst,
-        rate_limit_refill_per_second,
-        source_rate_limit_burst,
-        source_rate_limit_refill_per_second,
         ..
     } = args;
+    let api = config.api;
 
     let app = sms_api::router(
         db,
         server_keys.into_signer(),
         pepper,
-        std::time::Duration::from_secs(idempotency_ttl_secs),
-        cratestack::ratelimit::RateLimitConfig::new(rate_limit_burst, rate_limit_refill_per_second),
+        std::time::Duration::from_secs(api.idempotency_ttl_secs),
         cratestack::ratelimit::RateLimitConfig::new(
-            source_rate_limit_burst,
-            source_rate_limit_refill_per_second,
+            api.rate_limit.burst,
+            api.rate_limit.refill_per_second,
+        ),
+        cratestack::ratelimit::RateLimitConfig::new(
+            api.source_rate_limit.burst,
+            api.source_rate_limit.refill_per_second,
         ),
     )
     .context("assembling the signed-transport router")?
@@ -782,138 +406,82 @@ async fn shutdown_signal() {
 
 #[cfg(test)]
 mod tests {
-    use super::{RawMtnArgs, mtn_credentials, orange_credentials};
-
+    /// Not a test of a function in this file: the old defaults of the flags
+    /// `serve` used to declare live in `sms_api`, and the base file must still
+    /// state them. The same two numbers existed twice before VSC-1 (a clap
+    /// default and an `sms_api` constant) and this holds the third copy, the
+    /// YAML, to both.
     #[test]
-    fn orange_credentials_is_none_when_all_three_are_unset() {
-        let result = orange_credentials(None, None, None, "https://api.orange.com".to_owned())
-            .expect("all-unset is not an error");
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn orange_credentials_is_some_when_all_three_are_set() {
-        let result = orange_credentials(
-            Some("id".to_owned()),
-            Some("secret".to_owned()),
-            Some("+237677000000".to_owned()),
-            "https://api.orange.com".to_owned(),
+    fn the_yaml_defaults_are_the_ones_sms_api_documents() {
+        let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../config/application.yml");
+        let config = sms_config::Config::load_with_env(
+            Some(&base),
+            sms_config::DEFAULT_PROFILE,
+            sms_config::Binary::Gateway,
+            &|name| (name == "SMS_HASH_PEPPER").then(|| "p".repeat(48)),
         )
-        .expect("all-set is not an error")
-        .expect("all-set must produce Some");
-        assert_eq!(result.client_id, "id");
-        assert_eq!(result.client_secret, "secret");
-        assert_eq!(result.sender_number, "+237677000000");
-        assert_eq!(result.base_url, "https://api.orange.com");
-    }
+        .expect("the committed base file loads");
 
-    #[test]
-    fn orange_credentials_rejects_a_partial_set() {
-        let error = orange_credentials(
-            Some("id".to_owned()),
-            None,
-            None,
-            "https://api.orange.com".to_owned(),
-        )
-        // `OrangeCredentials` (the `Ok` type) isn't `Debug`, so
-        // `.expect_err(...)` doesn't compile here — `.err()` sidesteps
-        // that: `Result::err` needs no bound on `T` at all.
-        .err()
-        .expect("only one of three set must be rejected, not silently treated as unset");
-        assert!(error.to_string().contains("orange-client-id"), "{error}");
-    }
-
-    /// Every field of [`RawMtnArgs`] set to its "nothing configured"
-    /// value — individual tests below override just the fields under
-    /// test via struct-update syntax, the same `base_cli()` shape
-    /// `sms-worker`'s own `main.rs` test module already uses.
-    fn base_mtn_args() -> RawMtnArgs {
-        RawMtnArgs {
-            client_id: None,
-            client_secret: None,
-            service_code: None,
-            tps_ceiling: None,
-            cost_per_segment_xaf: None,
-            sender_id: None,
-            supports_alphanumeric_sender: false,
-            base_url: "https://api.mtn.com".to_owned(),
-        }
-    }
-
-    #[test]
-    fn mtn_credentials_is_none_when_all_five_are_unset() {
-        let result = mtn_credentials(base_mtn_args()).expect("all-unset is not an error");
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn mtn_credentials_is_some_when_all_five_are_set() {
-        let result = mtn_credentials(RawMtnArgs {
-            client_id: Some("client-id".to_owned()),
-            client_secret: Some("client-secret".to_owned()),
-            service_code: Some("131".to_owned()),
-            tps_ceiling: Some(20.0),
-            cost_per_segment_xaf: Some(rust_decimal::Decimal::new(15, 0)),
-            sender_id: Some("SENDER".to_owned()),
-            supports_alphanumeric_sender: true,
-            ..base_mtn_args()
-        })
-        .expect("all-set is not an error")
-        .expect("all-set must produce Some");
-        assert_eq!(result.client_id, "client-id");
-        assert_eq!(result.client_secret, "client-secret");
-        assert_eq!(result.service_code, "131");
-        assert_eq!(result.sender_id.as_deref(), Some("SENDER"));
-        assert_eq!(result.base_url, "https://api.mtn.com");
-        assert!((result.tps_ceiling - 20.0).abs() < f64::EPSILON);
         assert_eq!(
-            result.cost_per_segment_xaf,
-            rust_decimal::Decimal::new(15, 0)
+            std::time::Duration::from_secs(config.api.idempotency_ttl_secs),
+            sms_api::DEFAULT_IDEMPOTENCY_TTL
         );
-        assert!(result.supports_alphanumeric_sender);
+        let per_principal = sms_api::default_rate_limit_config();
+        assert_eq!(config.api.rate_limit.burst, per_principal.burst);
+        assert!(
+            (config.api.rate_limit.refill_per_second - per_principal.refill_per_second).abs()
+                < f64::EPSILON
+        );
+        let per_source = sms_api::default_source_rate_limit_config();
+        assert_eq!(config.api.source_rate_limit.burst, per_source.burst);
+        assert!(
+            (config.api.source_rate_limit.refill_per_second - per_source.refill_per_second).abs()
+                < f64::EPSILON
+        );
     }
 
+    /// A release build is not told to trust a fake certificate authority: the
+    /// flag did not parse, and the YAML key is refused with the key's name.
+    #[cfg(not(feature = "fake-aws"))]
     #[test]
-    fn mtn_credentials_rejects_a_partial_set() {
-        let error = mtn_credentials(RawMtnArgs {
-            client_id: Some("client-id".to_owned()),
-            client_secret: Some("client-secret".to_owned()),
-            ..base_mtn_args()
-        })
-        .err()
-        .expect("only two of five set must be rejected, not silently treated as unset");
-        assert!(error.to_string().contains("mtn-client-id"), "{error}");
+    fn a_release_build_refuses_the_fake_certificate_key() {
+        let aws = sms_config::AwsSms {
+            sender: None,
+            events_topic_arn: Some("arn:aws:sns:eu-west-1:123456789012:vsms-events".to_owned()),
+            fake_sns_cert_base: Some("http://sms-fake-aws:8095/".to_owned()),
+        };
+        let error = super::aws_sms_receiver(Some(&aws), "dev")
+            .err()
+            .expect("refused");
+        let message = error.to_string();
+        assert!(message.contains("fake_sns_cert_base"), "{message}");
+        assert!(
+            message.contains("`dev` profile") && message.contains("SMS_PROFILE"),
+            "{message}"
+        );
     }
 
-    /// `sender_id` must never gate the all-or-none check — MADAPI's own
-    /// Swagger marks `senderAddress` optional (see [`mtn_credentials`]'s
-    /// own doc). Guard-failure proof: a caller that sets it while every
-    /// other `--mtn-*` flag is unset must still resolve to `None`, not
-    /// `Err`.
+    #[cfg(not(feature = "fake-aws"))]
     #[test]
-    fn mtn_credentials_unset_with_only_sender_id_set_is_still_none_not_an_error() {
-        let result = mtn_credentials(RawMtnArgs {
-            sender_id: Some("SENDER".to_owned()),
-            ..base_mtn_args()
-        })
-        .expect("sender_id alone must not trip the all-or-none check");
-        assert!(result.is_none());
-    }
-
-    /// `supports_alphanumeric_sender` must never gate the all-or-none
-    /// check either — it has a safe default regardless of whether MTN is
-    /// configured at all (see [`mtn_credentials`]'s own doc). This is the
-    /// guard-failure proof for that claim: a caller that sets it `true`
-    /// while every other `--mtn-*` flag is unset must still resolve to
-    /// `None`, not `Err`.
-    #[test]
-    fn mtn_credentials_unset_with_alphanumeric_true_is_still_none_not_an_error() {
-        let result = mtn_credentials(RawMtnArgs {
-            supports_alphanumeric_sender: true,
-            ..base_mtn_args()
-        })
-        .expect("supports_alphanumeric_sender alone must not trip the all-or-none check");
-        assert!(result.is_none());
+    fn a_receiver_without_the_fake_key_is_built() {
+        let aws = sms_config::AwsSms {
+            sender: None,
+            events_topic_arn: Some("arn:aws:sns:eu-west-1:123456789012:vsms-events".to_owned()),
+            fake_sns_cert_base: None,
+        };
+        assert!(
+            super::aws_sms_receiver(Some(&aws), "dev")
+                .ok()
+                .flatten()
+                .is_some()
+        );
+        assert!(
+            super::aws_sms_receiver(None, "dev")
+                .ok()
+                .flatten()
+                .is_none()
+        );
     }
 
     /// The `fake-aws` build's receiver accepts a receipt `sms-fake-aws`

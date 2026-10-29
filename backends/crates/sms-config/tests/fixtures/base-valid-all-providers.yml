@@ -1,0 +1,37 @@
+providers:
+  - code: orange_cm
+    credentials:
+      client_id: orange-id
+      client_secret: ${ORANGE_CM_CLIENT_SECRET}
+    settings:
+      sender_number: "+2370000"
+    host:
+      url: https://api.orange.example
+  - code: mtn_cm
+    host:
+      url: https://api.mtn.example
+    credentials:
+      client_id: mtn-id
+      client_secret: ${MTN_CLIENT_SECRET}
+    settings:
+      service_code: "131"
+      sender_id: VSMS
+      tps_ceiling: 20.5
+      cost_per_segment_xaf: 15.5
+      supports_alphanumeric_sender: true
+  - code: aws_sms
+    host:
+      url: https://vpce.example
+    credentials:
+      access_key_id: AKIDEXAMPLE
+      secret_access_key: ${AWS_SMS_SECRET_ACCESS_KEY}
+    settings:
+      region: eu-west-1
+      configuration_set: vsms-events
+      tps_ceiling: 10
+      cost_per_segment_xaf: "30"
+      origination_identity: vsms-pool
+      message_type: promotional
+      supports_alphanumeric_sender: true
+      time_to_live_seconds: 900
+      events_topic_arn: arn:aws:sns:eu-west-1:123456789012:vsms-events

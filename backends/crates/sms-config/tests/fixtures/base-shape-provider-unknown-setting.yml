@@ -1,0 +1,4 @@
+providers:
+  - code: mtn_cm
+    settings:
+      tps_ceilling: 5

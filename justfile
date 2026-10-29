@@ -128,6 +128,7 @@ deny:
 all-checks: lint test
 	{{_cargo}} xtask no-raw-sqlx
 	{{_cargo}} xtask secret-env-args
+	{{_cargo}} xtask config-literal-secrets
 	{{_cargo}} xtask parity
 	{{_cargo}} xtask workflow-paths
 	{{_cargo}} xtask cratestack-pin-check
@@ -158,6 +159,19 @@ no-raw-sqlx:
 # DATABASE_URL, password included. See .xtask/src/secret_env_args.rs.
 secret-env-args:
 	{{_cargo}} xtask secret-env-args
+
+# No committed livemode profile under config/ may carry a literal secret
+# (VSC-1). See .xtask/src/config_literal_secrets.rs.
+config-literal-secrets:
+	{{_cargo}} xtask config-literal-secrets
+
+# Render the Helm chart under a release name without "vsms" and check the
+# overlay ConfigMap is the one both workloads mount, then fire every chart guard
+# (VSC-1). Needs `helm` on the PATH and network access, so it is not in
+# `all-checks` or the containerised `ci`; ci.yml's `rules` job runs it with
+# azure/setup-helm. See .xtask/src/chart_render.rs.
+chart-render:
+	{{_cargo}} xtask chart-render
 
 # Every path a workflow names must exist (release.yml never runs on a PR)
 workflow-paths:
@@ -775,6 +789,7 @@ ci-inner:
 
 	step 9 22 "R1/R2/R6 and drift guards (cargo xtask)"
 	{{_cargo}} xtask no-raw-sqlx
+	{{_cargo}} xtask config-literal-secrets
 	{{_cargo}} xtask parity
 	{{_cargo}} xtask sdk-schema-check
 	{{_cargo}} xtask sdk-parity-check

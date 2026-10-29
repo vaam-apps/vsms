@@ -70,10 +70,6 @@ struct Cli {
     )]
     metrics_listen: String,
 
-    /// Maximum pooled connections — mirrors `sms-gateway`'s own default.
-    #[arg(long, env = "SMS_WORKER_DB_MAX_CONNECTIONS", default_value_t = 10)]
-    db_max_connections: u32,
-
     /// Identifies this process to the claim loop (`leaseOwner`, and logged
     /// on a denied claim) — not a security boundary, just an operator-
     /// visible label. Defaults to `hostname:pid`, which is stable enough to
@@ -94,318 +90,55 @@ struct Cli {
     #[arg(long, env = "SMS_ENVELOPE_SIGNING_KEY_FILE")]
     envelope_signing_key_file: Option<std::path::PathBuf>,
 
-    /// `OAuth2` `client_credentials` client id for Orange Cameroon's SMS
-    /// API — required only when `dispatch` is one of `--roles`, since it's
-    /// the only role that submits through a provider today (#33).
-    #[arg(long, env = "ORANGE_CM_CLIENT_ID")]
-    orange_client_id: Option<String>,
-
-    /// Paired with `orange_client_id` — see its doc for when this is
-    /// required. Never logged; `OrangeCmConfig` holds it only long enough
-    /// to fetch and cache a bearer token (`sms-provider-orange-cm`'s own
-    /// `token` module).
-    #[arg(long, env = "ORANGE_CM_CLIENT_SECRET", hide_env_values = true)]
-    orange_client_secret: Option<String>,
-
-    /// E.164 without the `tel:` scheme — see `OrangeCmConfig::sender_number`
-    /// for why the scheme is added by the adapter, not this binary.
-    #[arg(long, env = "ORANGE_CM_SENDER_NUMBER")]
-    orange_sender_number: Option<String>,
-
-    /// Overridable so a real Orange sandbox (not just this crate's own
-    /// `wiremock`-backed tests) can be pointed at without a code change.
-    #[arg(
-        long,
-        env = "ORANGE_CM_BASE_URL",
-        default_value = "https://api.orange.com"
-    )]
-    orange_base_url: String,
-
-    /// The `OAuth2` `client_credentials` client id for MTN's direct API
-    /// (MADAPI) — see `sms-provider-mtn`'s module doc for the real,
-    /// vendored contract this replaces the previous aggregator-shaped
-    /// static-Bearer-key auth with. Optional at the CLI level for the
-    /// same reason every Orange flag above is: only `dispatch` ever
-    /// reads the registry this feeds, so a deployment running only
-    /// `hooks`/`jobs`/`drain`/`scheduler` needs neither provider's
-    /// credentials at all. Paired with the other `--mtn-*` flags below —
-    /// see [`mtn_provider`]'s own all-or-none check.
-    #[arg(long, env = "MTN_CLIENT_ID")]
-    mtn_client_id: Option<String>,
-
-    /// Paired with `mtn_client_id`. Never logged.
-    #[arg(long, env = "MTN_CLIENT_SECRET", hide_env_values = true)]
-    mtn_client_secret: Option<String>,
-
-    /// The approved short code MADAPI's own
-    /// `outboundSMSMessageRequest.serviceCode` requires unconditionally
-    /// on every submit — see `sms_provider_mtn::MtnConfig::service_code`'s
-    /// own doc. Part of the all-or-none set: MADAPI's own Swagger marks
-    /// this field mandatory.
-    #[arg(long, env = "MTN_SERVICE_CODE")]
-    mtn_service_code: Option<String>,
-
-    /// The approved alphanumeric sender ID MTN submits under, used only
-    /// as a fallback when a specific message's own resolved sender is
-    /// empty — see `sms_provider_mtn::MtnProvider::sender_address`'s own
-    /// doc. **Not** part of the all-or-none set below, unlike every
-    /// other `--mtn-*` flag: MADAPI's own Swagger marks `senderAddress`
-    /// optional, so requiring an operator to set this would enforce a
-    /// constraint MADAPI itself doesn't have.
-    #[arg(long, env = "MTN_SENDER_ID")]
-    mtn_sender_id: Option<String>,
-
-    /// MADAPI's API host — now a real, documented default
-    /// (`https://api.mtn.com`, matching the vendored Swagger's own
-    /// `host`), unlike the previous aggregator shape which had none to
-    /// bake in (see `sms_provider_mtn::MtnConfig::base_url`'s own doc).
-    #[arg(long, env = "MTN_BASE_URL", default_value = "https://api.mtn.com")]
-    mtn_base_url: String,
-
-    /// The submission rate this specific MADAPI contract allows, in
-    /// messages per second — a negotiated commercial term with no public
-    /// number to default to, unlike Orange's hard, published, self-service
-    /// 5 TPS ceiling (see `sms_provider_mtn::MtnConfig::tps_ceiling`'s own
-    /// doc). Required alongside the other `--mtn-*` flags rather than
-    /// defaulted: this repo's own standing preference is no default that
-    /// invents a fact (the same reasoning `HashPepper` has no `Default`,
-    /// and why `MtnConfig` itself derives no `Default` impl at all), and
-    /// an invented TPS ceiling would silently either throttle a real
-    /// contract far below what it actually allows, or let `dispatch` submit
-    /// faster than a real contract permits and get rate-limited or
-    /// suspended.
-    #[arg(long, env = "MTN_TPS_CEILING")]
-    mtn_tps_ceiling: Option<f64>,
-
-    /// What one segment costs on this contract, in XAF. `Decimal`, never a
-    /// float — this is money (this repo's own standing rule; see
-    /// `sms_provider_mtn::MtnConfig::cost_per_segment_xaf`'s own doc). Same
-    /// required-together reasoning as `--mtn-tps-ceiling` above: a
-    /// per-segment cost is a negotiated commercial term, not something
-    /// safe to guess a default for — an invented cost would misprice
-    /// every MTN message's `estimatedCostXaf`.
-    #[arg(long, env = "MTN_COST_PER_SEGMENT_XAF")]
-    mtn_cost_per_segment_xaf: Option<rust_decimal::Decimal>,
-
-    /// Whether this specific MADAPI relationship has an alphanumeric
-    /// sender registered and approved with MTN. Defaults to `false` —
-    /// the same safer default
-    /// `sms_provider_mtn::MtnConfig::supports_alphanumeric_sender`'s own
-    /// doc argues for, because an unregistered alphanumeric sender
-    /// submitted to MTN risks silent rewriting or dropping rather than a
-    /// clean rejection this adapter could classify and route around.
-    /// Unlike the other required `--mtn-*` flags, this one is not part of
-    /// the all-or-none check: it has a safe, always-correct default
-    /// whether or not MTN is configured at all, so nothing is lost by
-    /// letting clap populate it unconditionally.
-    #[arg(
-        long,
-        env = "MTN_SUPPORTS_ALPHANUMERIC_SENDER",
-        default_value_t = false
-    )]
-    mtn_supports_alphanumeric_sender: bool,
-
-    /// AWS region the End User Messaging SMS account sends from (e.g.
-    /// `eu-west-1`). One of the six `--aws-sms-*` flags that must be set
-    /// together or not at all — see [`aws_sms_provider`].
-    #[arg(long, env = "AWS_SMS_REGION")]
-    aws_sms_region: Option<String>,
-
-    /// Access key id of an IAM user allowed `sms-voice:SendTextMessage`.
-    /// Long-lived keys only — see `sms-provider-aws-sms`'s module doc.
-    #[arg(long, env = "AWS_SMS_ACCESS_KEY_ID")]
-    aws_sms_access_key_id: Option<String>,
-
-    /// The secret half of that access key. Never logged.
-    #[arg(long, env = "AWS_SMS_SECRET_ACCESS_KEY", hide_env_values = true)]
-    aws_sms_secret_access_key: Option<String>,
-
-    /// The configuration set whose SNS event destination delivers receipts
-    /// to the gateway's `/dlr/aws_sms`. Required with the other
-    /// `--aws-sms-*` flags: without one AWS reports nothing, and every
-    /// message would end `expired`.
-    #[arg(long, env = "AWS_SMS_CONFIGURATION_SET")]
-    aws_sms_configuration_set: Option<String>,
-
-    /// Message parts per second the account may send — an account quota,
-    /// so never defaulted. Required with the other `--aws-sms-*` flags.
-    #[arg(long, env = "AWS_SMS_TPS_CEILING")]
-    aws_sms_tps_ceiling: Option<f64>,
-
-    /// What one segment costs, converted to XAF (AWS prices in USD per
-    /// destination country). Required with the other `--aws-sms-*` flags.
-    #[arg(long, env = "AWS_SMS_COST_PER_SEGMENT_XAF")]
-    aws_sms_cost_per_segment_xaf: Option<rust_decimal::Decimal>,
-
-    /// A fixed origination identity for every message: a sender ID, phone
-    /// number, pool, or one of their ARNs. When unset, each message's own
-    /// approved sender ID is passed, and has to exist in the AWS account.
-    #[arg(long, env = "AWS_SMS_ORIGINATION_IDENTITY")]
-    aws_sms_origination_identity: Option<String>,
-
-    /// `transactional` (OTPs, notifications) or `promotional`.
-    #[arg(long, env = "AWS_SMS_MESSAGE_TYPE", default_value = "transactional")]
-    aws_sms_message_type: sms_provider_aws_sms::MessageType,
-
-    /// Whether the account sends under alphanumeric sender IDs to this
-    /// deployment's destinations. Informational, like MTN's.
-    #[arg(
-        long,
-        env = "AWS_SMS_SUPPORTS_ALPHANUMERIC_SENDER",
-        default_value_t = false
-    )]
-    aws_sms_supports_alphanumeric_sender: bool,
-
-    /// Endpoint override (a VPC endpoint, or a test double). Unset is
-    /// `https://sms-voice.<region>.amazonaws.com/`.
-    #[arg(long, env = "AWS_SMS_ENDPOINT_URL")]
-    aws_sms_endpoint_url: Option<String>,
-
-    /// Seconds AWS keeps trying to deliver one message (5 to 259200).
-    /// Unset, AWS tries for up to 72 hours, so an OTP vsms already expired
-    /// can still arrive days later; match the shortest validity of the
-    /// traffic routed to AWS (15 minutes, `900`, for OTPs). Optional, and
-    /// not part of the all-or-none group.
-    #[arg(long, env = "AWS_SMS_TIME_TO_LIVE_SECONDS")]
-    aws_sms_time_to_live_seconds: Option<u64>,
+    /// The YAML deployment configuration (VSC-1): the pool size and every
+    /// provider's credentials, which the gateway reads from the same document.
+    #[command(flatten)]
+    config: sms_config::ConfigArgs,
 }
 
-/// The one Orange provider `dispatch` submits through. `None` when
-/// `dispatch` isn't among `--roles` — nothing constructs it, and nothing
-/// needs to.
-fn orange_provider(cli: &Cli) -> Result<Option<Arc<dyn SmsProvider>>> {
-    match (
-        &cli.orange_client_id,
-        &cli.orange_client_secret,
-        &cli.orange_sender_number,
-    ) {
-        (Some(client_id), Some(client_secret), Some(sender_number)) => {
-            let mut config = sms_provider_orange_cm::OrangeCmConfig::production(
-                client_id.clone(),
-                client_secret.clone(),
-                sender_number.clone(),
-            );
-            config.base_url.clone_from(&cli.orange_base_url);
-            Ok(Some(Arc::new(
-                sms_provider_orange_cm::OrangeCmProvider::new(config),
-            )))
-        }
-        (None, None, None) => Ok(None),
-        _ => bail!(
-            "--orange-client-id, --orange-client-secret and --orange-sender-number must all be \
-             set together, or none of them"
-        ),
-    }
-}
+/// The adapters this process holds credentials for, by `Provider.key`.
+type ProviderRegistry = HashMap<String, Arc<dyn SmsProvider>>;
 
-/// The MTN provider `dispatch` submits through, now via MADAPI directly
-/// (#61's crate, wired into a binary for the first time then; rewired
-/// off the aggregator shape in this hard cutover). `None` when
-/// `dispatch` isn't among `--roles`, or when none of the five required
-/// `--mtn-*` flags (`client_id`/`client_secret`/`service_code`/
-/// `tps_ceiling`/`cost_per_segment_xaf`) are set at all — mirrors
-/// [`orange_provider`]'s own all-or-none shape, extended to five fields
-/// instead of three because `MtnConfig` carries two more required,
-/// `Default`-less commercial terms Orange's own config doesn't
-/// (`tps_ceiling`, `cost_per_segment_xaf` — see that struct's own doc
-/// for why neither has an invented default). `mtn_sender_id` and
-/// `mtn_supports_alphanumeric_sender` are deliberately excluded from
-/// this tuple: `sender_id` has a safe, always-usable `None` (MADAPI's
-/// own Swagger marks `senderAddress` optional), and
-/// `supports_alphanumeric_sender` has a safe default (`false`)
-/// regardless of whether MTN is configured — both are read directly off
-/// `cli` inside the `Some` arm rather than gating presence.
-fn mtn_provider(cli: &Cli) -> Result<Option<Arc<dyn SmsProvider>>> {
-    match (
-        &cli.mtn_client_id,
-        &cli.mtn_client_secret,
-        &cli.mtn_service_code,
-        cli.mtn_tps_ceiling,
-        cli.mtn_cost_per_segment_xaf,
-    ) {
-        (
-            Some(client_id),
-            Some(client_secret),
-            Some(service_code),
-            Some(tps_ceiling),
-            Some(cost),
-        ) => {
-            let config = sms_provider_mtn::MtnConfig {
-                client_id: client_id.clone(),
-                client_secret: client_secret.clone(),
-                service_code: service_code.clone(),
-                sender_id: cli.mtn_sender_id.clone(),
-                base_url: cli.mtn_base_url.clone(),
-                tps_ceiling,
-                cost_per_segment_xaf: cost,
-                supports_alphanumeric_sender: cli.mtn_supports_alphanumeric_sender,
-                // Same values `sms-provider-orange-cm::OrangeCmConfig::production`
-                // bakes in — no `MtnConfig` equivalent exists to default
-                // these from, and nothing about either timeout is
-                // provider-specific.
-                connect_timeout: std::time::Duration::from_secs(10),
-                request_timeout: std::time::Duration::from_secs(30),
-            };
-            Ok(Some(Arc::new(sms_provider_mtn::MtnProvider::new(config))))
-        }
-        (None, None, None, None, None) => Ok(None),
-        _ => bail!(
-            "--mtn-client-id, --mtn-client-secret, --mtn-service-code, --mtn-tps-ceiling and \
-             --mtn-cost-per-segment-xaf must all be set together, or none of them"
-        ),
+/// Build the [`sms_worker::ProviderRegistry`] this process holds
+/// credentials for, keyed by each adapter's own [`SmsProvider::key`] — #62:
+/// `dispatch::resolve_provider` looks a routed message's provider up by
+/// exactly this string, matching `Provider.key` in the database. A provider
+/// is in the registry when the YAML has a `providers` entry for it (and, for
+/// `aws_sms`, the entry's sending keys: an entry that only receives is the
+/// gateway's). Either, any or none may be configured; a fourth real adapter is
+/// a fourth `if let` here, not a redesign of this function's shape. The
+/// conversions to each adapter's config are `sms_config`'s, shared with the
+/// gateway, and the all-or-none checks the flags needed are the loader's.
+///
+/// # Errors
+///
+/// The AWS adapter's own range checks (region shape, time to live) on a
+/// configuration the loader accepted.
+fn build_provider_registry(providers: &sms_config::Providers) -> Result<ProviderRegistry> {
+    let mut registry = ProviderRegistry::new();
+    if let Some(orange) = &providers.orange_cm {
+        let provider: Arc<dyn SmsProvider> = Arc::new(
+            sms_provider_orange_cm::OrangeCmProvider::new(orange.to_provider_config()),
+        );
+        registry.insert(provider.key().to_owned(), provider);
     }
-}
-
-/// The AWS End User Messaging SMS provider, `"aws_sms"`. Same all-or-none
-/// shape as [`mtn_provider`], over the six values that have no safe
-/// default: region, both halves of the access key, the configuration set
-/// that carries receipts, and the two commercial terms. The origination
-/// identity, message type, alphanumeric flag, endpoint and time to live
-/// each have one.
-fn aws_sms_provider(cli: &Cli) -> Result<Option<Arc<dyn SmsProvider>>> {
-    match (
-        &cli.aws_sms_region,
-        &cli.aws_sms_access_key_id,
-        &cli.aws_sms_secret_access_key,
-        &cli.aws_sms_configuration_set,
-        cli.aws_sms_tps_ceiling,
-        cli.aws_sms_cost_per_segment_xaf,
-    ) {
-        (
-            Some(region),
-            Some(access_key_id),
-            Some(secret_access_key),
-            Some(configuration_set),
-            Some(tps_ceiling),
-            Some(cost),
-        ) => {
-            let provider =
-                sms_provider_aws_sms::AwsSmsProvider::sender(sms_provider_aws_sms::AwsSmsConfig {
-                    region: region.clone(),
-                    access_key_id: access_key_id.clone(),
-                    secret_access_key: secret_access_key.clone(),
-                    configuration_set: configuration_set.clone(),
-                    origination_identity: cli.aws_sms_origination_identity.clone(),
-                    message_type: cli.aws_sms_message_type,
-                    tps_ceiling,
-                    cost_per_segment_xaf: cost,
-                    supports_alphanumeric_sender: cli.aws_sms_supports_alphanumeric_sender,
-                    endpoint_url: cli.aws_sms_endpoint_url.clone(),
-                    time_to_live: cli
-                        .aws_sms_time_to_live_seconds
-                        .map(std::time::Duration::from_secs),
-                    connect_timeout: std::time::Duration::from_secs(10),
-                    request_timeout: std::time::Duration::from_secs(30),
-                })?;
-            Ok(Some(Arc::new(provider)))
-        }
-        (None, None, None, None, None, None) => Ok(None),
-        _ => bail!(
-            "--aws-sms-region, --aws-sms-access-key-id, --aws-sms-secret-access-key, \
-             --aws-sms-configuration-set, --aws-sms-tps-ceiling and \
-             --aws-sms-cost-per-segment-xaf must all be set together, or none of them"
-        ),
+    if let Some(mtn) = &providers.mtn_cm {
+        let provider: Arc<dyn SmsProvider> =
+            Arc::new(sms_provider_mtn::MtnProvider::new(mtn.to_provider_config()));
+        registry.insert(provider.key().to_owned(), provider);
     }
+    if let Some(sender) = providers
+        .aws_sms
+        .as_ref()
+        .and_then(|aws| aws.sender.as_ref())
+    {
+        let provider: Arc<dyn SmsProvider> = Arc::new(
+            sms_provider_aws_sms::AwsSmsProvider::sender(sender.to_provider_config())
+                .context("providers[code=aws_sms]")?,
+        );
+        registry.insert(provider.key().to_owned(), provider);
+    }
+    Ok(registry)
 }
 
 /// The sealer `hooks` delivers `sealed` endpoints with, built from
@@ -444,31 +177,6 @@ fn webhook_sealer(cli: &Cli, roles: &[Role]) -> Result<Option<sms_webhook::Seale
         .with_context(|| format!("the envelope signing key {}", path.display()))?;
     let sealer = sms_webhook::Sealer::new(signer).context("building the webhook sealer")?;
     Ok(Some(sealer))
-}
-
-/// Build the [`sms_worker::ProviderRegistry`] this process holds
-/// credentials for, keyed by each adapter's own [`SmsProvider::key`] — #62:
-/// `dispatch::resolve_provider` looks a routed message's provider up by
-/// exactly this string, matching `Provider.key` in the database. Empty
-/// when `dispatch` isn't among `--roles` (nothing in any other role ever
-/// reads this registry) — the startup check right after this call is what
-/// makes "dispatch requires real credentials" an actual guarantee, not
-/// just a hope. Two entries as of the MTN wiring (`"orange_cm"`,
-/// `"mtn_cm"`) — either, both, or neither may be configured; a third
-/// real adapter is a third `.insert(...)` here, not a redesign of this
-/// function's shape.
-fn build_provider_registry(cli: &Cli) -> Result<HashMap<String, Arc<dyn SmsProvider>>> {
-    let mut providers: HashMap<String, Arc<dyn SmsProvider>> = HashMap::new();
-    if let Some(orange) = orange_provider(cli)? {
-        providers.insert(orange.key().to_owned(), orange);
-    }
-    if let Some(mtn) = mtn_provider(cli)? {
-        providers.insert(mtn.key().to_owned(), mtn);
-    }
-    if let Some(aws) = aws_sms_provider(cli)? {
-        providers.insert(aws.key().to_owned(), aws);
-    }
-    Ok(providers)
 }
 
 /// `hostname:pid` — stable enough to recognise a given process across a
@@ -516,6 +224,40 @@ fn spawn_heartbeat(path: std::path::PathBuf, shutdown: CancellationToken) {
     });
 }
 
+/// Reads the YAML configuration (VSC-1) and builds the provider registry from
+/// it, before anything is connected to: a retired variable, an unset `${VAR}` or
+/// a provider with a key missing stops the process here, naming the YAML key.
+/// Pulled out of `main` for clippy's `too_many_lines`, the convention this
+/// binary and the gateway's `serve` share for a block that is self-contained.
+///
+/// # Errors
+///
+/// The configuration does not load, an adapter refuses its settings, or
+/// `dispatch` is selected and no provider is configured to submit through.
+fn load_configuration(cli: &Cli, roles: &[Role]) -> Result<(sms_config::Config, ProviderRegistry)> {
+    let config = cli
+        .config
+        .load(sms_config::Binary::Worker)
+        .context("loading the YAML configuration")?;
+    info!(
+        deployment = %config.deployment.name,
+        livemode = config.deployment.livemode,
+        profile = %cli.config.profile,
+        "configuration loaded"
+    );
+
+    let providers = build_provider_registry(&config.providers)?;
+    if roles.contains(&Role::Dispatch) && providers.is_empty() {
+        bail!(
+            "--roles includes dispatch, which needs at least one provider to submit anything: \
+             a `providers` entry with `code: orange_cm` or `code: mtn_cm`, or `code: aws_sms` \
+             with its sending keys (region, configuration_set, tps_ceiling, \
+             cost_per_segment_xaf, credentials) in config/application*.yml"
+        );
+    }
+    Ok((config, providers))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Must run before anything constructs an HTTP client — see
@@ -549,24 +291,18 @@ async fn main() -> Result<()> {
         )
         .init();
 
+    // VSC-1: before clap parses, so a flag that moved into the YAML is refused
+    // naming the key that replaced it, not with "unexpected argument".
+    sms_config::reject_retired_flags(std::env::args_os().skip(1))?;
+
     let cli = Cli::parse();
     let roles = parse_roles(&cli.roles)?;
-
-    let providers = build_provider_registry(&cli)?;
-    if roles.contains(&Role::Dispatch) && providers.is_empty() {
-        bail!(
-            "--roles includes dispatch, which needs at least one provider's credentials to \
-             submit anything: either --orange-client-id, --orange-client-secret and \
-             --orange-sender-number, or --mtn-client-id, --mtn-client-secret, \
-             --mtn-service-code, --mtn-tps-ceiling and --mtn-cost-per-segment-xaf, or the six \
-             --aws-sms-* flags (or their env vars)"
-        );
-    }
+    let (config, providers) = load_configuration(&cli, &roles)?;
 
     let webhook_sealer = webhook_sealer(&cli, &roles)?;
 
     let pool = cratestack::sqlx::postgres::PgPoolOptions::new()
-        .max_connections(cli.db_max_connections)
+        .max_connections(config.database.worker_max_connections)
         .connect(&cli.database_url)
         .await
         .context("connecting to Postgres")?;
@@ -810,54 +546,73 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::{Cli, build_provider_registry, parse_roles, webhook_sealer};
+    use clap::CommandFactory;
+    use sms_config::{AwsSender, AwsSms, MtnCm, OrangeCm, Providers, Secret};
     use sms_worker::Role;
 
-    /// Every field explicitly, not `Default` (there is none) — a minimal,
-    /// no-adapter-configured `Cli` a test can override individual fields
-    /// on via struct-update syntax.
+    /// Every field explicitly, not `Default` (there is none) — a minimal
+    /// `Cli` a test can override individual fields on via struct-update syntax.
     fn base_cli() -> Cli {
         Cli {
             roles: Vec::new(),
             database_url: String::new(),
             metrics_listen: String::new(),
-            db_max_connections: 10,
             worker_id: None,
             envelope_signing_key_file: None,
-            orange_client_id: None,
-            orange_client_secret: None,
-            orange_sender_number: None,
-            orange_base_url: "https://api.orange.com".to_owned(),
-            mtn_client_id: None,
-            mtn_client_secret: None,
-            mtn_service_code: None,
-            mtn_sender_id: None,
-            mtn_base_url: "https://api.mtn.com".to_owned(),
-            mtn_tps_ceiling: None,
-            mtn_cost_per_segment_xaf: None,
-            mtn_supports_alphanumeric_sender: false,
-            aws_sms_region: None,
-            aws_sms_access_key_id: None,
-            aws_sms_secret_access_key: None,
-            aws_sms_configuration_set: None,
-            aws_sms_tps_ceiling: None,
-            aws_sms_cost_per_segment_xaf: None,
-            aws_sms_origination_identity: None,
-            aws_sms_message_type: sms_provider_aws_sms::MessageType::Transactional,
-            aws_sms_supports_alphanumeric_sender: false,
-            aws_sms_endpoint_url: None,
-            aws_sms_time_to_live_seconds: None,
+            config: sms_config::ConfigArgs {
+                config: None,
+                profile: "dev".to_owned(),
+            },
         }
     }
 
-    fn aws_cli() -> Cli {
-        Cli {
-            aws_sms_region: Some("eu-west-1".to_owned()),
-            aws_sms_access_key_id: Some("AKIDEXAMPLE".to_owned()),
-            aws_sms_secret_access_key: Some("secret".to_owned()),
-            aws_sms_configuration_set: Some("vsms-events".to_owned()),
-            aws_sms_tps_ceiling: Some(20.0),
-            aws_sms_cost_per_segment_xaf: Some(rust_decimal::Decimal::new(30, 0)),
-            ..base_cli()
+    fn secret(text: &str) -> Secret {
+        Secret::new(text)
+    }
+
+    fn orange() -> OrangeCm {
+        OrangeCm {
+            client_id: "id".to_owned(),
+            client_secret: secret("secret"),
+            sender_number: "+237677000000".to_owned(),
+            base_url: sms_config::ORANGE_DEFAULT_BASE_URL.to_owned(),
+        }
+    }
+
+    fn mtn() -> MtnCm {
+        MtnCm {
+            client_id: "client-id".to_owned(),
+            client_secret: secret("client-secret"),
+            service_code: "131".to_owned(),
+            sender_id: Some("SENDER".to_owned()),
+            base_url: sms_config::MTN_DEFAULT_BASE_URL.to_owned(),
+            tps_ceiling: 20.0,
+            cost_per_segment_xaf: rust_decimal::Decimal::new(15, 0),
+            supports_alphanumeric_sender: false,
+        }
+    }
+
+    fn aws_sender() -> AwsSender {
+        AwsSender {
+            region: "eu-west-1".to_owned(),
+            access_key_id: "AKIDEXAMPLE".to_owned(),
+            secret_access_key: secret("secret"),
+            configuration_set: "vsms-events".to_owned(),
+            origination_identity: None,
+            message_type: sms_provider_aws_sms::MessageType::Transactional,
+            tps_ceiling: 20.0,
+            cost_per_segment_xaf: rust_decimal::Decimal::new(30, 0),
+            supports_alphanumeric_sender: false,
+            endpoint_url: None,
+            time_to_live: None,
+        }
+    }
+
+    fn aws(sender: Option<AwsSender>) -> AwsSms {
+        AwsSms {
+            sender,
+            events_topic_arn: None,
+            fake_sns_cert_base: None,
         }
     }
 
@@ -924,59 +679,61 @@ mod tests {
     /// The go-live shape: AWS alone, no Orange or MTN contract yet.
     #[test]
     fn aws_sms_alone_registers_under_its_own_key() {
-        let providers = build_provider_registry(&aws_cli()).unwrap();
-        assert_eq!(providers.len(), 1);
-        assert!(providers.contains_key("aws_sms"));
+        let providers = Providers {
+            aws_sms: Some(aws(Some(aws_sender()))),
+            ..Providers::default()
+        };
+        let registry = build_provider_registry(&providers).unwrap();
+        assert_eq!(registry.len(), 1);
+        assert!(registry.contains_key("aws_sms"));
     }
 
     /// The later shape the routing weights split between: every adapter in
     /// one process, each under its own key.
     #[test]
     fn aws_sms_registers_alongside_orange_and_mtn() {
-        let cli = Cli {
-            orange_client_id: Some("id".to_owned()),
-            orange_client_secret: Some("secret".to_owned()),
-            orange_sender_number: Some("+237677000000".to_owned()),
-            mtn_client_id: Some("client-id".to_owned()),
-            mtn_client_secret: Some("client-secret".to_owned()),
-            mtn_service_code: Some("131".to_owned()),
-            mtn_tps_ceiling: Some(20.0),
-            mtn_cost_per_segment_xaf: Some(rust_decimal::Decimal::new(15, 0)),
-            ..aws_cli()
+        let providers = Providers {
+            orange_cm: Some(orange()),
+            mtn_cm: Some(mtn()),
+            aws_sms: Some(aws(Some(aws_sender()))),
         };
-        let providers = build_provider_registry(&cli).unwrap();
-        let mut keys: Vec<_> = providers.keys().map(String::as_str).collect();
+        let registry = build_provider_registry(&providers).unwrap();
+        let mut keys: Vec<_> = registry.keys().map(String::as_str).collect();
         keys.sort_unstable();
         assert_eq!(keys, ["aws_sms", "mtn_cm", "orange_cm"]);
     }
 
+    /// An `aws_sms` entry that only receives is the gateway's: the worker has
+    /// nothing to send through and registers nothing for it.
     #[test]
-    fn a_partial_aws_sms_configuration_is_an_error() {
-        let cli = Cli {
-            aws_sms_configuration_set: None,
-            ..aws_cli()
+    fn an_aws_entry_that_only_receives_registers_no_sender() {
+        let providers = Providers {
+            aws_sms: Some(aws(None)),
+            ..Providers::default()
         };
-        let error = build_provider_registry(&cli).map(|_| ()).unwrap_err();
-        assert!(
-            error.to_string().contains("--aws-sms-configuration-set"),
-            "{error}"
-        );
+        assert!(build_provider_registry(&providers).unwrap().is_empty());
     }
 
     #[test]
     fn an_aws_sms_configuration_that_could_never_send_is_an_error() {
-        let cli = Cli {
-            aws_sms_region: Some("Not A Region".to_owned()),
-            ..aws_cli()
+        let providers = Providers {
+            aws_sms: Some(aws(Some(AwsSender {
+                region: "Not A Region".to_owned(),
+                ..aws_sender()
+            }))),
+            ..Providers::default()
         };
-        assert!(build_provider_registry(&cli).is_err());
+        assert!(build_provider_registry(&providers).is_err());
     }
 
     #[test]
     fn the_aws_sms_time_to_live_is_optional_and_range_checked() {
-        let with = |seconds| Cli {
-            aws_sms_time_to_live_seconds: Some(seconds),
-            ..aws_cli()
+        let with = |seconds| Providers {
+            aws_sms: Some(aws(Some(AwsSender {
+                time_to_live: Some(std::time::Duration::from_secs(seconds)),
+                ..aws_sender()
+            }))),
+            ..Providers::default()
         };
         assert!(build_provider_registry(&with(900)).is_ok());
         assert!(build_provider_registry(&with(4)).is_err());
@@ -984,89 +741,72 @@ mod tests {
     }
 
     #[test]
-    fn no_credentials_configured_is_an_empty_registry_not_an_error() {
-        let providers = build_provider_registry(&base_cli()).unwrap();
-        assert_eq!(providers.len(), 0);
+    fn no_provider_configured_is_an_empty_registry_not_an_error() {
+        let registry = build_provider_registry(&Providers::default()).unwrap();
+        assert_eq!(registry.len(), 0);
     }
 
     #[test]
     fn orange_alone_registers_under_its_own_key() {
-        let cli = Cli {
-            orange_client_id: Some("id".to_owned()),
-            orange_client_secret: Some("secret".to_owned()),
-            orange_sender_number: Some("+237677000000".to_owned()),
-            ..base_cli()
+        let providers = Providers {
+            orange_cm: Some(orange()),
+            ..Providers::default()
         };
-        let providers = build_provider_registry(&cli).unwrap();
-        assert_eq!(providers.len(), 1);
-        assert!(providers.contains_key("orange_cm"));
+        let registry = build_provider_registry(&providers).unwrap();
+        assert_eq!(registry.len(), 1);
+        assert!(registry.contains_key("orange_cm"));
     }
 
     #[test]
     fn mtn_alone_registers_under_its_own_key() {
-        let cli = Cli {
-            mtn_client_id: Some("client-id".to_owned()),
-            mtn_client_secret: Some("client-secret".to_owned()),
-            mtn_service_code: Some("131".to_owned()),
-            mtn_tps_ceiling: Some(20.0),
-            mtn_cost_per_segment_xaf: Some(rust_decimal::Decimal::new(15, 0)),
-            ..base_cli()
+        let providers = Providers {
+            mtn_cm: Some(mtn()),
+            ..Providers::default()
         };
-        let providers = build_provider_registry(&cli).unwrap();
-        assert_eq!(providers.len(), 1);
-        assert!(providers.contains_key("mtn_cm"));
+        let registry = build_provider_registry(&providers).unwrap();
+        assert_eq!(registry.len(), 1);
+        assert!(registry.contains_key("mtn_cm"));
     }
 
-    /// The point of this whole PR's wiring: both adapters can be
-    /// configured in the same process and both register, under distinct
-    /// keys — proven directly against [`build_provider_registry`], not
-    /// just asserted from reading `main`'s own two `if let` blocks.
+    /// Both adapters can be configured in the same process and both register,
+    /// under distinct keys — proven directly against [`build_provider_registry`],
+    /// not just asserted from reading its own `if let` blocks.
     #[test]
     fn both_orange_and_mtn_register_together_under_distinct_keys() {
-        let cli = Cli {
-            orange_client_id: Some("id".to_owned()),
-            orange_client_secret: Some("secret".to_owned()),
-            orange_sender_number: Some("+237677000000".to_owned()),
-            mtn_client_id: Some("client-id".to_owned()),
-            mtn_client_secret: Some("client-secret".to_owned()),
-            mtn_service_code: Some("131".to_owned()),
-            mtn_sender_id: Some("SENDER".to_owned()),
-            mtn_tps_ceiling: Some(20.0),
-            mtn_cost_per_segment_xaf: Some(rust_decimal::Decimal::new(15, 0)),
-            ..base_cli()
+        let providers = Providers {
+            orange_cm: Some(orange()),
+            mtn_cm: Some(mtn()),
+            ..Providers::default()
         };
-        let providers = build_provider_registry(&cli).unwrap();
-        assert_eq!(providers.len(), 2);
-        assert!(providers.contains_key("orange_cm"));
-        assert!(providers.contains_key("mtn_cm"));
+        let registry = build_provider_registry(&providers).unwrap();
+        assert_eq!(registry.len(), 2);
+        assert!(registry.contains_key("orange_cm"));
+        assert!(registry.contains_key("mtn_cm"));
     }
 
+    /// The flags VSC-1 moved into the YAML are not flags any more, and none is
+    /// bound to its old variable: clap would otherwise read the variable the
+    /// retired-variable check exists to refuse. Re-adding any one of them fails
+    /// here.
     #[test]
-    fn a_partial_orange_credential_set_is_rejected() {
-        let cli = Cli {
-            orange_client_id: Some("id".to_owned()),
-            ..base_cli()
-        };
-        // `HashMap<String, Arc<dyn SmsProvider>>` (the `Ok` type) isn't
-        // `Debug`, so `.unwrap_err()` doesn't compile here — `.err()`
-        // sidesteps that: `Result::err` needs no bound on `T` at all.
-        let error = build_provider_registry(&cli)
-            .err()
-            .expect("a partial Orange credential set must be rejected, not silently ignored");
-        assert!(error.to_string().contains("orange-client-id"), "{error}");
-    }
-
-    #[test]
-    fn a_partial_mtn_credential_set_is_rejected() {
-        let cli = Cli {
-            mtn_client_id: Some("client-id".to_owned()),
-            mtn_tps_ceiling: Some(20.0),
-            ..base_cli()
-        };
-        let error = build_provider_registry(&cli)
-            .err()
-            .expect("a partial MTN credential set must be rejected, not silently ignored");
-        assert!(error.to_string().contains("mtn-client-id"), "{error}");
+    fn the_worker_still_declares_no_retired_flag_or_variable() {
+        let command = Cli::command();
+        for arg in command.get_arguments() {
+            if let Some(long) = arg.get_long() {
+                assert!(
+                    !sms_config::RETIRED
+                        .iter()
+                        .any(|retired| retired.flag == format!("--{long}")),
+                    "--{long} is retired (sms_config::RETIRED) and is declared again"
+                );
+            }
+            if let Some(env) = arg.get_env().and_then(|env| env.to_str()) {
+                assert!(
+                    !sms_config::RETIRED.iter().any(|retired| retired.env == env),
+                    "{env} is retired (sms_config::RETIRED) and is bound to an argument again"
+                );
+            }
+        }
     }
 
     #[test]

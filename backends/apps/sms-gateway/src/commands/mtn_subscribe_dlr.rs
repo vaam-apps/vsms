@@ -3,34 +3,26 @@
 //! this exists as an operator action rather than something `serve` does
 //! on startup.
 
-use anyhow::{Context, Result};
-use sms_provider_mtn::{MtnConfig, MtnProvider};
+use anyhow::{Context, Result, bail};
+use sms_provider_mtn::MtnProvider;
 
 /// `Command::MtnSubscribeDlr`'s flags. The enum variant carries the
 /// "why"; this struct carries only the flags themselves, matching
 /// `RecordRouteValidationArgs`' own split.
 ///
-/// Deliberately takes MTN's credentials as its own flags rather than
-/// reading `serve`'s: this command is run once, by hand, against an
-/// account that may not be the one a running gateway holds — and it
-/// needs no database at all, which is why there is no `--database-url`
-/// here unlike every other subcommand in this module.
+/// MTN's credentials are the `providers[code=mtn_cm]` entry of the YAML
+/// configuration (VSC-1), the same entry `serve` and `sms-worker` read, so there
+/// is one place they are written and this command can no longer be run against
+/// a different account than the gateway holds by a typo. It still needs no
+/// database, which is why there is no `--database-url` here unlike every other
+/// subcommand in this module. It does need the whole document to load: every
+/// `${VAR}` it writes must be set, the hash pepper's included, so run it where
+/// the gateway's environment is (`kubectl exec`, `docker compose exec`).
 #[derive(Debug, clap::Args)]
 pub(crate) struct MtnSubscribeDlrArgs {
-    #[arg(long, env = "MTN_CLIENT_ID")]
-    pub(crate) mtn_client_id: String,
-
-    #[arg(long, env = "MTN_CLIENT_SECRET", hide_env_values = true)]
-    pub(crate) mtn_client_secret: String,
-
-    /// The approved short code this subscription is registered against.
-    /// MADAPI scopes a subscription to a `serviceCode`, so a deployment
-    /// sending under two short codes needs this run once per code.
-    #[arg(long, env = "MTN_SERVICE_CODE")]
-    pub(crate) mtn_service_code: String,
-
-    #[arg(long, env = "MTN_BASE_URL", default_value = "https://api.mtn.com")]
-    pub(crate) mtn_base_url: String,
+    /// The YAML deployment configuration, which carries MTN's credentials.
+    #[command(flatten)]
+    pub(crate) config: sms_config::ConfigArgs,
 
     /// The publicly reachable HTTPS URL MTN should POST delivery
     /// receipts to — this deployment's own `POST /dlr/{providerKey}`,
@@ -56,34 +48,35 @@ pub(crate) struct MtnSubscribeDlrArgs {
 ///
 /// # Errors
 ///
-/// The token exchange fails, MADAPI refuses the subscription, or the
-/// response carries no subscription id — every one of which
+/// The configuration does not load or has no `mtn_cm` entry, the token exchange
+/// fails, MADAPI refuses the subscription, or the response carries no
+/// subscription id — every one of which
 /// [`MtnProvider::subscribe_delivery_reports`] already classifies; this
 /// function only adds context.
 pub(crate) async fn mtn_subscribe_dlr_command(args: MtnSubscribeDlrArgs) -> Result<()> {
     let MtnSubscribeDlrArgs {
-        mtn_client_id,
-        mtn_client_secret,
-        mtn_service_code,
-        mtn_base_url,
+        config,
         delivery_report_url,
         target_system,
     } = args;
 
+    let config = config
+        .load(sms_config::Binary::Gateway)
+        .context("loading the YAML configuration")?;
+    let Some(mtn) = config.providers.mtn_cm else {
+        bail!(
+            "the configuration has no `providers` entry with `code: mtn_cm`, so there are no \
+             MTN credentials to register a delivery-report URL with"
+        );
+    };
+
     // Every commercial term (`tps_ceiling`, `cost_per_segment_xaf`,
     // `supports_alphanumeric_sender`) is irrelevant to a subscription
-    // call — it neither sends a message nor prices one — so this builds
-    // a config with placeholder values for them rather than growing three
-    // more flags an operator would have to supply for no reason. The
-    // values are never read on this path: `subscribe_delivery_reports`
+    // call — it neither sends a message nor prices one — so the config below
+    // carries placeholder values for them (`MtnConfig::for_subscription_only`).
+    // The values are never read on this path: `subscribe_delivery_reports`
     // touches `client_id`/`client_secret`/`service_code`/`base_url` only.
-    let config = MtnConfig::for_subscription_only(
-        mtn_client_id,
-        mtn_client_secret,
-        mtn_service_code,
-        mtn_base_url,
-    );
-    let provider = MtnProvider::new(config);
+    let provider = MtnProvider::new(mtn.to_subscription_config());
 
     let subscription_id = provider
         .subscribe_delivery_reports(&delivery_report_url, &target_system)

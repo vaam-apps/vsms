@@ -1,0 +1,2 @@
+providers:
+  - code: aws_sms

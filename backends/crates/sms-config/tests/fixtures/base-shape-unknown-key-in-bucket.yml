@@ -1,0 +1,3 @@
+api:
+  rate_limit:
+    brust: 5

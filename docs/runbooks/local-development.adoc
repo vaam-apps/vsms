@@ -119,11 +119,11 @@ To see the sealed-webhook check genuinely fail closed rather than trust it: run 
 
 `sms-fake-orange` (link:../../backends/apps/sms-fake-orange[`backends/apps/sms-fake-orange`]) impersonates Orange Cameroon's token and submit endpoints, and independently POSTs delivery receipts back to the gateway's `+POST /dlr/{providerKey}+` route. It is a *participant, not a response stub* -- "the SMS never arrived" is the absence of a later callback, which a mock that only answers the submit call can never model.
 
-Nothing in the gateway or the worker knows it exists. The only difference from production is `ORANGE_CM_BASE_URL`. Every other code path -- routing, submission, DLR ingestion, the state machine, webhooks -- is the one that runs in production.
+Nothing in the gateway or the worker knows it exists. The only difference from production is the `orange_cm` entry's `host.url` in the `dev` profile (`config/application-dev.yml`). Every other code path -- routing, submission, DLR ingestion, the state machine, webhooks -- is the one that runs in production.
 
 *Never point a deployment at it.* It logs a `WARN` saying so on every start, and no production compose file (`deploy/docker-compose.yml`) references it.
 
-`sms-fake-aws` (link:../../backends/apps/sms-fake-aws[`backends/apps/sms-fake-aws`]) does the same for AWS End User Messaging SMS: it checks the worker's signed `SendTextMessage` calls and posts SNS receipts it signs itself to `/dlr/aws_sms`. A second provider and catch-all route (`seed-dispatch-aws`) at Orange's priority and weight make the demo split traffic between the two. The one difference from production on this side is in the gateway: this stack builds it with the `fake-aws` feature and sets `AWS_SMS_FAKE_SNS_CERT_BASE`, so it fetches the signing certificate from the fake. Published images are built without that feature. xref:aws-sms.adoc#without-an-aws-account[`aws-sms.adoc`] has the fault modes.
+`sms-fake-aws` (link:../../backends/apps/sms-fake-aws[`backends/apps/sms-fake-aws`]) does the same for AWS End User Messaging SMS: it checks the worker's signed `SendTextMessage` calls and posts SNS receipts it signs itself to `/dlr/aws_sms`. A second provider and catch-all route (`seed-dispatch-aws`) at Orange's priority and weight make the demo split traffic between the two. The one difference from production on this side is in the gateway: this stack builds it with the `fake-aws` feature and the `dev` profile sets `providers[code=aws_sms].settings.fake_sns_cert_base`, so it fetches the signing certificate from the fake. Published images are built without that feature. xref:aws-sms.adoc#without-an-aws-account[`aws-sms.adoc`] has the fault modes.
 
 == Where everything actually is
 
@@ -232,7 +232,7 @@ just ci           # the ENTIRE CI gate -- needs only docker/compose/just; see do
 | The worker isn't running, or isn't running the `dispatch` role. `docker compose -f compose.dev.yaml logs sms-worker`.
 
 | Messages reach `routed` and stop
-| `sms-fake-orange` isn't reachable at `ORANGE_CM_BASE_URL`. `docker compose -f compose.dev.yaml logs sms-fake-orange`.
+| `sms-fake-orange` isn't reachable at the `orange_cm` entry's `host.url` in `config/application-dev.yml`. `docker compose -f compose.dev.yaml logs sms-fake-orange`.
 
 | Messages reach `submitted` and stop
 | The DLR never arrived. There is no `notifyURL` knob any more -- Orange's own docs register the DLR endpoint out of band, so ``sms-fake-orange`` is told where to post by its own `--dlr-endpoint` (`FAKE_ORANGE_DLR_ENDPOINT`) instead. Check it points at the internal `http://sms-gateway:8080/dlr/orange_cm` address in `compose.dev.yaml`, not a host-published port, then `docker compose -f compose.dev.yaml logs sms-fake-orange` to confirm it actually tried.
@@ -244,5 +244,8 @@ just ci           # the ENTIRE CI gate -- needs only docker/compose/just; see do
 | The gateway has no `ConsoleKey` for this browser's key yet: pair it with `pair-console-key` (above). A browser clock more than five minutes off the stack's is refused the same way; the page says so past two minutes.
 
 | A hash-related failure after mixing runs
-| `SMS_HASH_PEPPER` differs between processes. Every service in `compose.dev.yaml` is pinned to the same hardcoded demo value in that file -- nothing detects a mismatch if you've overridden one service's environment by hand and not another's.
+| `SMS_HASH_PEPPER` differs between the processes that compute a hash. `sms-gateway` is the one service in `compose.dev.yaml` that carries it (`sms-worker` does not load `security.*` and is given none), pinned to a hardcoded demo value in that file -- nothing detects a mismatch if you've run `send_test_message` or another gateway under a different one.
+
+| `sms-gateway` or `sms-worker` exits at start naming a variable, a flag or a YAML key
+| The YAML configuration (`config/application.yml` plus the `dev` profile, `docs/architecture.md` section 9.4) refused something before the process touched the database. A variable or flag from an earlier release is *refused, not ignored*: the message names the key that replaced it (`ORANGE_CM_CLIENT_ID` is now `providers[code=orange_cm].credentials.client_id`). Unset the variable in your shell, or move the value into `config/application-dev.yml`.
 |===

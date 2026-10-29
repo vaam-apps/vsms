@@ -1,0 +1,57 @@
+# The `prod` profile: `deploy/docker-compose.yml`, one VM, real traffic.
+#
+# `livemode: true` turns on the rules a real deployment needs: every URL below
+# must be https and must not be a stub, and every secret must be a `${VAR}`
+# placeholder, never a literal. The variables come from `deploy/.env`
+# (deploy/.env.example lists them). Kubernetes does not use this file: the chart
+# mounts its own overlay over it (`config.overlay`, deploy/charts/vsms).
+#
+# Only what differs from application.yml. `providers` replaces the base's list:
+# keep the providers you run, delete the rest, and uncomment the ones you add.
+# `deployment.name` and `public_base_url` are yours to set.
+
+deployment:
+  name: vsms
+  livemode: true
+  public_base_url: https://${SMS_GATEWAY_DOMAIN}
+
+providers:
+  # Orange Cameroon. Delete this entry for an MTN-only or AWS-only deployment.
+  - code: orange_cm
+    credentials:
+      client_id: ${ORANGE_CM_CLIENT_ID}
+      client_secret: ${ORANGE_CM_CLIENT_SECRET}
+    settings:
+      # E.164, with the plus.
+      sender_number: ${ORANGE_CM_SENDER_NUMBER}
+
+  # MTN Cameroon through MADAPI. `tps_ceiling` and `cost_per_segment_xaf` are
+  # commercial terms of your contract and have no default on purpose. After
+  # enabling this, register the delivery-report URL once with
+  # `sms-gateway mtn-subscribe-dlr --delivery-report-url https://<host>/dlr/mtn_cm`.
+  #
+  # - code: mtn_cm
+  #   credentials:
+  #     client_id: ${MTN_CLIENT_ID}
+  #     client_secret: ${MTN_CLIENT_SECRET}
+  #   settings:
+  #     service_code: ${MTN_SERVICE_CODE}
+  #     tps_ceiling: ${MTN_TPS_CEILING}
+  #     cost_per_segment_xaf: ${MTN_COST_PER_SEGMENT_XAF}
+  #     # sender_id: ${MTN_SENDER_ID}
+  #     # supports_alphanumeric_sender: false
+
+  # AWS End User Messaging SMS. Two halves: the worker sends with the first six
+  # values, the gateway only needs `events_topic_arn` to accept receipts.
+  #
+  # - code: aws_sms
+  #   credentials:
+  #     access_key_id: ${AWS_SMS_ACCESS_KEY_ID}
+  #     secret_access_key: ${AWS_SMS_SECRET_ACCESS_KEY}
+  #   settings:
+  #     region: eu-west-1
+  #     configuration_set: ${AWS_SMS_CONFIGURATION_SET}
+  #     tps_ceiling: ${AWS_SMS_TPS_CEILING}
+  #     cost_per_segment_xaf: ${AWS_SMS_COST_PER_SEGMENT_XAF}
+  #     events_topic_arn: ${AWS_SMS_EVENTS_TOPIC_ARN}
+  #     # time_to_live_seconds: 900   # match the shortest validity routed here

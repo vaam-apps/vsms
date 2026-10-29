@@ -89,6 +89,7 @@ use sms_api::schema::{
     self, AttemptState, Cratestack, CreateWebhookAttemptInput, CreateWebhookEndpointInput,
     webhook_attempt,
 };
+use sms_test_support::config::{self, TestConfig};
 use sms_test_support::webhook_receiver::WebhookReceiver;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -333,9 +334,14 @@ fn spawn_hooks_worker(
     signing_key: &std::path::Path,
 ) -> KillOnDrop {
     let bin = env!("CARGO_BIN_EXE_sms-worker");
+    let config = TestConfig::write(
+        &format!("hooks-two-{worker_id}"),
+        &config::no_providers_overlay(),
+    );
     let child = Command::new(bin)
         .args(["--roles", "hooks"])
         .args(["--database-url", database_url])
+        .args(config.args())
         .args(["--worker-id", worker_id])
         .args(["--metrics-listen", "127.0.0.1:0"])
         .arg("--envelope-signing-key-file")

@@ -409,18 +409,15 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://vsms:vsms-dev-only@postgres:5432/vsms
-      # No real Orange account exists for this stack — every submit goes
-      # to sms-fake-orange instead.
-      ORANGE_CM_CLIENT_ID: placeholder
-      ORANGE_CM_CLIENT_SECRET: placeholder
-      ORANGE_CM_SENDER_NUMBER: '+2370000'
-      ORANGE_CM_BASE_URL: http://sms-fake-orange:8090
-      # AWS receipts come from sms-fake-aws, signed with a key it made at
-      # start-up. The topic is the fake's default; the certificate base is
-      # the `fake-aws`-build-only flag that fetches the signing certificate
-      # from the fake instead of from AWS. Every other check still applies.
-      AWS_SMS_EVENTS_TOPIC_ARN: arn:aws:sns:eu-west-1:000000000000:vsms-sms-events
-      AWS_SMS_FAKE_SNS_CERT_BASE: http://sms-fake-aws:8095/
+      # VSC-1: the providers are the `dev` profile of the YAML configuration
+      # (`config/application-dev.yml`, baked into the image): the fake Orange,
+      # which every submit goes to because no real account exists for this
+      # stack, and the fake AWS - the topic the fake publishes to, and the
+      # `fake_sns_cert_base` that fetches its receipt-signing certificate from
+      # the fake instead of from AWS (a `fake-aws`-build-only key; every other
+      # check on a receipt still applies).
+      SMS_PROFILE: dev
+      # Read by the base file as `${SMS_HASH_PEPPER}` (`security.hash_pepper`).
       SMS_HASH_PEPPER: vsms-dev-hash-pepper-DO-NOT-USE-IN-PRODUCTION-1234567890
       # VS-3: every request is a COSE_Sign1 envelope and every response is
       # signed back, so the gateway will not boot without its two Ed25519
@@ -475,10 +472,12 @@ services:
       # is a function of what's actually in the database, not of a
       # profile flag threaded into `SMS_WORKER_ROLES` itself.
       SMS_WORKER_ROLES: dispatch,scheduler,jobs,drain,hooks
-      ORANGE_CM_CLIENT_ID: placeholder
-      ORANGE_CM_CLIENT_SECRET: placeholder
-      ORANGE_CM_SENDER_NUMBER: '+2370000'
-      ORANGE_CM_BASE_URL: http://sms-fake-orange:8090
+      # The same `dev` profile as the gateway's: the fake Orange, and the fake
+      # AWS's public demo account (`sms_fake_aws::DEFAULT_*`, accepted by
+      # nothing but the fake).
+      SMS_PROFILE: dev
+      # No SMS_HASH_PEPPER: the worker does not load `security.*` and is not
+      # given the secret.
       # VS-8: a sealed webhook delivery is a request signed with the gateway's
       # own envelope signing key, so `hooks` needs the CURRENT key file (never
       # the `next` one, which signs nothing) to deliver a `sealed` endpoint (an
@@ -486,16 +485,6 @@ services:
       # The very file the gateway signs its answers with, so a receiver pins
       # one pair of public keys (`dev-keys/server-keys.txt`) for both.
       SMS_ENVELOPE_SIGNING_KEY_FILE: /run/envelope/current.pem
-      # sms-fake-aws's default demo account (`sms_fake_aws::DEFAULT_*`):
-      # public, fixed, accepted by nothing but the fake.
-      AWS_SMS_REGION: eu-west-1
-      AWS_SMS_ACCESS_KEY_ID: FAKE-AWS-SMS-DEMO-KEY
-      AWS_SMS_SECRET_ACCESS_KEY: fake-aws-secret-access-key-not-a-real-one
-      AWS_SMS_CONFIGURATION_SET: vsms-fake
-      AWS_SMS_TPS_CEILING: '10'
-      AWS_SMS_COST_PER_SEGMENT_XAF: '30'
-      AWS_SMS_ENDPOINT_URL: http://sms-fake-aws:8095/
-      AWS_SMS_TIME_TO_LIVE_SECONDS: '900'
     volumes:
       - ./dev-keys/envelope-current.pem:/run/envelope/current.pem:ro
     depends_on:

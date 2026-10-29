@@ -90,8 +90,8 @@ schema, should never happen in practice; the fallback exists for
 defensive correctness, not because this crate has observed it being
 needed.
 
-**`--mtn-sender-id`/[`MtnConfig::sender_id`] is deliberately *not* part
-of the all-or-none required-credential group any more.** The Swagger
+**`providers[code=mtn_cm].settings.sender_id`/[`MtnConfig::sender_id`] is
+deliberately *not* part of the required group any more.** The Swagger
 marks `senderAddress` optional, and unlike `serviceCode` there is a
 fully valid MADAPI submission with no `senderAddress` at all (MTN then
 uses the `serviceCode` identity for the message) — requiring an operator
@@ -188,3 +188,5 @@ simplifying decision its own doc names (`callbackUrl` and
 `deliveryReportUrl` set to the same value, since this deployment has no
 Mobile-Originating message handling to route a distinct `callbackUrl`
 into).
+
+<!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->

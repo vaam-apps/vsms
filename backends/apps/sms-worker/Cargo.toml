@@ -26,13 +26,11 @@ sms-provider-orange-cm.workspace = true
 sms-provider-mtn.workspace = true
 sms-provider-aws-sms.workspace = true
 sms-api.workspace = true
+# VSC-1: the YAML configuration both long-running binaries read; the provider
+# registry is built from its `Providers`.
+sms-config.workspace = true
 # VS-8: `webhook_sealer` builds the `Sealer` the `hooks` role delivers with.
 sms-webhook.workspace = true
-# mtn_provider's --mtn-cost-per-segment-xaf flag — money, never a float
-# (this repo's own standing rule; see `MtnConfig::cost_per_segment_xaf`'s
-# own doc).
-rust_decimal.workspace = true
-
 anyhow.workspace = true
 async-trait.workspace = true
 # #70/#71: this binary's own `GET /metrics` listener — see
@@ -53,6 +51,9 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
+# main.rs's tests build a `Providers` by hand, and a price is money, never a
+# float (see `MtnConfig::cost_per_segment_xaf`'s own doc).
+rust_decimal.workspace = true
 # kill9_reclaim_live.rs's own real Postgres timestamps and a delayed
 # wiremock-backed Orange stand-in for the process it spawns and kills.
 chrono.workspace = true

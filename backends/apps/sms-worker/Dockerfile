@@ -58,6 +58,17 @@ FROM gcr.io/distroless/static-debian13:nonroot AS runtime
 
 COPY --from=builder /tmp/sms-worker /usr/local/bin/sms-worker
 
+# VSC-1: the YAML deployment configuration (config/application.yml and its
+# profile overlays) is baked into the image, and SMS_CONFIG names the base file.
+# The profile (SMS_PROFILE) is chosen by whoever runs the image, never baked:
+# the default is `dev`, which points at local fakes and is never livemode.
+# Nothing in these files is a secret - secrets are `${VAR}` placeholders
+# (`cargo xtask config-literal-secrets`), delivered through the environment - so
+# a layer holding them holds no credential. A deployment replaces one overlay by
+# mounting a file over /config/application-<profile>.yml.
+COPY --from=builder /app/config /config
+ENV SMS_CONFIG=/config/application.yml
+
 # This binary has a `/metrics` listener now (#70/#71, main.rs's own module
 # doc) but still no HTTP route an orchestrator's own liveness probe could
 # usefully hit — `/metrics` answers a different question (what the counters

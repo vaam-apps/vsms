@@ -1,0 +1,3 @@
+api:
+  source_rate_limit:
+    burst: 0

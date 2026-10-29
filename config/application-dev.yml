@@ -1,0 +1,37 @@
+# The `dev` profile: `compose.dev.yaml`, built from source, against the two
+# local fakes. It is also the default profile (SMS_PROFILE unset), so a process
+# that forgets to name one can only ever reach a fake and is never livemode.
+#
+# Only what differs from application.yml. `providers` replaces the base's list.
+
+deployment:
+  name: vsms-dev
+
+providers:
+  # sms-fake-orange accepts any credentials by default.
+  - code: orange_cm
+    host:
+      url: http://sms-fake-orange:8090
+    credentials:
+      client_id: placeholder
+      client_secret: placeholder
+    settings:
+      sender_number: "+2370000"
+  # sms-fake-aws, both halves: the worker sends to it, and the gateway trusts
+  # the certificates it serves to verify the receipts it signs
+  # (`fake_sns_cert_base` exists in a `fake-aws` gateway build only; a release
+  # gateway refuses it).
+  - code: aws_sms
+    host:
+      url: http://sms-fake-aws:8095/
+    credentials:
+      access_key_id: FAKE-AWS-SMS-DEMO-KEY
+      secret_access_key: fake-aws-secret-access-key-not-a-real-one
+    settings:
+      region: eu-west-1
+      configuration_set: vsms-fake
+      tps_ceiling: 10
+      cost_per_segment_xaf: "30"
+      time_to_live_seconds: 900
+      events_topic_arn: arn:aws:sns:eu-west-1:000000000000:vsms-sms-events
+      fake_sns_cert_base: http://sms-fake-aws:8095/

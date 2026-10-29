@@ -92,6 +92,9 @@ jobs:
             rust: &rust
               - 'backends/**'
               - 'schemas/**'
+              # `sms-config`'s tests load every committed profile and hold the
+              # base file to the old flag defaults (VSC-1).
+              - 'config/**'
               - '.xtask/**'
               - 'sdks/rust/**'
               - 'examples/rust/**'
@@ -173,6 +176,8 @@ jobs:
             # only image-related content is the call into images.yml).
             images:
               - 'backends/**'
+              # Every image bakes `config/` at /config (VSC-1).
+              - 'config/**'
               - 'frontends/**'
               - 'sdks/**'
               - 'schemas/**'
@@ -847,6 +852,27 @@ jobs:
       # introduced by adding an argument, in any crate, so it needs a
       # workspace-wide check and not only the one binary's own test.
       - run: cargo xtask secret-env-args
+
+      # VSC-1: a livemode profile under config/ must write every secret as a
+      # `${VAR}` placeholder. `sms-config` refuses a literal at boot, against
+      # one deployment's merged files; this refuses it in the pull request that
+      # commits it, with no YAML parser and no build of the workspace.
+      - run: cargo xtask config-literal-secrets
+
+      # VSC-1: the Helm chart is rendered, not read. A ConfigMap the chart
+      # renders from one template and a volume it renders from another derive
+      # their names at different moments (Helm renders templates in reverse
+      # path order, and `global.nameOverride` is set in the later one), so for
+      # any release name without "vsms" in it the Pods named a ConfigMap that did
+      # not exist and hung in ContainerCreating, with `helm lint --strict`
+      # green. This runs `helm dependency build`, `helm lint --strict` and
+      # `helm template` under a release name that lacks "vsms", asserts the
+      # overlay ConfigMap is the one both workloads mount, and fires every chart
+      # guard once. The helm version is release.yml's, which packages the chart.
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.16.4
+      - run: cargo xtask chart-render
 
       # R2: the diagram everyone reads and the transition table the trigger
       # enforces must agree. Drift shows up in production as an SM001 on an

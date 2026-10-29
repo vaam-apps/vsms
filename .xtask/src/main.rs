@@ -18,6 +18,8 @@
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
 mod bootstrap_sql;
+mod chart_render;
+mod config_literal_secrets;
 mod cratestack_pin;
 mod diff;
 mod docs_drift;
@@ -51,6 +53,8 @@ fn main() -> ExitCode {
         "workflow-paths" => workflow_paths::run(&root),
         "r6" => r6_ui_layers::run(&root),
         "secret-env-args" => secret_env_args::run(&root),
+        "config-literal-secrets" => config_literal_secrets::run(&root),
+        "chart-render" => chart_render::run(&root),
         "bootstrap-sql" => {
             let Some(out) = args.next() else {
                 eprintln!("usage: cargo xtask bootstrap-sql <output-path>");
@@ -99,6 +103,8 @@ fn help_text() -> &'static str {
      parity                R2 — state diagrams and transition tables agree\n  \
      r6                    R6 — no CSS classes or raw markup in view files\n  \
      secret-env-args       no clap arg bound to a secret env var prints its value in --help\n  \
+     config-literal-secrets no committed livemode config/application*.yml carries a literal secret\n  \
+     chart-render          helm lint --strict and helm template the chart; the overlay ConfigMap is the one mounted; every guard fires (needs helm)\n  \
      bootstrap-sql <out>   regenerate 0002_bootstrap/up.sql from docs/architecture.md §2.10\n  \
      bootstrap-sql-check   fail if 0002_bootstrap/up.sql has drifted from the design doc\n  \
      sdk-schema-check      fail if the vendored SDK schema has drifted\n  \

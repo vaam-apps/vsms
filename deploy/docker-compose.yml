@@ -109,46 +109,48 @@ services:
     cpus: 1.0
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-vsms}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:-vsms}
-      # Pass-through (a bare `NAME:` with no value), not `${NAME:?}` and
-      # not `${NAME:-}`: Orange is one of three providers now, and an
-      # AWS-only (or MTN-only) deployment must leave these *absent* from the
-      # container. `NAME:` forwards the value from the shell/.env when one is
-      # set and sets nothing at all when it is not, whereas `${NAME:-}` would
-      # hand the binary an empty string, which clap reads as a value
-      # (`Some("")`) and rejects. The binary itself still refuses to start
-      # with no provider at all, and with a half-filled Orange triple.
+      # VSC-1: everything a deployment decides - the pool size, the idempotency
+      # and rate-limit policy, and every provider's host, settings and
+      # credentials - is the YAML document `config/application.yml` plus the
+      # `prod` profile overlay (`config/application-prod.yml`, mounted below so
+      # an edit needs a restart, not a rebuild). Docs: docs/architecture.md,
+      # section 9.4 and docs/runbooks/deployment.adoc.
+      #
+      # The overlay reads the variables below as `${NAME}`. Each is a
+      # pass-through (a bare `NAME:` with no value): it is forwarded when the
+      # shell or `.env` sets it and absent otherwise, and the process refuses to
+      # start on a `${NAME}` that is absent, naming it. Add one line per
+      # `${NAME}` you add to the overlay. A variable a PREVIOUS release read as
+      # a flag (`ORANGE_CM_BASE_URL`, `SMS_RATE_LIMIT_BURST`, `AWS_SMS_REGION`,
+      # ...) and the overlay does not read is refused at boot, naming the YAML
+      # key that replaced it - the compose file no longer forwards the
+      # ones that moved.
+      SMS_PROFILE: ${SMS_PROFILE:-prod}
+      SMS_GATEWAY_DOMAIN: ${SMS_GATEWAY_DOMAIN:?}
       ORANGE_CM_CLIENT_ID:
       ORANGE_CM_CLIENT_SECRET:
       ORANGE_CM_SENDER_NUMBER:
-      ORANGE_CM_BASE_URL: ${ORANGE_CM_BASE_URL:-https://api.orange.com}
-      # Receiving side of AWS End User Messaging SMS: the ARN of the SNS
-      # topic the configuration set publishes delivery events to. Setting it
-      # mounts POST /dlr/aws_sms. This is the ONLY AWS variable the gateway
-      # reads and it needs no AWS credentials (it verifies SNS message
-      # signatures). Pass-through for the same reason as Orange above: unset
-      # must mean absent, never empty. See deploy/.env.example.
-      AWS_SMS_EVENTS_TOPIC_ARN:
+      # MTN and AWS: uncomment the matching lines when the overlay's example
+      # blocks are enabled.
+      # MTN_CLIENT_ID:
+      # MTN_CLIENT_SECRET:
+      # MTN_SERVICE_CODE:
+      # MTN_TPS_CEILING:
+      # MTN_COST_PER_SEGMENT_XAF:
+      # AWS_SMS_ACCESS_KEY_ID:
+      # AWS_SMS_SECRET_ACCESS_KEY:
+      # AWS_SMS_CONFIGURATION_SET:
+      # AWS_SMS_TPS_CEILING:
+      # AWS_SMS_COST_PER_SEGMENT_XAF:
+      # AWS_SMS_EVENTS_TOPIC_ARN:
       # #134/#140: the server-held pepper behind Message.msisdnHash/bodyHash
-      # (HMAC-SHA256, sms_api::pepper) — real secret material, minimum 32
+      # (HMAC-SHA256, sms_api::pepper) - real secret material, minimum 32
       # bytes, validated at startup (`sms-gateway serve` refuses to bind on
       # a missing or too-short value, never silently at the first
-      # sendMessage call). Only sms-gateway needs this; sms-worker never
-      # computes either hash.
+      # sendMessage call). The base config reads it as `${SMS_HASH_PEPPER}`
+      # (`security.hash_pepper`). Only sms-gateway reads it: the worker does
+      # not load `security.*`, and its service is not given the variable.
       SMS_HASH_PEPPER: ${SMS_HASH_PEPPER:?generate one via `openssl rand -base64 48`}
-      # #153: IdempotencyLayer/RateLimitLayer configuration — see
-      # docs/architecture.md §4.5/§4.6 and sms_api::router's own doc for
-      # what each does and why these particular defaults are safe.
-      # Optional: each falls back to `sms-gateway serve`'s own CLI default
-      # (24h / burst 120 / 2 tok/s) when unset here, same as SMS_GATEWAY_LOG
-      # below.
-      SMS_IDEMPOTENCY_TTL_SECS: ${SMS_IDEMPOTENCY_TTL_SECS:-86400}
-      SMS_RATE_LIMIT_BURST: ${SMS_RATE_LIMIT_BURST:-120}
-      SMS_RATE_LIMIT_REFILL_PER_SECOND: ${SMS_RATE_LIMIT_REFILL_PER_SECOND:-2.0}
-      # #163: the coarser, ConnectInfo-peer-keyed RateLimitLayer on top of
-      # the per-principal one above — see sms_api::router's own doc for
-      # why it bounds a flood of forged requests and why its budget is wider.
-      SMS_SOURCE_RATE_LIMIT_BURST: ${SMS_SOURCE_RATE_LIMIT_BURST:-1200}
-      SMS_SOURCE_RATE_LIMIT_REFILL_PER_SECOND: ${SMS_SOURCE_RATE_LIMIT_REFILL_PER_SECOND:-10.0}
       # VS-3: the signed transport's two Ed25519 server keys (PKCS#8 PEM,
       # `openssl genpkey -algorithm ed25519`), mounted below. REQUIRED: the
       # gateway refuses to start without both, and refuses the same key
@@ -202,6 +204,14 @@ services:
     volumes:
       - ./secrets/envelope-current.pem:/run/envelope/current.pem:ro
       - ./secrets/envelope-next.pem:/run/envelope/next.pem:ro
+    # The `prod` overlay, from the repository you cloned: edit
+    # `config/application-prod.yml` and `docker compose up -d` restarts the
+    # service on it, with no rebuild. A top-level `configs:` entry, not a bind
+    # mount: a bind mount whose host path is missing is silently created as an
+    # empty directory, and `configs:` fails `up` naming the path.
+    configs:
+      - source: sms_config_overlay
+        target: /config/application-prod.yml
     healthcheck:
       test: ['CMD', '/usr/local/bin/sms-gateway', 'healthcheck', '--path', '/readyz']
       interval: 5s
@@ -262,31 +272,28 @@ services:
       # docs/runbooks/deployment.adoc for that as a documented day-2 step
       # rather than a service this compose file stands up unused.
       SMS_WORKER_ROLES: ${SMS_WORKER_ROLES:-dispatch,drain,scheduler,hooks,jobs}
-      # Pass-through, not required - see sms-gateway's Orange block above.
-      # With `dispatch` in SMS_WORKER_ROLES the worker refuses to start
-      # unless at least one provider is fully configured.
+      # The same YAML document as sms-gateway's, and so the same pass-through
+      # variables (see the sms-gateway block above for why). With `dispatch` in
+      # SMS_WORKER_ROLES the worker refuses to start unless the overlay
+      # configures at least one provider.
+      SMS_PROFILE: ${SMS_PROFILE:-prod}
+      SMS_GATEWAY_DOMAIN: ${SMS_GATEWAY_DOMAIN:?}
       ORANGE_CM_CLIENT_ID:
       ORANGE_CM_CLIENT_SECRET:
       ORANGE_CM_SENDER_NUMBER:
-      ORANGE_CM_BASE_URL: ${ORANGE_CM_BASE_URL:-https://api.orange.com}
-      # Sending side of AWS End User Messaging SMS (provider key `aws_sms`).
-      # The first six are all-or-none: set all of them or none. AWS_SMS_
-      # SECRET_ACCESS_KEY is a secret. Every one is a pass-through so an
-      # unconfigured AWS leaves no variable behind - an empty
-      # AWS_SMS_TPS_CEILING aborts startup with `cannot parse float from
-      # empty string`, and an empty AWS_SMS_REGION trips the all-or-none
-      # check. The last five are optional.
-      AWS_SMS_REGION:
-      AWS_SMS_ACCESS_KEY_ID:
-      AWS_SMS_SECRET_ACCESS_KEY:
-      AWS_SMS_CONFIGURATION_SET:
-      AWS_SMS_TPS_CEILING:
-      AWS_SMS_COST_PER_SEGMENT_XAF:
-      AWS_SMS_ORIGINATION_IDENTITY:
-      AWS_SMS_MESSAGE_TYPE:
-      AWS_SMS_SUPPORTS_ALPHANUMERIC_SENDER:
-      AWS_SMS_ENDPOINT_URL:
-      AWS_SMS_TIME_TO_LIVE_SECONDS:
+      # MTN_CLIENT_ID:
+      # MTN_CLIENT_SECRET:
+      # MTN_SERVICE_CODE:
+      # MTN_TPS_CEILING:
+      # MTN_COST_PER_SEGMENT_XAF:
+      # AWS_SMS_ACCESS_KEY_ID:
+      # AWS_SMS_SECRET_ACCESS_KEY:
+      # AWS_SMS_CONFIGURATION_SET:
+      # AWS_SMS_TPS_CEILING:
+      # AWS_SMS_COST_PER_SEGMENT_XAF:
+      # AWS_SMS_EVENTS_TOPIC_ARN:
+      # No SMS_HASH_PEPPER: the worker does not load `security.*`, so it is not
+      # given the secret (the gateway's service above is).
       # VS-8: a sealed webhook delivery is a request signed with the gateway's
       # own envelope signing key, so the `hooks` role (in SMS_WORKER_ROLES by
       # default) needs the CURRENT key to deliver a `sealed` endpoint (an
@@ -306,6 +313,11 @@ services:
     # (docs/runbooks/deployment.adoc, "Rotating the envelope keys").
     volumes:
       - ./secrets/envelope-current.pem:/run/envelope/current.pem:ro
+    # The same overlay as sms-gateway's: one document, so the two cannot
+    # disagree about a provider.
+    configs:
+      - source: sms_config_overlay
+        target: /config/application-prod.yml
     depends_on:
       postgres:
         condition: service_healthy
@@ -566,3 +578,9 @@ configs:
     file: ./secrets/console-composer.pem
   rclone_conf:
     file: ./secrets/rclone.conf
+  # VSC-1: the `prod` profile of the YAML deployment configuration, shared by
+  # sms-gateway and sms-worker. Committed (it holds `${VAR}` placeholders, never
+  # a secret: `cargo xtask config-literal-secrets`), so unlike the two above it
+  # exists in a fresh clone.
+  sms_config_overlay:
+    file: ../config/application-prod.yml

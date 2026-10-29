@@ -32,8 +32,9 @@ against a single hardcoded provider. Up to three adapters can be configured
 (`orange_cm`, `mtn_cm`, `aws_sms`; see `commands::serve::build_dlr_router`),
 each optional as long as at least one is. A 404 means "no adapter is
 configured under this key", and that is the only thing it can mean. For
-`aws_sms` the gateway builds a receiver from `AWS_SMS_EVENTS_TOPIC_ARN`
-alone and holds no AWS credentials. If that variable is set but no
+`aws_sms` the gateway builds a receiver from
+`providers[code=aws_sms].settings.events_topic_arn` alone and holds no AWS
+credentials. If that key is set but no
 `Provider` row keyed `aws_sms` exists, the gateway refuses to start, the same
 way it does for the other providers; seed the row first
 (`docs/runbooks/aws-sms.adoc`).

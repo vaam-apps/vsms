@@ -1,0 +1,9 @@
+providers:
+  - code: mtn_cm
+    credentials:
+      client_id: ${MTN_CLIENT_ID}
+      client_secret: ${MTN_CLIENT_SECRET}
+    settings:
+      service_code: ${MTN_SERVICE_CODE}
+      tps_ceiling: ${MTN_TPS}
+      cost_per_segment_xaf: ${MTN_COST}

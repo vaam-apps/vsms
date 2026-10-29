@@ -1,0 +1,5 @@
+providers:
+  - code: orange_cm
+    credentials:
+      client_id: orange-id
+      client_secrett: oops

@@ -51,7 +51,7 @@ coarse per-source limiter in `sms_api::router` (burst 1200, refilling 10 a secon
 per peer address), and this deployment has two peers (Caddy, and `admin` talking
 to the gateway directly), so the sustained inflow is at most about 20 a second
 and the sweep keeps up. A deployment with more peers, or a raised
-`SMS_SOURCE_RATE_LIMIT_*`, can outrun it: raise `MAX_BATCHES`, or run the job
+`api.source_rate_limit`, can outrun it: raise `MAX_BATCHES`, or run the job
 more often, before raising the source budget past 22 requests a second in total.
 The table only grows meanwhile, it is never wrong: an expired row left behind is
 taken over by `PgNonceStore`, not refused.

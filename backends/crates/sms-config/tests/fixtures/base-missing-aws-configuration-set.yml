@@ -1,0 +1,9 @@
+providers:
+  - code: aws_sms
+    credentials:
+      access_key_id: AKIDEXAMPLE
+      secret_access_key: placeholder
+    settings:
+      region: eu-west-1
+      tps_ceiling: 10
+      cost_per_segment_xaf: "30"

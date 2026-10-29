@@ -70,6 +70,7 @@
 //! implementations either agree about the audience or they don't, and this is
 //! what "don't" looks like end to end — permanently, not a transcript.
 
+use sms_test_support::config::{self, TestConfig};
 use std::io::{BufRead, BufReader};
 use std::net::TcpListener as StdTcpListener;
 use std::process::{Child, Command, Stdio};
@@ -432,9 +433,14 @@ impl Drop for KillOnDrop {
 
 fn spawn_hooks_worker(database_url: &str, worker_id: &str) -> KillOnDrop {
     let bin = env!("CARGO_BIN_EXE_sms-worker");
+    let config = TestConfig::write(
+        &format!("hooks-node-{worker_id}"),
+        &config::no_providers_overlay(),
+    );
     let child = Command::new(bin)
         .args(["--roles", "hooks"])
         .args(["--database-url", database_url])
+        .args(config.args())
         .args(["--worker-id", worker_id])
         .arg("--envelope-signing-key-file")
         .arg(write_signing_key())

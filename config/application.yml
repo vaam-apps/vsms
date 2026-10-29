@@ -1,0 +1,59 @@
+# vsms base configuration (VSC-1; docs/architecture.md, section 9.4).
+#
+# Read by `sms-gateway serve`, `sms-gateway mtn-subscribe-dlr` and `sms-worker`
+# through `sms-config`. Loaded first; `application-<profile>.yml` in this same
+# directory overlays it (SMS_PROFILE, default `dev`). figment merges maps key by
+# key and a LIST in the overlay replaces the base's list wholesale, which is why
+# `providers` is listed in full by each profile that has any.
+#
+# `${VAR}` values resolve against the process environment at boot. An unset
+# variable is a fatal, named error, never an empty string.
+#
+# This file is deliberately sandbox-shaped: `livemode: false` means the
+# https-only, no-stub-host and no-literal-secret rules do not apply to it. A real
+# deployment's overlay sets `livemode: true`, points every host at a real
+# https:// API, and writes every secret as a `${VAR}` placeholder.
+#
+# What is NOT here, on purpose: the database URL, the listen and metrics
+# addresses, the envelope signing key file paths, the worker's roles and id, and
+# the log filter. They are process plumbing and stay flags and variables
+# (DATABASE_URL, SMS_LISTEN_ADDR, SMS_METRICS_LISTEN_ADDR, SMS_WORKER_METRICS_LISTEN_ADDR,
+# SMS_ENVELOPE_SIGNING_KEY_FILE, SMS_ENVELOPE_NEXT_SIGNING_KEY_FILE,
+# SMS_WORKER_ROLES, SMS_WORKER_ID, SMS_WORKER_HEALTH_FILE, RUST_LOG).
+#
+# The values below are the defaults the clap flags had before this file existed;
+# `backends/crates/sms-config/tests/defaults.rs` holds them to that.
+
+deployment:
+  name: vsms
+  livemode: false
+  public_base_url: http://localhost:8080
+
+security:
+  # The server-held pepper behind Message.msisdnHash / bodyHash. At least 32
+  # bytes; `openssl rand -base64 48`. Rotating it orphans every row hashed under
+  # the old one (sms_api::pepper).
+  hash_pepper: ${SMS_HASH_PEPPER}
+
+api:
+  # How long a cached Idempotency-Key response stays replayable (24 hours,
+  # docs/architecture.md section 4.5).
+  idempotency_ttl_secs: 86400
+  # Per-principal token bucket (section 4.6).
+  rate_limit:
+    burst: 120
+    refill_per_second: 2.0
+  # The coarser bucket keyed on the real TCP peer, outside the envelope layer
+  # (#163): it covers every client sharing a peer at once, so it is sized wider.
+  source_rate_limit:
+    burst: 1200
+    refill_per_second: 10.0
+
+database:
+  gateway_max_connections: 10
+  worker_max_connections: 10
+
+# Empty here: a provider is something a deployment chooses. Each profile lists
+# the ones it runs. An entry's presence configures the provider, so an
+# incomplete one is refused at boot, naming the missing key.
+providers: []

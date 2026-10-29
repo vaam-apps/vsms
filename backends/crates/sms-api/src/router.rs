@@ -201,7 +201,7 @@ const SENDER_AND_WEBHOOK_WRITE_ROUTES: &[RoutePermission] = &[
 /// every construction site (the real `sms-gateway serve` command and the
 /// live HTTP test suites in `backends/crates/sms-api/tests/`) shares one source of
 /// truth instead of hand-copying the duration; `serve` still lets an
-/// operator override it via `--idempotency-ttl-secs`/`SMS_IDEMPOTENCY_TTL_SECS`.
+/// operator override it with `api.idempotency_ttl_secs` in `config/application*.yml`.
 pub const DEFAULT_IDEMPOTENCY_TTL: Duration = Duration::from_hours(24);
 
 /// #153: §4.5's own suggested per-principal ingress budget — burst 120,

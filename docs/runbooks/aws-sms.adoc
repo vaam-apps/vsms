@@ -33,7 +33,7 @@ nearest one, `af-south-1`, is in South Africa.
 
 vsms does not make this question go away and cannot answer it:
 
-* `AWS_SMS_REGION` only chooses _which_ foreign Region receives the data.
+* `providers[code=aws_sms].settings.region` only chooses _which_ foreign Region receives the data.
 * The 90-day purge (`purge_retention`) clears vsms's own copy of the number
   and body. It does nothing about what AWS retains. Check AWS's own
   retention for End User Messaging in the Region you pick.
@@ -218,7 +218,7 @@ Cameroon without a regulatory registration.
 
 Then choose what vsms passes as the origination identity:
 
-* **`AWS_SMS_ORIGINATION_IDENTITY` set** (recommended): that value is used for
+* **`settings.origination_identity` set** (recommended): that value is used for
   every message. It can be the sender ID, a phone number, a pool, or one of
   their ARNs.
 * **Not set**: the message's own approved vsms sender ID is passed instead,
@@ -347,7 +347,7 @@ handset receipt `submitted` until it expires. Two facts about AWS's list:
 A configuration set accepts up to 5 event destinations. If you add another
 (for example CloudWatch Logs, for your own audit), leave this one alone.
 
-The configuration set name must match `AWS_SMS_CONFIGURATION_SET` below.
+The configuration set name must match `settings.configuration_set` below.
 **Without a configuration set that has an event destination, AWS emits no
 events at all** and every message ends `expired`.
 
@@ -355,7 +355,7 @@ events at all** and every message ends `expired`.
 
 The gateway has to know the topic ARN _before_ you subscribe, because it
 checks `TopicArn` on the confirmation message too. So set
-`AWS_SMS_EVENTS_TOPIC_ARN` on the gateway first (step 8), **after seeding the
+`settings.events_topic_arn` on the gateway first (step 8), **after seeding the
 `aws_sms` Provider row** (step 9, first command): the gateway refuses to start
 if that variable is set and no Provider row keyed `aws_sms` exists. Then
 restart the gateway and subscribe:
@@ -573,83 +573,107 @@ store, restart the worker, delete the old one. There is no hot reload.
 
 == 8. Configure vsms
 
-Two processes, two different settings. Names only here; where each file keeps
-them is documented beside the file (`deploy/.env.example` for the compose
-stack, `deploy/charts/vsms/values.yaml` for Helm).
+Two processes, two different halves of one `aws_sms` entry in the YAML
+configuration (VSC-1; `docs/architecture.md`, section 9.4). Both binaries read
+the same document, so the entry is written once; compose keeps it in
+`config/application-prod.yml` (the AWS block is a commented example there), and
+Helm keeps it in `config.overlay`. The secret is the one thing that is not
+written in the file: `credentials.secret_access_key` is a `${AWS_SMS_SECRET_ACCESS_KEY}`
+placeholder, delivered through the environment, and `livemode` refuses it as a
+literal.
 
-**`sms-worker`** (sends). Required together, or the provider is not
-registered (a partial set is a startup error, so a half-filled block is
-loud):
+[source,yaml]
+----
+providers:
+  - code: aws_sms
+    credentials:
+      access_key_id: <the IAM user's key id>
+      secret_access_key: ${AWS_SMS_SECRET_ACCESS_KEY}
+    settings:
+      region: eu-west-1
+      configuration_set: vsms-sms
+      tps_ceiling: 5
+      cost_per_segment_xaf: "30"
+      time_to_live_seconds: 900
+      events_topic_arn: arn:aws:sns:eu-west-1:123456789012:vsms-sms-events
+----
+
+**`sms-worker`** (sends). The sending half is all-or-none: naming any of the
+first six makes the rest required, and an entry that is missing one is refused at
+start, naming it, so a half-filled block is loud:
 
 |===
-| Variable | Meaning
+| Key | Meaning
 
-| `AWS_SMS_REGION`
+| `settings.region`
 | The Region from step 1.
 
-| `AWS_SMS_ACCESS_KEY_ID`, `AWS_SMS_SECRET_ACCESS_KEY`
-| The IAM user's key from step 7. The secret is hidden from `--help`.
+| `credentials.access_key_id`, `credentials.secret_access_key`
+| The IAM user's key from step 7. The secret is a `${AWS_SMS_SECRET_ACCESS_KEY}` placeholder and never prints.
 
-| `AWS_SMS_CONFIGURATION_SET`
+| `settings.configuration_set`
 | `vsms-sms` -- the set whose event destination is the SNS topic.
 
-| `AWS_SMS_TPS_CEILING`
+| `settings.tps_ceiling`
 | Message parts per second the account may send. An account quota, so it has no default. Take it from AWS (it varies by destination country and origination identity) and, if unsure, start low.
 
-| `AWS_SMS_COST_PER_SEGMENT_XAF`
-| What one segment costs, converted to XAF by you. AWS prices in USD; this value feeds `estimatedCostXaf`, so a wrong figure misprices that field. No default.
+| `settings.cost_per_segment_xaf`
+| What one segment costs, converted to XAF by you. Write it as a quoted string (`"30"`), because it is money. AWS prices in USD; this value feeds `estimatedCostXaf`, so a wrong figure misprices that field. No default.
 |===
 
 Optional:
 
 |===
-| Variable | Default | Meaning
+| Key | Default | Meaning
 
-| `AWS_SMS_ORIGINATION_IDENTITY`
+| `settings.origination_identity`
 | _(unset)_
 | Sender ID, number, pool or ARN used for every message. Strongly recommended (step 3).
 
-| `AWS_SMS_MESSAGE_TYPE`
+| `settings.message_type`
 | `transactional`
 | `transactional` or `promotional`; AWS applies different carrier handling. OTP and notification traffic wants `transactional`.
 
-| `AWS_SMS_SUPPORTS_ALPHANUMERIC_SENDER`
+| `settings.supports_alphanumeric_sender`
 | `false`
 | Whether the account sends under alphanumeric sender IDs to your destinations. Informational (it feeds the adapter's advertised capabilities); it does not change what is sent.
 
-| `AWS_SMS_TIME_TO_LIVE_SECONDS`
+| `settings.time_to_live_seconds`
 | _(unset)_
 | How long AWS keeps trying to deliver one message, 5 to 259200 seconds. **Unset means AWS's default of 72 hours**, so an OTP can reach a handset days after vsms expired it (an OTP's default validity in vsms is 15 minutes). For OTP traffic set `900`. It is a worker-wide setting, applied to every message sent through this provider whatever its class, so if the same provider also carries traffic that is valid for longer (the other classes default to 24 hours) a short value cuts those short; choose the value for the traffic you actually send.
 
-| `AWS_SMS_ENDPOINT_URL`
+| `host.url`
 | _(unset)_
-| Overrides the AWS endpoint. For tests against a fake only.
+| Overrides the AWS endpoint. For tests against a fake only; under `livemode` it must be `https` and not a stub host.
 |===
 
 **`sms-gateway`** (receives):
 
 |===
-| Variable | Meaning
+| Key | Meaning
 
-| `AWS_SMS_EVENTS_TOPIC_ARN`
+| `settings.events_topic_arn`
 | The topic ARN from step 4. Setting it enables `POST /dlr/aws_sms`. No AWS credentials go on the gateway. **The gateway exits at startup if this is set and no `Provider` row keyed `aws_sms` exists**, so seed that row (step 9) before you set it.
 |===
 
-Do **not** leave any of the required worker variables present but empty
-(`AWS_SMS_TPS_CEILING=`): clap treats an empty value as a value, and a float
-that fails to parse stops the process before any of this repository's
-validation runs. Comment the block out instead. The same hazard is documented
-for MTN in `AGENTS.md` ("MTN reaches the Helm chart").
+An entry with the topic and none of the sending keys is a receive-only entry,
+which the worker reads as "nothing to send through"; an entry with neither is
+refused. Quote values that look like numbers but are text; an unquoted
+`+2370000` is a YAML integer, and the typed model refuses it.
+
+The old `AWS_SMS_*` variables and `--aws-sms-*` flags are gone and are refused,
+not ignored: a process that still sets one stops at start and names the key
+above that replaced it.
 
 Order: seed the Provider row (step 9, first command), then restart the
 gateway (so it knows the topic before you subscribe), then the worker.
 
 == 9. Seed the provider and the route, then send a test
 
-The worker builds the adapter from its environment, but the routing layer and
+The worker builds the adapter from the YAML entry, but the routing layer and
 the database need a `Provider` row with the same `key`. `seed-dispatch` creates
 it, activates it, and creates a catch-all `Route` pointing at it. Run it
-**before** you start the gateway with `AWS_SMS_EVENTS_TOPIC_ARN` set (step 8):
+**before** you start the gateway with `settings.events_topic_arn` set (step 8):
 it needs only the database.
 
 [source,bash]
@@ -665,8 +689,8 @@ docker compose --env-file .env run --rm sms-gateway seed-dispatch \
 
 (`docker compose run --rm sms-gateway ...` is how `deployment.adoc` runs the
 other one-shot commands; use your own wrapper if you deploy differently.
-`--max-tps` and `--cost-per-segment-xaf` here should match the worker's
-`AWS_SMS_TPS_CEILING` and `AWS_SMS_COST_PER_SEGMENT_XAF`; the row is a
+`--max-tps` and `--cost-per-segment-xaf` here should match the entry's
+`tps_ceiling` and `cost_per_segment_xaf`; the row is a
 record, the adapter's own values are the ones the worker uses. Flags and
 defaults are in `backends/apps/sms-gateway/src/commands/seed_dispatch.rs`;
 `--max-daily-submissions` defaults to 100000.)
@@ -897,11 +921,11 @@ sender ID that is rewritten downstream is invisible to every delivery receipt.
 | Symptom | Likely cause | What to do
 
 | `POST /dlr/aws_sms` answers `404`
-| `AWS_SMS_EVENTS_TOPIC_ARN` not set on the gateway, or the gateway was not restarted
+| `settings.events_topic_arn` not set on the gateway, or the gateway was not restarted
 | Set it, restart the gateway.
 
 | `403` on every call, gateway log "refusing an unauthenticated provider callback"
-| The log's `reason` says which check failed. Usually `TopicArn` differs from `AWS_SMS_EVENTS_TOPIC_ARN` (different Region, account or name), or the topic is still on `SignatureVersion` 1 (logged at `error`), or `RawMessageDelivery` is on, or the signing-certificate URL is not the expected `https://sns.<topic-region>.amazonaws.com/SimpleNotificationService-<32 hex>.pem`
+| The log's `reason` says which check failed. Usually `TopicArn` differs from `settings.events_topic_arn` (different Region, account or name), or the topic is still on `SignatureVersion` 1 (logged at `error`), or `RawMessageDelivery` is on, or the signing-certificate URL is not the expected `https://sns.<topic-region>.amazonaws.com/SimpleNotificationService-<32 hex>.pem`
 | Compare the ARN in the reason with the env value byte for byte. Re-run step 4's `SignatureVersion 2` command (`aws sns get-topic-attributes` shows it; absent means 1). Remove raw delivery from the subscription. **Receipts refused with `403` are not retried by SNS and are lost**; their messages end `expired`.
 
 | `503` on calls, log "could not authenticate a provider callback; asking for redelivery"
@@ -909,7 +933,7 @@ sender ID that is rewritten downstream is invisible to every delivery receipt.
 | Fix outbound HTTPS from the gateway to that host. The rate limit only matters under a burst of uncached certificate URLs (normally a flood of forged requests, since genuine traffic reuses one cached certificate); it clears by itself. SNS retries `503`, so receipts are not lost while it is fixed, within the retry policy in step 6.
 
 | Gateway exits at startup, "no Provider row has key aws_sms"
-| `AWS_SMS_EVENTS_TOPIC_ARN` is set but the `aws_sms` Provider row does not exist
+| `settings.events_topic_arn` is set but the `aws_sms` Provider row does not exist
 | Run the `seed-dispatch --key aws_sms ...` command from step 9, then start the gateway. For an AWS-only deployment, use `bootstrap --skip-seed-dispatch`, not plain `bootstrap`.
 
 | Subscription stays `PendingConfirmation`
@@ -921,7 +945,7 @@ sender ID that is rewritten downstream is invisible to every delivery receipt.
 | `aws sns list-subscriptions-by-topic` to confirm it is gone. Subscribe and confirm again (step 6), this time with `--authenticate-on-unsubscribe true`, and re-apply the delivery policy and dead-letter queue to the new `SubscriptionArn`. Messages sent while it was missing end `expired`.
 
 | Messages reach `submitted` and stay there, then become `expired`
-| No receipts are arriving: configuration set has no SNS event destination (AWS then emits no events at all), the destination's event types are too narrow, the topic policy does not allow `sms-voice.amazonaws.com`, the subscription is unconfirmed or was removed, receipts are being refused with `403` (see the first row), or `AWS_SMS_CONFIGURATION_SET` names a different set
+| No receipts are arriving: configuration set has no SNS event destination (AWS then emits no events at all), the destination's event types are too narrow, the topic policy does not allow `sms-voice.amazonaws.com`, the subscription is unconfirmed or was removed, receipts are being refused with `403` (see the first row), or `settings.configuration_set` names a different set
 | Walk the chain in order: the set exists, its destination exists (`aws pinpoint-sms-voice-v2 describe-configuration-sets`), the topic policy allows publish from that set, the subscription is confirmed, the gateway receives. A message sent before the fix is not rescued; it expires.
 
 | Every send fails and the provider's circuit opens (new messages route elsewhere, or are `rejected` when there is no other route)
@@ -937,7 +961,7 @@ sender ID that is rewritten downstream is invisible to every delivery receipt.
 | Leave the sandbox (step 2), or send only to verified destination numbers meanwhile.
 
 | An OTP arrived on a handset long after it should have expired
-| `AWS_SMS_TIME_TO_LIVE_SECONDS` is unset, so AWS keeps trying for its default 72 hours
+| `settings.time_to_live_seconds` is unset, so AWS keeps trying for its default 72 hours
 | Set it (step 8); `900` for OTP traffic. It only affects messages sent afterwards.
 
 | A message is `failed` with a sender-identity or country error
@@ -968,15 +992,16 @@ catch-all route beside Orange's, at the same priority and weight, so messages
 split between the two fakes and each message's detail page names its
 provider. The worker gets the fake's fixed demo account
 (`FAKE-AWS-SMS-DEMO-KEY`, configuration set `vsms-fake`), and the gateway gets
-`AWS_SMS_EVENTS_TOPIC_ARN` plus `AWS_SMS_FAKE_SNS_CERT_BASE`.
+`settings.events_topic_arn` plus `settings.fake_sns_cert_base` (both in `config/application-dev.yml`).
 
-That second variable exists only in an `sms-gateway` built with the
+That second key is honoured only by an `sms-gateway` built with the
 off-by-default `fake-aws` cargo feature. It changes where the signing
 certificate is fetched from and nothing else: the topic, the signature version,
 the certificate URL's shape (`https://sns.<region>.amazonaws.com/SimpleNotificationService-<hex>.pem`,
 which is what the fake's notifications carry) and the signature are checked
 exactly as in production. Every published image is built without the feature,
-so it cannot be told to trust the fake: the flag does not parse.
+so it cannot be told to trust the fake: it refuses the key at start, as it
+once refused the flag, which did not parse.
 
 [cols="1,3"]
 |===

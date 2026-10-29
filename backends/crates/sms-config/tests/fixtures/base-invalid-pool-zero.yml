@@ -1,0 +1,2 @@
+database:
+  worker_max_connections: 0

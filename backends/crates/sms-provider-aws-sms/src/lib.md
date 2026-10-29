@@ -69,8 +69,8 @@ carry the message, and failing over is better than failing the message outright.
 `SendTextMessage` takes a `TimeToLive`, 5 seconds to 72 hours, which is how
 long AWS keeps trying to deliver one message. Left unset (the default here,
 and AWS's own 72 hours), an OTP vsms expired after 15 minutes can still
-arrive days later. `AwsSmsConfig::time_to_live` (the worker's
-`--aws-sms-time-to-live-seconds`) sets it. Match the shortest validity of the
+arrive days later. `AwsSmsConfig::time_to_live` (the YAML's
+`providers[code=aws_sms].settings.time_to_live_seconds`) sets it. Match the shortest validity of the
 traffic routed to AWS: `sms-api`'s default validity is 15 minutes for `otp`
 and 24 hours for every other class (a caller can override it per message),
 so `900` for an OTP-only route. The value is per provider, not per message,

@@ -1,0 +1,21 @@
+# The document every fixture overlays. A fixture is `base-<name>.yml` and is
+# loaded with profile `<name>`, so it states only what it changes, and the
+# overlay merge the real profiles rely on is exercised by every test.
+deployment:
+  name: fixture
+  livemode: false
+  public_base_url: http://localhost:8080
+security:
+  hash_pepper: ${SMS_HASH_PEPPER}
+api:
+  idempotency_ttl_secs: 86400
+  rate_limit:
+    burst: 120
+    refill_per_second: 2.0
+  source_rate_limit:
+    burst: 1200
+    refill_per_second: 10.0
+database:
+  gateway_max_connections: 10
+  worker_max_connections: 10
+providers: []

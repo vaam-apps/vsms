@@ -1,0 +1,5 @@
+providers:
+  - code: aws_sms
+    settings:
+      events_topic_arn: arn:aws:sns:eu-west-1:123456789012:vsms-events
+      time_to_live_seconds: 900

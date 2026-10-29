@@ -40,11 +40,6 @@ use sms_api::schema::{self, Cratestack, app as app_filter};
 static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
-/// #134: `bootstrap`/`create-app` never hash anything themselves, but
-/// `Procedures::new` (which `create-app` goes through for `App.create`)
-/// takes a `HashPepper` unconditionally. Only the value's length matters.
-const TEST_HASH_PEPPER: &str = "bootstrap-and-create-app-cli-live-postgres-test-pepper-over-min";
-
 fn sys() -> CratestackContext {
     Principal {
         sub: "bootstrap-cli-test-system".to_owned(),
@@ -85,10 +80,7 @@ fn run_bootstrap_cli(
     if let Some(display_name) = owner_display_name {
         command.arg("--owner-display-name").arg(display_name);
     }
-    command
-        .env("SMS_HASH_PEPPER", TEST_HASH_PEPPER)
-        .output()
-        .expect("running `sms-gateway bootstrap`")
+    command.output().expect("running `sms-gateway bootstrap`")
 }
 
 fn run_create_app_cli(database_url: &str, slug: &str, name: &str) -> Output {
@@ -100,7 +92,6 @@ fn run_create_app_cli(database_url: &str, slug: &str, name: &str) -> Output {
         .arg(slug)
         .arg("--name")
         .arg(name)
-        .env("SMS_HASH_PEPPER", TEST_HASH_PEPPER)
         .output()
         .expect("running `sms-gateway create-app`")
 }
@@ -427,7 +418,6 @@ async fn bootstrap_with_skip_seed_dispatch_creates_no_provider_or_route() {
         .arg("--database-url")
         .arg(&db_url)
         .arg("--skip-seed-dispatch")
-        .env("SMS_HASH_PEPPER", TEST_HASH_PEPPER)
         .output()
         .expect("running `sms-gateway bootstrap --skip-seed-dispatch`");
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();

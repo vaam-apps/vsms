@@ -2,6 +2,8 @@
 resolver = "3"
 members = [
   "backends/crates/sms-core",
+  # VSC-1: the YAML deployment configuration both long-running binaries read.
+  "backends/crates/sms-config",
   "backends/crates/sms-encoding",
   "backends/crates/sms-msisdn",
   "backends/crates/sms-webhook",
@@ -97,6 +99,9 @@ publish = false
 # Internal crates. `crates/` is libraries, `app/` is binaries — a binary may
 # depend on any library, never the reverse.
 sms-core = { path = "./backends/crates/sms-core" }
+# VSC-1: the one reader of `config/application*.yml`, so the gateway and the
+# worker cannot derive a provider's settings differently.
+sms-config = { path = "./backends/crates/sms-config" }
 sms-encoding = { path = "./backends/crates/sms-encoding" }
 sms-msisdn = { path = "./backends/crates/sms-msisdn" }
 # #41, VS-8: the sealer an outbound webhook delivery is signed with (a
@@ -179,6 +184,12 @@ url = "2"
 # tests that hold it narrower than `delivery_route`. The same pattern is a CHECK
 # in migration 0010. Already in the tree through cratestack.
 regex = "1"
+
+# sms-config: the base file plus a profile overlay, merged (figment), then
+# round-tripped through serde_yaml_ng so the typed model sees the merged and
+# placeholder-resolved document. The same pair vpay-config uses.
+figment = { version = "0.10", default-features = false, features = ["yaml"] }
+serde_yaml_ng = "0.10"
 
 anyhow = "1"
 async-trait = "0.1"

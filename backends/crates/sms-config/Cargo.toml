@@ -1,0 +1,32 @@
+[package]
+name = "sms-config"
+description = "YAML deployment configuration for sms-gateway and sms-worker (VSC-1): load, overlay, resolve, validate"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+# The adapters' own config types. `Orange::to_provider_config` and its
+# siblings live here, on the side that owns the YAML shape, so the gateway and
+# the worker cannot derive an adapter's settings differently (vpay-config does
+# the same with `vpay-provider`). Acyclic: no provider crate depends on this
+# one. All three are already compiled into both binaries.
+sms-provider-orange-cm.workspace = true
+sms-provider-mtn.workspace = true
+sms-provider-aws-sms.workspace = true
+clap.workspace = true
+figment.workspace = true
+rust_decimal.workspace = true
+serde.workspace = true
+serde_yaml_ng.workspace = true
+thiserror.workspace = true
+# `deployment.public_base_url` and a provider's `host.url`: the two questions a
+# substring test cannot answer - does it parse, and what is its scheme and host.
+url.workspace = true
+
+[lints]
+workspace = true
