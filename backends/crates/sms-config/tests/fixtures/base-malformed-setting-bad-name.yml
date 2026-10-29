@@ -1,0 +1,7 @@
+providers:
+  - code: orange_cm
+    credentials:
+      client_id: orange-id
+      client_secret: placeholder
+    settings:
+      sender_number: "+237${bad name}"

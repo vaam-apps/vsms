@@ -78,6 +78,7 @@
 //! transcript over the prose.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
@@ -291,7 +292,17 @@ async fn reread_attempts(db: &Cratestack, ids: &[String]) -> Vec<schema::Webhook
 
 /// Kills the wrapped child if the test panics before an explicit `kill()`
 /// — same convention as `kill9_reclaim_live.rs`'s own `KillOnDrop`.
-struct KillOnDrop(Child);
+/// It also owns the child's `TestConfig`: the directory is removed when that is
+/// dropped, which happens after the child is reaped, never while it may still be
+/// reading its configuration.
+struct KillOnDrop(
+    Child,
+    #[expect(
+        dead_code,
+        reason = "held for its Drop, which removes the configuration directory"
+    )]
+    TestConfig,
+);
 
 impl Drop for KillOnDrop {
     fn drop(&mut self) {
@@ -335,6 +346,7 @@ fn spawn_hooks_worker(
 ) -> KillOnDrop {
     let bin = env!("CARGO_BIN_EXE_sms-worker");
     let config = TestConfig::write(
+        Path::new(env!("CARGO_TARGET_TMPDIR")),
         &format!("hooks-two-{worker_id}"),
         &config::no_providers_overlay(),
     );
@@ -342,6 +354,7 @@ fn spawn_hooks_worker(
         .args(["--roles", "hooks"])
         .args(["--database-url", database_url])
         .args(config.args())
+        .env_remove(config::PEPPER_VAR)
         .args(["--worker-id", worker_id])
         .args(["--metrics-listen", "127.0.0.1:0"])
         .arg("--envelope-signing-key-file")
@@ -350,7 +363,7 @@ fn spawn_hooks_worker(
         .stderr(Stdio::inherit())
         .spawn()
         .expect("spawning the real sms-worker binary");
-    KillOnDrop(child)
+    KillOnDrop(child, config)
 }
 
 /// Fail loudly if a spawned worker is not still running.

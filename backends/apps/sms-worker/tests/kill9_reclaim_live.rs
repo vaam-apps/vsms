@@ -44,7 +44,8 @@ use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, Cratestack, Encoding, Message, MessageClass, MessageState, OperatorCode,
 };
-use sms_test_support::config::TestConfig;
+use sms_test_support::config::{self, TestConfig};
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -371,7 +372,17 @@ async fn mount_orange(server: &MockServer) {
 /// Kills the wrapped child if the test panics before an explicit `kill()`
 /// call — a failed assertion mid-test shouldn't also leave an orphaned
 /// `sms-worker` process polling a scratch database forever.
-struct KillOnDrop(Child);
+/// It also owns the child's `TestConfig`: the directory is removed when that is
+/// dropped, which happens after the child is reaped, never while it may still be
+/// reading its configuration.
+struct KillOnDrop(
+    Child,
+    #[expect(
+        dead_code,
+        reason = "held for its Drop, which removes the configuration directory"
+    )]
+    TestConfig,
+);
 
 impl Drop for KillOnDrop {
     fn drop(&mut self) {
@@ -390,11 +401,16 @@ fn spawn_worker(database_url: &str, orange_base_url: &str, worker_id: &str) -> K
          credentials:\n      client_id: kill9-test-client\n      client_secret: \
          kill9-test-secret\n    settings:\n      sender_number: \"{SENDER_NUMBER}\"\n"
     );
-    let config = TestConfig::write(&format!("kill9-{worker_id}"), &overlay);
+    let config = TestConfig::write(
+        Path::new(env!("CARGO_TARGET_TMPDIR")),
+        &format!("kill9-{worker_id}"),
+        &overlay,
+    );
     let child = Command::new(bin)
         .args(["--roles", "dispatch"])
         .args(["--database-url", database_url])
         .args(config.args())
+        .env_remove(config::PEPPER_VAR)
         .args(["--worker-id", worker_id])
         // Ephemeral metrics port: the default is a fixed 127.0.0.1:9091 and
         // `cargo test` runs test binaries in parallel, so two suites that each
@@ -405,7 +421,7 @@ fn spawn_worker(database_url: &str, orange_base_url: &str, worker_id: &str) -> K
         .stderr(Stdio::null())
         .spawn()
         .expect("spawning the real sms-worker binary");
-    KillOnDrop(child)
+    KillOnDrop(child, config)
 }
 
 #[tokio::test]

@@ -32,9 +32,12 @@ pub enum ConfigError {
         expected: String,
     },
 
-    /// [`crate::Config::security`] on a configuration loaded for the worker,
-    /// which does not read the `security` block.
-    #[error("`security` was not loaded: this configuration was loaded for sms-worker")]
+    /// [`crate::Config::security`] on a configuration loaded for a process other
+    /// than the gateway (the worker, a provider-only command), which does not
+    /// read the `security` block.
+    #[error(
+        "`security` was not loaded: this configuration was loaded by a process that does not read it"
+    )]
     SecurityNotLoaded,
 
     /// The base file or the profile overlay exists but would not parse.
@@ -46,9 +49,10 @@ pub enum ConfigError {
         reason: String,
     },
 
-    /// A `${` with no closing `}`, or a name that is not `[A-Za-z0-9_]+`.
-    /// Carries the key and the offending fragment only: the string around it
-    /// may be a literal secret, and an error message is a log line.
+    /// A `${` with no closing `}`, or a name that is not `[A-Za-z0-9_]+`, in a
+    /// value that is not a secret. Carries the key and the offending fragment
+    /// only. A secret's own failures are [`ConfigError::SecretNotAPlaceholder`],
+    /// which carries no fragment at all.
     #[error("malformed ${{VAR}} placeholder in `{key}`: {fragment}")]
     MalformedPlaceholder {
         /// The YAML key the string was written under.
@@ -62,6 +66,28 @@ pub enum ConfigError {
     /// exists to prevent.
     #[error("the configuration references ${{{0}}}, which the environment does not set")]
     UnresolvedPlaceholder(String),
+
+    /// A secret that is not exactly one `${VAR}` naming an environment variable
+    /// the environment sets. It holds a `${` that never closes, a name that is
+    /// not `[A-Za-z0-9_]+`, a placeholder with text around it that fails to
+    /// resolve (a name the environment does not set, as in `${SET}${UNSET}`), or
+    /// a `${NAME}` whose `NAME` is not shaped like an environment variable
+    /// (`^[A-Z_][A-Z0-9_]*$`, as in a secret pasted over the variable's name).
+    /// Carries the key and nothing else: a value there is a literal secret, or
+    /// has one around its placeholder, or is one written as a variable name, and
+    /// an error message is a log line. Only a whole, well-shaped `${VAR}` that
+    /// is unset is [`ConfigError::UnresolvedPlaceholder`], which names the
+    /// variable because that name is not the secret.
+    #[error(
+        "`{key}` is a secret and must be exactly one `${{VAR}}` placeholder, VAR being a variable \
+         name in capitals, digits and underscores; it is not, it names a variable the \
+         environment does not set, or it holds a `${{` that does not close. Write the secret as \
+         exactly `${{VAR}}` and put its text in the environment"
+    )]
+    SecretNotAPlaceholder {
+        /// The YAML key the secret was written under.
+        key: String,
+    },
 
     /// The merged document is not the shape `Config` reads: an unknown key (every
     /// block refuses them, so a misspelt key cannot be dropped in silence), a

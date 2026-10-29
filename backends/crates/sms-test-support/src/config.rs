@@ -8,10 +8,19 @@
 //!
 //! The base file reads the pepper as `${SMS_HASH_PEPPER}`, so a spawned
 //! `sms-gateway` needs [`PEPPER_VAR`] set to [`PEPPER`]. A spawned `sms-worker`
-//! does not: it never loads `security.*`, and the suites that spawn one leave the
-//! variable out on purpose, which is what keeps that true.
+//! does not: it never loads `security.*`. The suites that spawn one do not set
+//! the variable, and say so by removing [`PEPPER_VAR`] from the child's
+//! environment (`env_remove`), because they inherit their own: a developer's
+//! shell may export it, and a worker that started on a pepper it was handed
+//! would prove nothing.
+//!
+//! The directory a [`TestConfig`] writes is removed when it is dropped, so the
+//! value has to outlive the process that reads it. A suite that spawns a
+//! long-lived child keeps the `TestConfig` beside the child; one that waits for
+//! the child to serve (it has read its configuration by then) may let it go.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 /// The profile the overlay is written as.
 pub const PROFILE: &str = "test";
@@ -22,10 +31,15 @@ pub const PEPPER_VAR: &str = "SMS_HASH_PEPPER";
 /// A pepper that clears `HashPepper`'s minimum length. Not a secret.
 pub const PEPPER: &str = "sms-test-support-hash-pepper-comfortably-over-the-minimum";
 
+/// Makes two `TestConfig`s with the same tag in one process different
+/// directories, so that dropping one cannot remove the other's.
+static NEXT: AtomicU32 = AtomicU32::new(0);
+
 /// A directory holding the base file and one overlay, and the flags that name
-/// them.
-#[derive(Debug, Clone)]
+/// them. The directory is removed on drop.
+#[derive(Debug)]
 pub struct TestConfig {
+    dir: PathBuf,
     base: PathBuf,
 }
 
@@ -50,24 +64,34 @@ pub fn no_providers_overlay() -> String {
 impl TestConfig {
     /// Writes `application.yml` (a copy of the repository's) and
     /// `application-test.yml` (`overlay`) under a fresh directory named for
-    /// `tag` and this process.
+    /// `tag` and this process, inside `root`.
+    ///
+    /// A suite passes `Path::new(env!("CARGO_TARGET_TMPDIR"))`: cargo sets that
+    /// variable when it compiles an integration test, not when the test runs,
+    /// and this crate is compiled for no test of the suite's, so reading it here
+    /// at run time would always miss and the directory would land wherever the
+    /// fallback said. It belongs in the target directory and not in the system's
+    /// temporary directory, where nothing would ever remove it.
     ///
     /// # Panics
     ///
     /// On an I/O error: a suite that cannot write its configuration has nothing
     /// to run.
     #[must_use]
-    pub fn write(tag: &str, overlay: &str) -> Self {
+    pub fn write(root: &Path, tag: &str, overlay: &str) -> Self {
         let repo_base =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../config/application.yml");
-        let dir =
-            std::env::temp_dir().join(format!("sms-test-config-{tag}-{}", std::process::id()));
+        let dir = root.join(format!(
+            "sms-test-config-{tag}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
         std::fs::create_dir_all(&dir).expect("creating the test configuration directory");
         let base = dir.join("application.yml");
         std::fs::copy(&repo_base, &base).expect("copying config/application.yml");
         std::fs::write(dir.join(format!("application-{PROFILE}.yml")), overlay)
             .expect("writing the test overlay");
-        Self { base }
+        Self { dir, base }
     }
 
     /// `--config <base> --profile test`, for the spawned command line.
@@ -79,5 +103,44 @@ impl TestConfig {
             "--profile".to_owned(),
             PROFILE.to_owned(),
         ]
+    }
+}
+
+impl Drop for TestConfig {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A library's unit tests get no `CARGO_TARGET_TMPDIR`, so the root is the
+    /// workspace's `target/tmp`.
+    fn scratch_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../target/tmp")
+    }
+
+    #[test]
+    fn the_directory_is_removed_when_the_config_is_dropped() {
+        let config = TestConfig::write(&scratch_root(), "drop", &no_providers_overlay());
+        let dir = config.dir.clone();
+        assert!(dir.join("application.yml").is_file());
+        assert!(dir.join("application-test.yml").is_file());
+        drop(config);
+        assert!(!dir.exists(), "{} outlived its TestConfig", dir.display());
+    }
+
+    #[test]
+    fn two_configs_with_one_tag_do_not_share_a_directory() {
+        let first = TestConfig::write(&scratch_root(), "twin", &no_providers_overlay());
+        let second = TestConfig::write(&scratch_root(), "twin", &no_providers_overlay());
+        let kept = second.dir.clone();
+        drop(first);
+        assert!(
+            kept.join("application.yml").is_file(),
+            "dropping one config removed another's directory"
+        );
     }
 }

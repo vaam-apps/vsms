@@ -16,17 +16,28 @@ use crate::retired;
 
 /// Which process is loading the document.
 ///
-/// Both binaries read the same file, but not the same part of it: the worker
-/// never touches the hash pepper, so it neither resolves nor requires
-/// `security.*`. Handing the pepper to a process that never uses it would be a
-/// least-privilege regression the loader can simply decline to cause.
+/// They read the same file, but not the same part of it: only the gateway
+/// computes a hash, so only it resolves and requires `security.*`. Handing the
+/// pepper to a process that never uses it would be a least-privilege regression
+/// the loader can simply decline to cause.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Binary {
-    /// `sms-gateway serve` and `sms-gateway mtn-subscribe-dlr`: the whole
-    /// document.
+    /// `sms-gateway serve`: the whole document.
     Gateway,
     /// `sms-worker`: everything but `security`.
     Worker,
+    /// A one-shot `sms-gateway` command that only calls a provider
+    /// (`mtn-subscribe-dlr`): everything but `security`, as for the worker. It
+    /// is a variant of its own because it is not the worker, and a command
+    /// that loads as `Worker` says something false about itself.
+    ProviderTool,
+}
+
+impl Binary {
+    /// Whether this process reads `security:`. Only the gateway does.
+    const fn reads_security(self) -> bool {
+        matches!(self, Self::Gateway)
+    }
 }
 
 /// The loaded, resolved and validated configuration of one process.
@@ -37,7 +48,8 @@ pub struct Config {
     /// `deployment:`.
     pub deployment: Deployment,
     /// `security:` - `Some` for [`Binary::Gateway`], `None` for
-    /// [`Binary::Worker`], which does not read or resolve the block. Use
+    /// [`Binary::Worker`] and [`Binary::ProviderTool`], which do not read or
+    /// resolve the block. Use
     /// [`Config::security`] to ask for it.
     pub security: Option<Security>,
     /// `api:`.
@@ -136,18 +148,23 @@ impl Config {
         collect_placeholders(&document, &mut referenced);
         retired::check_env(&referenced, env)?;
         let literal_secrets = literal_secret_keys(&document);
+        let secret_keys: BTreeSet<String> = secret_entries(&document)
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect();
         require_text_secrets(&document)?;
 
-        // The worker never reads `security`. Dropping the block here, after the
+        // Only the gateway reads `security`. Dropping the block here, after the
         // retired-variable check has seen its placeholders and before they
-        // resolve, is what lets it start without the pepper in its environment.
-        if binary == Binary::Worker
+        // resolve, is what lets the others start without the pepper in their
+        // environment.
+        if !binary.reads_security()
             && let Value::Dict(_, dict) = &mut document
         {
             dict.remove("security");
         }
 
-        resolve_placeholders(&mut document, env)?;
+        resolve_placeholders(&mut document, env, &secret_keys)?;
 
         // figment's `Value` and serde_yaml_ng's are different crates' types with
         // no conversion between them; `Value` is `Serialize`, so the merged
@@ -165,7 +182,7 @@ impl Config {
     /// # Errors
     ///
     /// [`ConfigError::SecurityNotLoaded`] when this configuration was loaded for
-    /// [`Binary::Worker`], which never reads the block.
+    /// a [`Binary`] other than the gateway, which never reads the block.
     pub fn security(&self) -> Result<&Security, ConfigError> {
         self.security.as_ref().ok_or(ConfigError::SecurityNotLoaded)
     }
@@ -180,7 +197,7 @@ impl Config {
         } = raw;
         let livemode = deployment.livemode;
 
-        if binary == Binary::Gateway && security.is_none() {
+        if binary.reads_security() && security.is_none() {
             return Err(ConfigError::Shape("missing field `security`".to_owned()));
         }
         require_text("deployment.name", &deployment.name)?;
@@ -345,13 +362,72 @@ fn scan_placeholders(text: &str, out: &mut BTreeSet<String>) {
     }
 }
 
-/// Whether `text` is exactly one `${NAME}` and nothing else.
-fn is_whole_placeholder(text: &str) -> bool {
+/// The `NAME` of a `text` that is exactly one `${NAME}` and nothing else, `NAME`
+/// being any run of `[A-Za-z0-9_]`.
+fn whole_placeholder_name(text: &str) -> Option<&str> {
     text.strip_prefix("${")
         .and_then(|rest| rest.strip_suffix('}'))
-        .is_some_and(|name| {
+        .filter(|name| {
             !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
         })
+}
+
+/// Whether `name` has the shape of an environment variable that a deployment
+/// would set: `^[A-Z_][A-Z0-9_]*$`.
+///
+/// A secret's `${NAME}` must have it. `${s3cr3tAlnumValue9}` is a valid
+/// placeholder to the resolver, but nobody names a variable that way: it is a
+/// secret pasted over the variable name, and an error that said "references
+/// `${s3cr3tAlnumValue9}`" would print it.
+fn is_env_var_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|first| first.is_ascii_uppercase() || first == '_')
+        && chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// Whether `text` is exactly one `${NAME}` with an environment-variable `NAME`:
+/// the only form in which a secret is not a literal.
+fn is_whole_secret_placeholder(text: &str) -> bool {
+    whole_placeholder_name(text).is_some_and(is_env_var_name)
+}
+
+/// Where a key path stands against the secret keys.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SecretPlace {
+    /// Not a secret and not inside one.
+    Outside,
+    /// The secret's own key: a string leaf, the only shape a secret may take.
+    Exact,
+    /// Under a secret that is an array or a map (`...client_secret[0]`,
+    /// `...client_secret.x`). The secret is not a string there, so nothing in it
+    /// may be repeated either.
+    Inside,
+}
+
+fn secret_place(key: &str, secret_keys: &BTreeSet<String>) -> SecretPlace {
+    if secret_keys.contains(key) {
+        return SecretPlace::Exact;
+    }
+    let inside = secret_keys.iter().any(|secret| {
+        key.strip_prefix(secret.as_str())
+            .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('['))
+    });
+    if inside {
+        SecretPlace::Inside
+    } else {
+        SecretPlace::Outside
+    }
+}
+
+/// How a `providers:` entry is named in an error: `providers[code=orange_cm]`,
+/// or `providers[code=?]` for an entry with no `code`. Every key path the loader
+/// reports for a provider is built by this one function, so the loader's errors
+/// cannot name the same place two ways.
+fn provider_label(entry: &figment::value::Dict) -> String {
+    let code = entry.get("code").and_then(Value::as_str).unwrap_or("?");
+    format!("providers[code={code}]")
 }
 
 /// Every secret the document writes, with the key it is written under:
@@ -370,13 +446,13 @@ fn secret_entries(document: &Value) -> Vec<(String, &Value)> {
         let Some(entry) = provider.as_dict() else {
             continue;
         };
-        let code = entry.get("code").and_then(Value::as_str).unwrap_or("?");
+        let label = provider_label(entry);
         let Some(credentials) = entry.get("credentials").and_then(Value::as_dict) else {
             continue;
         };
         for key in SECRET_CREDENTIAL_KEYS {
             if let Some(value) = credentials.get(key) {
-                found.push((format!("providers[code={code}].credentials.{key}"), value));
+                found.push((format!("{label}.credentials.{key}"), value));
             }
         }
     }
@@ -390,7 +466,7 @@ fn literal_secret_keys(document: &Value) -> Vec<String> {
         .filter(|(_, value)| {
             value
                 .as_str()
-                .is_none_or(|text| !is_whole_placeholder(text))
+                .is_none_or(|text| !is_whole_secret_placeholder(text))
         })
         .map(|(key, _)| key)
         .collect()
@@ -417,30 +493,44 @@ fn require_text_secrets(document: &Value) -> Result<(), ConfigError> {
 }
 
 /// Replaces every `${VAR}` in a string leaf with what `env` returns.
+///
+/// `secret_keys` are the key paths of the secrets, known from the text as
+/// written. A value under one of them that fails to resolve is reported by key
+/// alone ([`ConfigError::SecretNotAPlaceholder`]): the value is either a literal
+/// secret or one with a placeholder inside it, and an error is a log line.
 fn resolve_placeholders(
     value: &mut Value,
     env: &dyn Fn(&str) -> Option<String>,
+    secret_keys: &BTreeSet<String>,
 ) -> Result<(), ConfigError> {
-    resolve_at(value, &mut String::new(), env)
+    resolve_at(value, &mut String::new(), env, secret_keys)
 }
 
-/// How much of a malformed placeholder's name an error may repeat. A literal
-/// secret that happens to contain `${` is what lands here, so the fragment is
-/// capped and never includes the text around it.
+/// How much of a malformed placeholder's name an error may repeat. Only a value
+/// outside the secret keys reaches this, so the cap is a courtesy to the log
+/// line and not the protection: for a secret the fragment is not shown at all.
 const FRAGMENT_LIMIT: usize = 32;
 
 fn resolve_at(
     value: &mut Value,
     path: &mut String,
     env: &dyn Fn(&str) -> Option<String>,
+    secret_keys: &BTreeSet<String>,
 ) -> Result<(), ConfigError> {
     let outer = path.len();
     match value {
-        Value::String(_, text) => *text = resolve_string(path, text, env)?,
+        Value::String(_, text) => *text = resolve_string(path, text, env, secret_keys)?,
         Value::Array(_, items) => {
             for (index, item) in items.iter_mut().enumerate() {
-                path.push_str(&["[", &index.to_string(), "]"].concat());
-                resolve_at(item, path, env)?;
+                match item.as_dict() {
+                    Some(entry) if path == "providers" => path.push_str(
+                        provider_label(entry)
+                            .strip_prefix("providers")
+                            .unwrap_or_default(),
+                    ),
+                    _ => path.push_str(&["[", &index.to_string(), "]"].concat()),
+                }
+                resolve_at(item, path, env, secret_keys)?;
                 path.truncate(outer);
             }
         }
@@ -450,7 +540,7 @@ fn resolve_at(
                     path.push('.');
                 }
                 path.push_str(name);
-                resolve_at(child, path, env)?;
+                resolve_at(child, path, env, secret_keys)?;
                 path.truncate(outer);
             }
         }
@@ -459,20 +549,40 @@ fn resolve_at(
     Ok(())
 }
 
-/// Resolves one string leaf, `key` being where it was written. A malformed
-/// placeholder is reported by key and fragment, never by the whole value: the
-/// value may be a sandbox literal secret.
+/// Resolves one string leaf, `key` being where it was written.
+///
+/// Under a secret key, anything that is not exactly one `${VAR}` is a literal
+/// (a sandbox's) or has text around its placeholder, and either way the string
+/// is the secret: a failure there names the key and nothing else, neither the
+/// fragment nor the variable it asked for. So is a `${NAME}` whose `NAME` is not
+/// shaped like an environment variable (`^[A-Z_][A-Z0-9_]*$`), whole or not: a
+/// secret pasted over the variable's name. A whole `${VAR}` of that shape that
+/// is unset names `VAR`, which is a variable name and not the secret. A secret
+/// written as an array or a map is hidden at every depth. Outside the secret
+/// keys a malformed placeholder is reported by key and a capped fragment.
 fn resolve_string(
     key: &str,
     text: &str,
     env: &dyn Fn(&str) -> Option<String>,
+    secret_keys: &BTreeSet<String>,
 ) -> Result<String, ConfigError> {
+    let hidden = match secret_place(key, secret_keys) {
+        SecretPlace::Outside => false,
+        SecretPlace::Exact => !is_whole_secret_placeholder(text),
+        SecretPlace::Inside => true,
+    };
+    let secret_not_a_placeholder = || ConfigError::SecretNotAPlaceholder {
+        key: key.to_owned(),
+    };
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(start) = rest.find("${") {
         out.push_str(&rest[..start]);
         let after = &rest[start + 2..];
         let Some(end) = after.find('}') else {
+            if hidden {
+                return Err(secret_not_a_placeholder());
+            }
             return Err(ConfigError::MalformedPlaceholder {
                 key: key.to_owned(),
                 fragment: "${ with no closing }".to_owned(),
@@ -480,6 +590,9 @@ fn resolve_string(
         };
         let name = &after[..end];
         if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            if hidden {
+                return Err(secret_not_a_placeholder());
+            }
             let shown: String = name.chars().take(FRAGMENT_LIMIT).collect();
             let ellipsis = if name.chars().count() > FRAGMENT_LIMIT {
                 "..."
@@ -491,8 +604,18 @@ fn resolve_string(
                 fragment: format!("${{{shown}{ellipsis}}}"),
             });
         }
-        let resolved =
-            env(name).ok_or_else(|| ConfigError::UnresolvedPlaceholder(name.to_owned()))?;
+        if hidden && !is_env_var_name(name) {
+            // Whatever the environment holds under this name, the name is not
+            // one: it is the secret, written where a variable's name goes.
+            return Err(secret_not_a_placeholder());
+        }
+        let resolved = env(name).ok_or_else(|| {
+            if hidden {
+                secret_not_a_placeholder()
+            } else {
+                ConfigError::UnresolvedPlaceholder(name.to_owned())
+            }
+        })?;
         out.push_str(&resolved);
         rest = &after[end + 1..];
     }

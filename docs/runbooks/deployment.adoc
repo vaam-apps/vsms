@@ -677,10 +677,11 @@ docker compose run --rm sms-gateway mtn-subscribe-dlr \
 MTN's credentials are the `mtn_cm` entry of the YAML configuration (see
 `config/application-prod.yml` and `deploy/.env.example`), so they are not
 repeated on the command line -- the secret in particular should never land in
-shell history. The command loads the whole document, so every `+${NAME}+` it
-writes, the pepper's included, must be set in the environment it runs in: the
-compose service already has them, which is why the command above uses the
-`sms-gateway` service.
+shell history. The command loads every block of the document but `security`,
+so every other `+${NAME}+` it writes must be set in the environment it runs in
+and `SMS_HASH_PEPPER` need not be (it hashes nothing, so it is neither required
+nor read): the compose service already has them, which is why the command above
+uses the `sms-gateway` service.
 
 Note the path segment is `mtn_cm`, matching `SmsProvider::key` and what
 ``sms-gateway``'s `+/dlr/{providerKey}+` handler matches against. A
@@ -1132,8 +1133,22 @@ the chart renders into a ConfigMap and mounts -- with `subPath`, over
 `/config/application-<profile>.yml` -- into the gateway *and* the worker, so the
 two cannot disagree about a provider. `subPath` is what keeps the image's base
 file: a ConfigMap mounted at `/config` would replace the directory. The mounted
-file does not update in place, so both pod templates carry a checksum of the
-overlay and an edit rolls the Pods.
+file does not update in place, so an edit has to roll the Pods, and the library
+chart does it: it puts `checksum/configMaps`, a hash of every ConfigMap the
+release renders, on each controller's pod template (bjw-s common 4.6.2). The
+chart used to add a `checksum/sms-config` of its own to the gateway and the
+worker; it said the same thing and is gone. The library's reach is wider than
+that one was: **an overlay edit also rolls the admin console's Pod, and changes
+the pod template of the `migrate` and seed Jobs**, because every controller's
+template carries the same hash. Expect the admin Pod in the rollout of a
+configuration-only change. A hook Job is created anew by each `helm upgrade`
+whatever its template says, so for the Jobs the changed hash is not a visible
+event.
+
+A ConfigMap of your own, mounted beside the overlay, goes under `configMaps` and
+`persistence` as in any bjw-s release; the chart merges the overlay into that
+map, so yours is kept. The key `overlay` is the chart's: a release that sets
+`configMaps.overlay` is refused (guard `config-maps-overlay`).
 
 The overlay is required (guard `config-overlay`), and there is no switch to leave
 its ConfigMap out: the base file lists no provider, and a gateway with none

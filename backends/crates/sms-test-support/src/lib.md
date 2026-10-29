@@ -319,6 +319,8 @@ fixed seeds, shared with the gateway-binary suites through key files.
 [`config::TestConfig`] copies the repository's `config/application.yml` next to
 a one-off overlay and hands back the `--config`/`--profile` flags, so a suite
 that spawns `sms-gateway serve` or `sms-worker` runs on the repository's own
-defaults and writes only the providers it needs.
+defaults and writes only the providers it needs. The suite names the directory
+the copy lives in, `Path::new(env!("CARGO_TARGET_TMPDIR"))`, because cargo sets
+that variable when it compiles an integration test and not when the test runs.
 
 <!-- markdownlint-disable-file MD041 -->
