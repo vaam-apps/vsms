@@ -64,23 +64,23 @@ pub fn no_providers_overlay() -> String {
 impl TestConfig {
     /// Writes `application.yml` (a copy of the repository's) and
     /// `application-test.yml` (`overlay`) under a fresh directory named for
-    /// `tag` and this process, inside the target directory
-    /// (`CARGO_TARGET_TMPDIR`, which `cargo test` sets; `target/tmp` beside the
-    /// workspace otherwise) and not in the system's temporary directory, where
-    /// nothing would ever remove it.
+    /// `tag` and this process, inside `root`.
+    ///
+    /// A suite passes `Path::new(env!("CARGO_TARGET_TMPDIR"))`: cargo sets that
+    /// variable when it compiles an integration test, not when the test runs,
+    /// and this crate is compiled for no test of the suite's, so reading it here
+    /// at run time would always miss and the directory would land wherever the
+    /// fallback said. It belongs in the target directory and not in the system's
+    /// temporary directory, where nothing would ever remove it.
     ///
     /// # Panics
     ///
     /// On an I/O error: a suite that cannot write its configuration has nothing
     /// to run.
     #[must_use]
-    pub fn write(tag: &str, overlay: &str) -> Self {
+    pub fn write(root: &Path, tag: &str, overlay: &str) -> Self {
         let repo_base =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../config/application.yml");
-        let root = std::env::var_os("CARGO_TARGET_TMPDIR").map_or_else(
-            || Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../target/tmp"),
-            PathBuf::from,
-        );
         let dir = root.join(format!(
             "sms-test-config-{tag}-{}-{}",
             std::process::id(),
@@ -116,9 +116,15 @@ impl Drop for TestConfig {
 mod tests {
     use super::*;
 
+    /// A library's unit tests get no `CARGO_TARGET_TMPDIR`, so the root is the
+    /// workspace's `target/tmp`.
+    fn scratch_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../target/tmp")
+    }
+
     #[test]
     fn the_directory_is_removed_when_the_config_is_dropped() {
-        let config = TestConfig::write("drop", &no_providers_overlay());
+        let config = TestConfig::write(&scratch_root(), "drop", &no_providers_overlay());
         let dir = config.dir.clone();
         assert!(dir.join("application.yml").is_file());
         assert!(dir.join("application-test.yml").is_file());
@@ -128,8 +134,8 @@ mod tests {
 
     #[test]
     fn two_configs_with_one_tag_do_not_share_a_directory() {
-        let first = TestConfig::write("twin", &no_providers_overlay());
-        let second = TestConfig::write("twin", &no_providers_overlay());
+        let first = TestConfig::write(&scratch_root(), "twin", &no_providers_overlay());
+        let second = TestConfig::write(&scratch_root(), "twin", &no_providers_overlay());
         let kept = second.dir.clone();
         drop(first);
         assert!(

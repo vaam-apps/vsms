@@ -119,6 +119,7 @@ mod sealed_fixtures;
 
 use sms_test_support::config::{self, TestConfig};
 use std::net::TcpListener as StdTcpListener;
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -490,6 +491,7 @@ impl GatewayProcess {
             &std::env::temp_dir().join(format!("sms-kill-mid-drain-keys-{port}")),
         );
         let config = TestConfig::write(
+            Path::new(env!("CARGO_TARGET_TMPDIR")),
             &format!("kill-mid-drain-{port}"),
             &config::orange_overlay("http://127.0.0.1:9"),
         );

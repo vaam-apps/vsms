@@ -15,9 +15,11 @@ use sms_provider_mtn::MtnProvider;
 /// is one place they are written and this command can no longer be run against
 /// a different account than the gateway holds by a typo. It still needs no
 /// database, which is why there is no `--database-url` here unlike every other
-/// subcommand in this module. It does need the whole document to load: every
-/// `${VAR}` it writes must be set, the hash pepper's included, so run it where
-/// the gateway's environment is (`kubectl exec`, `docker compose exec`).
+/// subcommand in this module. It loads as `Binary::ProviderTool`, which drops the
+/// `security` block before placeholders resolve, so it neither requires nor
+/// receives the hash pepper (it hashes nothing). Every other `${VAR}` the
+/// document writes must still be set, so run it where the gateway's environment
+/// is (`kubectl exec`, `docker compose exec`).
 #[derive(Debug, clap::Args)]
 pub(crate) struct MtnSubscribeDlrArgs {
     /// The YAML deployment configuration, which carries MTN's credentials.

@@ -297,6 +297,52 @@ fn a_livemode_literal_secret_with_an_unset_placeholder_leaks_neither_part() {
     );
 }
 
+const ORANGE_SECRET: &str = "providers[code=orange_cm].credentials.client_secret";
+
+#[test]
+fn a_secret_pasted_over_a_variable_name_is_a_literal_and_never_printed() {
+    // `${s3cr3tAlnumValue9}` is a well-formed placeholder to the resolver, and
+    // `env_for` even sets that name. Nobody names a variable that way: it is the
+    // secret, written where a name goes, and must neither resolve nor be printed
+    // as "references ${s3cr3tAlnumValue9}".
+    for profile in [
+        "secret-pasted-over-variable-name",
+        "livemode-secret-pasted-over-variable-name",
+    ] {
+        assert!(
+            env_for(profile).contains_key("s3cr3tAlnumValue9"),
+            "{profile}: the environment must offer the name, or this proves nothing"
+        );
+        let error = refused(profile);
+        assert_eq!(
+            error,
+            ConfigError::SecretNotAPlaceholder {
+                key: ORANGE_SECRET.to_owned()
+            },
+            "{profile}"
+        );
+        assert_value_absent(&error, &["s3cr3t", "AlnumValue9"]);
+    }
+}
+
+#[test]
+fn a_secret_written_as_an_array_or_a_map_leaks_no_fragment() {
+    // The key path of the string inside is `...client_secret[0]` or
+    // `...client_secret.part`, which is not the secret's own key.
+    for (profile, key) in [
+        ("secret-written-as-array", format!("{ORANGE_SECRET}[0]")),
+        ("secret-written-as-map", format!("{ORANGE_SECRET}.part")),
+    ] {
+        let error = refused(profile);
+        assert_eq!(
+            error,
+            ConfigError::SecretNotAPlaceholder { key },
+            "{profile}"
+        );
+        assert_value_absent(&error, &["s3cr", "et-x9"]);
+    }
+}
+
 #[test]
 fn a_malformed_placeholder_outside_a_secret_keeps_its_fragment_and_a_consistent_key() {
     let error = refused("malformed-setting-bad-name");
@@ -425,33 +471,40 @@ fn a_document_without_security_is_refused_by_the_gateway_and_loads_for_the_worke
 }
 
 #[test]
-fn the_worker_still_refuses_a_retired_variable() {
-    for retired in RETIRED {
-        if retired.env == "SMS_HASH_PEPPER" {
-            continue; // the placeholder form is the exempt one, above
+fn the_worker_and_the_provider_tool_still_refuse_a_retired_variable() {
+    for binary in [Binary::Worker, Binary::ProviderTool] {
+        for retired in RETIRED {
+            if retired.env == "SMS_HASH_PEPPER" {
+                continue; // the placeholder form is the exempt one, above
+            }
+            let env = env_with(DEFAULT_PROFILE, &[(retired.env, "anything")]);
+            assert_eq!(
+                load_for(binary, DEFAULT_PROFILE, &env).unwrap_err(),
+                ConfigError::RetiredEnv {
+                    var: retired.env.to_owned(),
+                    key: retired.key.to_owned(),
+                },
+                "{} set in the environment of {binary:?}",
+                retired.env
+            );
         }
-        let env = env_with(DEFAULT_PROFILE, &[(retired.env, "anything")]);
-        assert_eq!(
-            load_for(Binary::Worker, DEFAULT_PROFILE, &env).unwrap_err(),
-            ConfigError::RetiredEnv {
-                var: retired.env.to_owned(),
-                key: retired.key.to_owned(),
-            },
-            "{} set in the worker's environment",
-            retired.env
-        );
     }
 }
 
 #[test]
-fn the_worker_still_refuses_a_literal_pepper_under_livemode() {
+fn the_worker_and_the_provider_tool_still_refuse_a_literal_pepper_under_livemode() {
     // The rule reads the file as written, and the file is shared: a literal
     // pepper in a livemode document is a leak whichever binary reads it.
     let env = env_for("livemode-literal-pepper");
-    assert!(matches!(
-        load_for(Binary::Worker, "livemode-literal-pepper", &env),
-        Err(ConfigError::LiteralSecret { ref key }) if key == "security.hash_pepper"
-    ));
+    for binary in [Binary::Worker, Binary::ProviderTool] {
+        assert!(
+            matches!(
+                load_for(binary, "livemode-literal-pepper", &env),
+                Err(ConfigError::LiteralSecret { ref key }) if key == "security.hash_pepper"
+            ),
+            "{binary:?}"
+        );
+    }
 }
 
 // --- shape rules -----------------------------------------------------------

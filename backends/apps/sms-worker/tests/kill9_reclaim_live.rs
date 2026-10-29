@@ -45,6 +45,7 @@ use sms_api::schema::{
     self, Cratestack, Encoding, Message, MessageClass, MessageState, OperatorCode,
 };
 use sms_test_support::config::{self, TestConfig};
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -400,7 +401,11 @@ fn spawn_worker(database_url: &str, orange_base_url: &str, worker_id: &str) -> K
          credentials:\n      client_id: kill9-test-client\n      client_secret: \
          kill9-test-secret\n    settings:\n      sender_number: \"{SENDER_NUMBER}\"\n"
     );
-    let config = TestConfig::write(&format!("kill9-{worker_id}"), &overlay);
+    let config = TestConfig::write(
+        Path::new(env!("CARGO_TARGET_TMPDIR")),
+        &format!("kill9-{worker_id}"),
+        &overlay,
+    );
     let child = Command::new(bin)
         .args(["--roles", "dispatch"])
         .args(["--database-url", database_url])

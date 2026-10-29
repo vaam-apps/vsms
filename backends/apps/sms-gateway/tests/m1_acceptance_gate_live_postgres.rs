@@ -57,6 +57,7 @@
 //! ```
 
 use std::net::TcpListener as StdTcpListener;
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration as StdDuration;
 
@@ -293,6 +294,7 @@ impl GatewayProcess {
         // Never exercised: this suite never runs `dispatch`, so the adapter is
         // constructed but never asked to reach the network.
         let config = TestConfig::write(
+            Path::new(env!("CARGO_TARGET_TMPDIR")),
             &format!("m1-gate-{port}"),
             &config::orange_overlay("http://127.0.0.1:9"),
         );

@@ -67,16 +67,22 @@ pub enum ConfigError {
     #[error("the configuration references ${{{0}}}, which the environment does not set")]
     UnresolvedPlaceholder(String),
 
-    /// A secret that is not exactly one `${VAR}` and fails to resolve: it holds
-    /// a `${` that never closes, a name that is not `[A-Za-z0-9_]+`, or a
-    /// placeholder the environment does not set, with text around it. Carries
-    /// the key and nothing else: a value there is a literal secret, or has one
-    /// around its placeholder, and an error message is a log line. A whole
-    /// `${VAR}` that is unset is [`ConfigError::UnresolvedPlaceholder`], which
-    /// names the variable and not the secret.
+    /// A secret that is not exactly one `${VAR}` naming an environment variable
+    /// the environment sets. It holds a `${` that never closes, a name that is
+    /// not `[A-Za-z0-9_]+`, a placeholder with text around it that fails to
+    /// resolve (a name the environment does not set, as in `${SET}${UNSET}`), or
+    /// a `${NAME}` whose `NAME` is not shaped like an environment variable
+    /// (`^[A-Z_][A-Z0-9_]*$`, as in a secret pasted over the variable's name).
+    /// Carries the key and nothing else: a value there is a literal secret, or
+    /// has one around its placeholder, or is one written as a variable name, and
+    /// an error message is a log line. Only a whole, well-shaped `${VAR}` that
+    /// is unset is [`ConfigError::UnresolvedPlaceholder`], which names the
+    /// variable because that name is not the secret.
     #[error(
-        "`{key}` is a secret and holds a `${{` that is not a single ${{VAR}} placeholder; write \
-         the secret as exactly `${{VAR}}` and put its text in the environment"
+        "`{key}` is a secret and must be exactly one `${{VAR}}` placeholder, VAR being a variable \
+         name in capitals, digits and underscores; it is not, it names a variable the \
+         environment does not set, or it holds a `${{` that does not close. Write the secret as \
+         exactly `${{VAR}}` and put its text in the environment"
     )]
     SecretNotAPlaceholder {
         /// The YAML key the secret was written under.

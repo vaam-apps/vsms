@@ -73,6 +73,7 @@
 use sms_test_support::config::{self, TestConfig};
 use std::io::{BufRead, BufReader};
 use std::net::TcpListener as StdTcpListener;
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
@@ -444,6 +445,7 @@ impl Drop for KillOnDrop {
 fn spawn_hooks_worker(database_url: &str, worker_id: &str) -> KillOnDrop {
     let bin = env!("CARGO_BIN_EXE_sms-worker");
     let config = TestConfig::write(
+        Path::new(env!("CARGO_TARGET_TMPDIR")),
         &format!("hooks-node-{worker_id}"),
         &config::no_providers_overlay(),
     );

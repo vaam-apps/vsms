@@ -677,10 +677,11 @@ docker compose run --rm sms-gateway mtn-subscribe-dlr \
 MTN's credentials are the `mtn_cm` entry of the YAML configuration (see
 `config/application-prod.yml` and `deploy/.env.example`), so they are not
 repeated on the command line -- the secret in particular should never land in
-shell history. The command loads the whole document, so every `+${NAME}+` it
-writes, the pepper's included, must be set in the environment it runs in: the
-compose service already has them, which is why the command above uses the
-`sms-gateway` service.
+shell history. The command loads every block of the document but `security`,
+so every other `+${NAME}+` it writes must be set in the environment it runs in
+and `SMS_HASH_PEPPER` need not be (it hashes nothing, so it is neither required
+nor read): the compose service already has them, which is why the command above
+uses the `sms-gateway` service.
 
 Note the path segment is `mtn_cm`, matching `SmsProvider::key` and what
 ``sms-gateway``'s `+/dlr/{providerKey}+` handler matches against. A

@@ -27,11 +27,20 @@ The steps, in order, and why they are in this order:
    secret keys are known by now (step 4), so a failure is reported according to
    where it happened. Under a secret key, a value that is not exactly one
    `${VAR}` and fails to resolve (an unclosed `${`, a bad name, or a placeholder
-   the environment does not set, with text around it) is
+   the environment does not set, with text around it, as in `${SET}${UNSET}`) is
    [`ConfigError::SecretNotAPlaceholder`]: the key path and nothing else, no
    fragment and no variable name, because the string is a literal secret or has
    one around its placeholder, and resolve runs before the livemode refusal of a
-   literal. A whole `${VAR}` that is unset still names `VAR`, which is a
+   literal. **So is a `${NAME}` whose `NAME` is not shaped like an environment
+   variable, `^[A-Z_][A-Z0-9_]*$`, whole or not, and whatever the environment
+   holds under that name:** `client_secret: "${s3cr3tAlnumValue9}"` is a secret
+   pasted over the variable's name, valid to the resolver and not a placeholder
+   anybody set, so it counts as a literal (refused in a livemode document as one,
+   and by this error before that) and its name is never printed. Every
+   placeholder in `config/*.yml` has the shape. A secret written as an array or a
+   map (`client_secret: ["..."]`) is hidden at every depth: `...client_secret[0]`
+   and `...client_secret.x` are inside the secret and get the same error. Only a
+   whole, well-shaped `${VAR}` that is unset still names `VAR`, which is a
    variable name and not the secret. Anywhere else a malformed placeholder is
    reported by YAML key and the offending `${...}` fragment, capped. Both name a
    provider the one way, `providers[code=orange_cm]`.

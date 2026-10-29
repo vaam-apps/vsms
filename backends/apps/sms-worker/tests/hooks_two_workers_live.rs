@@ -78,6 +78,7 @@
 //! transcript over the prose.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
@@ -345,6 +346,7 @@ fn spawn_hooks_worker(
 ) -> KillOnDrop {
     let bin = env!("CARGO_BIN_EXE_sms-worker");
     let config = TestConfig::write(
+        Path::new(env!("CARGO_TARGET_TMPDIR")),
         &format!("hooks-two-{worker_id}"),
         &config::no_providers_overlay(),
     );

@@ -362,13 +362,63 @@ fn scan_placeholders(text: &str, out: &mut BTreeSet<String>) {
     }
 }
 
-/// Whether `text` is exactly one `${NAME}` and nothing else.
-fn is_whole_placeholder(text: &str) -> bool {
+/// The `NAME` of a `text` that is exactly one `${NAME}` and nothing else, `NAME`
+/// being any run of `[A-Za-z0-9_]`.
+fn whole_placeholder_name(text: &str) -> Option<&str> {
     text.strip_prefix("${")
         .and_then(|rest| rest.strip_suffix('}'))
-        .is_some_and(|name| {
+        .filter(|name| {
             !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
         })
+}
+
+/// Whether `name` has the shape of an environment variable that a deployment
+/// would set: `^[A-Z_][A-Z0-9_]*$`.
+///
+/// A secret's `${NAME}` must have it. `${s3cr3tAlnumValue9}` is a valid
+/// placeholder to the resolver, but nobody names a variable that way: it is a
+/// secret pasted over the variable name, and an error that said "references
+/// `${s3cr3tAlnumValue9}`" would print it.
+fn is_env_var_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|first| first.is_ascii_uppercase() || first == '_')
+        && chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// Whether `text` is exactly one `${NAME}` with an environment-variable `NAME`:
+/// the only form in which a secret is not a literal.
+fn is_whole_secret_placeholder(text: &str) -> bool {
+    whole_placeholder_name(text).is_some_and(is_env_var_name)
+}
+
+/// Where a key path stands against the secret keys.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SecretPlace {
+    /// Not a secret and not inside one.
+    Outside,
+    /// The secret's own key: a string leaf, the only shape a secret may take.
+    Exact,
+    /// Under a secret that is an array or a map (`...client_secret[0]`,
+    /// `...client_secret.x`). The secret is not a string there, so nothing in it
+    /// may be repeated either.
+    Inside,
+}
+
+fn secret_place(key: &str, secret_keys: &BTreeSet<String>) -> SecretPlace {
+    if secret_keys.contains(key) {
+        return SecretPlace::Exact;
+    }
+    let inside = secret_keys.iter().any(|secret| {
+        key.strip_prefix(secret.as_str())
+            .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('['))
+    });
+    if inside {
+        SecretPlace::Inside
+    } else {
+        SecretPlace::Outside
+    }
 }
 
 /// How a `providers:` entry is named in an error: `providers[code=orange_cm]`,
@@ -416,7 +466,7 @@ fn literal_secret_keys(document: &Value) -> Vec<String> {
         .filter(|(_, value)| {
             value
                 .as_str()
-                .is_none_or(|text| !is_whole_placeholder(text))
+                .is_none_or(|text| !is_whole_secret_placeholder(text))
         })
         .map(|(key, _)| key)
         .collect()
@@ -504,16 +554,23 @@ fn resolve_at(
 /// Under a secret key, anything that is not exactly one `${VAR}` is a literal
 /// (a sandbox's) or has text around its placeholder, and either way the string
 /// is the secret: a failure there names the key and nothing else, neither the
-/// fragment nor the variable it asked for. A whole `${VAR}` that is unset names
-/// `VAR`, which is a variable name and not the secret. Outside the secret keys a
-/// malformed placeholder is reported by key and a capped fragment.
+/// fragment nor the variable it asked for. So is a `${NAME}` whose `NAME` is not
+/// shaped like an environment variable (`^[A-Z_][A-Z0-9_]*$`), whole or not: a
+/// secret pasted over the variable's name. A whole `${VAR}` of that shape that
+/// is unset names `VAR`, which is a variable name and not the secret. A secret
+/// written as an array or a map is hidden at every depth. Outside the secret
+/// keys a malformed placeholder is reported by key and a capped fragment.
 fn resolve_string(
     key: &str,
     text: &str,
     env: &dyn Fn(&str) -> Option<String>,
     secret_keys: &BTreeSet<String>,
 ) -> Result<String, ConfigError> {
-    let hidden = secret_keys.contains(key) && !is_whole_placeholder(text);
+    let hidden = match secret_place(key, secret_keys) {
+        SecretPlace::Outside => false,
+        SecretPlace::Exact => !is_whole_secret_placeholder(text),
+        SecretPlace::Inside => true,
+    };
     let secret_not_a_placeholder = || ConfigError::SecretNotAPlaceholder {
         key: key.to_owned(),
     };
@@ -546,6 +603,11 @@ fn resolve_string(
                 key: key.to_owned(),
                 fragment: format!("${{{shown}{ellipsis}}}"),
             });
+        }
+        if hidden && !is_env_var_name(name) {
+            // Whatever the environment holds under this name, the name is not
+            // one: it is the secret, written where a variable's name goes.
+            return Err(secret_not_a_placeholder());
         }
         let resolved = env(name).ok_or_else(|| {
             if hidden {
