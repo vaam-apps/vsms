@@ -126,23 +126,39 @@ built here, in a real template pass: the same mutate-before-generate trick
 `global.nameOverride` and `admin.enabled` use. `subPath` is load-bearing: see the
 comment above `config:` in values.yaml. The gateway and the worker mount the
 same file.
+
+The operator's own `configMaps` (a ConfigMap of theirs, mounted through
+`persistence`) are kept: the overlay is merged in beside them rather than
+assigned over the map, which used to drop them (mounted by `identifier` the
+render failed with a misleading "no enabled configMap" error, mounted by `name`
+the ConfigMap was silently not rendered). Only the key `overlay`
+is the chart's, and an operator's `configMaps.overlay` is refused
+(guard `config-maps-overlay`).
 */}}
 {{- $overlayFile := printf "application-%s.yml" .Values.config.profile }}
-{{- $_ := set .Values "configMaps" (dict "overlay" (dict "enabled" true "suffix" "config" "data" (dict $overlayFile .Values.config.overlay))) -}}
+{{- $operatorConfigMaps := default (dict) .Values.configMaps }}
+{{- if hasKey $operatorConfigMaps "overlay" }}
+{{- fail "vsms chart guard \"config-maps-overlay\": values.configMaps.overlay is defined, and `overlay` is the key this chart renders config.overlay under. Use another key for your own ConfigMap: this one is the chart's, and replacing it would unmount the overlay." }}
+{{- end }}
+{{- $_ := set .Values "configMaps" (merge (dict "overlay" (dict "enabled" true "suffix" "config" "data" (dict $overlayFile .Values.config.overlay))) $operatorConfigMaps) -}}
 {{- $overlayMount := list (dict "path" (printf "%s/%s" (dir .Values.config.path) $overlayFile) "subPath" $overlayFile "readOnly" true) }}
 {{- $_ := set (index .Values.persistence "config-overlay") "advancedMounts" (dict "gateway" (dict "main" $overlayMount) "worker" (dict "main" $overlayMount)) -}}
 
 {{/*
 The process reads its configuration once, at start (no hot reload), and a
 ConfigMap mounted with `subPath` does not update in place, so an edit to the
-overlay has to restart the Pods. A checksum of its text on both pod templates
-does that: the template changes exactly when the overlay does.
+overlay has to restart the Pods. common does that: it puts a
+`checksum/configMaps` annotation, a hash of every ConfigMap the chart renders,
+on every controller's pod template (bjw-s common 4.6.2), so the template
+changes exactly when the overlay does. This chart used to add a second
+annotation of its own, `checksum/sms-config`, to the gateway and the worker; it
+said the same thing and is gone. The one difference is the reach: common's
+checksum also rolls the admin console and the migrate and seed Jobs' pods on an
+overlay edit (docs/runbooks/deployment.adoc, "Kubernetes (Helm)").
+.xtask/src/chart_render.rs holds it: it renders the chart twice with different
+overlay text and requires the gateway's and the worker's `checksum/configMaps`
+to differ.
 */}}
-{{- $overlaySum := sha256sum .Values.config.overlay }}
-{{- range $controller := list "gateway" "worker" }}
-{{- $pod := index $.Values.controllers $controller "pod" }}
-{{- $_ := set $pod "annotations" (merge (default (dict) $pod.annotations) (dict "checksum/sms-config" $overlaySum)) -}}
-{{- end }}
 
 {{/*
 A provider's secret is optional, and an unconfigured one must leave *no* env var

@@ -185,9 +185,9 @@ existingSecrets:
 # directory, so mounting a ConfigMap AT /config would replace it and the base
 # file would vanish (the process then refuses to start, naming a config file it
 # can no longer see). `subPath` also means the mounted file does not live-update
-# when the ConfigMap changes; the checksum annotation templates/common.yaml puts
-# on both pod templates turns an overlay edit into a rolling restart instead,
-# consistent with "no hot reload".
+# when the ConfigMap changes; the `checksum/configMaps` annotation bjw-s common
+# puts on every pod template turns an overlay edit into a rolling restart
+# instead, consistent with "no hot reload".
 #
 # The overlay is REQUIRED (templates/common.yaml refuses a release without it, and
 # there is no flag to turn the ConfigMap off): the baked base file configures no
