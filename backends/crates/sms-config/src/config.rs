@@ -8,6 +8,7 @@ use figment::providers::{Format, Yaml};
 use figment::value::Value;
 use serde::Deserialize;
 
+use crate::auth::{AuthConfig, AuthMethods};
 use crate::cli::DEFAULT_PROFILE;
 use crate::error::ConfigError;
 use crate::model::{Api, Bucket, Database, Deployment, Security};
@@ -47,6 +48,9 @@ impl Binary {
 pub struct Config {
     /// `deployment:`.
     pub deployment: Deployment,
+    /// `auth.methods`, resolved: the ways of authenticating this deployment
+    /// permits (every one when the key is absent).
+    pub auth_methods: AuthMethods,
     /// `security:` - `Some` for [`Binary::Gateway`], `None` for
     /// [`Binary::Worker`] and [`Binary::ProviderTool`], which do not read or
     /// resolve the block. Use
@@ -63,13 +67,17 @@ pub struct Config {
 /// What serde reads, before the rules that need more than one field.
 ///
 /// Every block refuses unknown keys, this one included, so a misspelt key is an
-/// error naming it rather than a setting that is silently never applied. The
-/// auth methods (VSA-1) will be one more field here, between `deployment` and
-/// `security`; until it exists an `auth:` key is refused by this very rule.
+/// error naming it rather than a setting that is silently never applied. That is
+/// also what makes `auth.methods` safe to spell wrong: `auth_methods:` or an
+/// `auth:` under `api:` is an unknown key, not a narrowing that was dropped and
+/// left every method permitted (vpay needs two rules of its own for that, because
+/// its document ignores unknown top-level keys).
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 struct Raw {
     deployment: Deployment,
+    #[serde(default)]
+    auth: AuthConfig,
     // Absent for the worker (the loader removes the block before it resolves
     // placeholders), required for the gateway (`validate` says so).
     #[serde(default)]
@@ -190,6 +198,7 @@ impl Config {
     fn validate(raw: Raw, binary: Binary, literal_secrets: &[String]) -> Result<Self, ConfigError> {
         let Raw {
             deployment,
+            auth,
             security,
             api,
             database,
@@ -200,6 +209,11 @@ impl Config {
         if binary.reads_security() && security.is_none() {
             return Err(ConfigError::Shape("missing field `security`".to_owned()));
         }
+        // First of the rules about the document's content: which ways of
+        // authenticating are permitted is a property of the whole deployment, and
+        // a list that permits none is better named than whichever rule would have
+        // tripped on a later key.
+        let auth_methods = auth.resolve()?;
         require_text("deployment.name", &deployment.name)?;
         check_url(
             "deployment.public_base_url",
@@ -236,6 +250,7 @@ impl Config {
 
         Ok(Self {
             deployment,
+            auth_methods,
             security,
             api,
             database,

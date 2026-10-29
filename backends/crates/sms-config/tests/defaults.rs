@@ -110,3 +110,24 @@ fn the_optional_provider_flags_default_as_they_did() {
     assert_eq!(aws.time_to_live, None);
     assert_eq!(aws.endpoint_url, None);
 }
+
+#[test]
+fn the_committed_base_leaves_auth_methods_absent_so_every_method_is_permitted() {
+    // VSA-1: a deployment that never wrote the key gets what it always got. The
+    // base file carries the key as a comment only; writing it there would turn
+    // the shipped behaviour off for every profile.
+    let config = base_config();
+    assert!(!config.auth_methods.is_explicit());
+    assert_eq!(
+        config.auth_methods.permitted().count(),
+        sms_config::AuthMethod::ALL.len()
+    );
+    let text = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../config/application.yml"),
+    )
+    .unwrap();
+    assert!(
+        !text.lines().any(|line| line.starts_with("auth:")),
+        "config/application.yml must carry `auth:` as a comment, not as a key"
+    );
+}

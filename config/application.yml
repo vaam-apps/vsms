@@ -29,6 +29,24 @@ deployment:
   livemode: false
   public_base_url: http://localhost:8080
 
+# Which ways of authenticating this deployment permits (VSA-1; owner ruling R5:
+# vsms serves other applications besides vaam). ABSENT means all four, which is
+# what this file means: a request is signed (`keypair`), webhook endpoints may be
+# delivered with a shared-secret signature (`hmac_webhooks`), and the two methods
+# this release has no code for yet (`machine_tokens`, VSA-3; `human_login`,
+# VSA-4) are permitted and served by nothing. A deployment that serves one
+# application and wants fewer says so; vaam's overlay is `methods: [keypair]`.
+# With `hmac_webhooks` off, creating, updating, switching or rotating an `hmac`
+# endpoint answers 422 (`auth_method_disabled`) and the worker parks what is
+# already queued for one (`delivery_mode_disabled`) instead of sending it.
+# Naming `machine_tokens` or `human_login` is refused until they exist, and so is
+# an empty or null list, a duplicate, an unknown name and any list without
+# `keypair` (docs/architecture.md, section 4.9). Not written here, on purpose:
+# writing it would turn this file's shipped behaviour off.
+#
+# auth:
+#   methods: [keypair, hmac_webhooks]
+
 security:
   # The server-held pepper behind Message.msisdnHash / bodyHash. At least 32
   # bytes; `openssl rand -base64 48`. Rotating it orphans every row hashed under

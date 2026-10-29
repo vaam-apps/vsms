@@ -1,5 +1,6 @@
 #![doc = include_str!("lib.md")]
 
+mod auth;
 mod cli;
 mod config;
 mod error;
@@ -8,6 +9,7 @@ mod provider;
 pub mod retired;
 mod secret;
 
+pub use auth::{AuthConfig, AuthMethod, AuthMethods};
 pub use cli::{ConfigArgs, DEFAULT_PROFILE};
 pub use config::{Binary, Config};
 pub use error::ConfigError;

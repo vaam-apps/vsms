@@ -12,6 +12,7 @@ and in the environment. The split is vpay's, and the loader is modelled on
 | `SMS_WORKER_ROLES`, `SMS_WORKER_ID`, `SMS_WORKER_HEALTH_FILE` | idempotency and rate limits, `api.*`                         |
 | `RUST_LOG`                                                    | every provider's host, settings and credentials, `providers` |
 | `SMS_CONFIG`, `SMS_PROFILE`                                   | `deployment.*`                                               |
+|                                                               | which authentication methods are permitted, `auth.methods`   |
 
 # Loading
 
@@ -41,10 +42,13 @@ they are refused rather than ignored: see [`retired`]. clap silently ignores an
 environment variable it no longer declares, so without that refusal a
 deployment that still set `ORANGE_CM_CLIENT_ID` would boot with Orange missing.
 
-# Room for `auth.methods`
+# `auth.methods`
 
-Every block refuses unknown keys, so an `auth:` key is refused today. VSA-1
-adds the block as one more field of the document, between `deployment` and
-`security`, and flips that refusal into its own rules.
+Which ways of authenticating a deployment permits is a YAML key too (VSA-1,
+owner ruling R5: vsms serves other applications besides vaam). Absent means all
+four; vaam writes `[keypair]`. See [`AuthConfig`] for the rules and
+[`Config::auth_methods`] for what a process reads. Every block refuses unknown
+keys, so `auth_methods:` or an `auth:` nested under another block is an error
+naming it, not a narrowing that was silently dropped.
 
 <!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->

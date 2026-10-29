@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use sms_config::{Binary, Config, ConfigError, DEFAULT_PROFILE, RETIRED};
+use sms_config::{AuthMethod, Binary, Config, ConfigError, DEFAULT_PROFILE, RETIRED};
 
 fn base() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/base.yml")
@@ -507,6 +507,128 @@ fn the_worker_and_the_provider_tool_still_refuse_a_literal_pepper_under_livemode
     }
 }
 
+// --- auth.methods ----------------------------------------------------------
+
+fn permitted(config: &Config) -> Vec<&'static str> {
+    config
+        .auth_methods
+        .permitted()
+        .map(AuthMethod::as_str)
+        .collect()
+}
+
+fn served(config: &Config) -> Vec<&'static str> {
+    config
+        .auth_methods
+        .served()
+        .map(AuthMethod::as_str)
+        .collect()
+}
+
+#[test]
+fn an_absent_key_permits_all_four_and_serves_two() {
+    let config = load(DEFAULT_PROFILE).unwrap();
+    assert_eq!(
+        permitted(&config),
+        ["keypair", "machine_tokens", "hmac_webhooks", "human_login"]
+    );
+    assert_eq!(
+        served(&config),
+        ["keypair", "hmac_webhooks"],
+        "machine_tokens and human_login are permitted by the default and served by nothing"
+    );
+    assert!(!config.auth_methods.is_explicit());
+}
+
+#[test]
+fn the_vaam_shape_permits_the_keypair_alone() {
+    let config = load("auth-keypair-only").unwrap();
+    assert_eq!(permitted(&config), ["keypair"]);
+    assert_eq!(served(&config), ["keypair"]);
+    assert!(config.auth_methods.is_explicit());
+    assert!(!config.auth_methods.permits(AuthMethod::HmacWebhooks));
+}
+
+#[test]
+fn a_list_may_keep_the_hmac_webhooks_and_its_order_is_irrelevant() {
+    for profile in ["auth-keypair-and-hmac", "auth-order-is-irrelevant"] {
+        let config = load(profile).unwrap();
+        assert_eq!(
+            permitted(&config),
+            ["keypair", "hmac_webhooks"],
+            "{profile}"
+        );
+        assert_eq!(served(&config), ["keypair", "hmac_webhooks"], "{profile}");
+    }
+}
+
+#[test]
+fn an_empty_list_and_a_null_are_both_refused_and_neither_is_the_default() {
+    assert_eq!(refused("auth-empty"), ConfigError::NoAuthMethods);
+    assert_eq!(
+        refused("auth-null"),
+        ConfigError::NoAuthMethods,
+        "`methods:` with its items commented out must not read as an absent key"
+    );
+}
+
+#[test]
+fn an_unknown_method_is_refused_and_the_legal_set_is_named() {
+    let error = refused("auth-unknown");
+    assert_eq!(
+        error,
+        ConfigError::UnknownAuthMethod("carrier_pigeon".to_owned())
+    );
+    let message = error.to_string();
+    for legal in ["keypair", "machine_tokens", "hmac_webhooks", "human_login"] {
+        assert!(message.contains(legal), "{message}");
+    }
+}
+
+#[test]
+fn a_duplicate_method_is_refused() {
+    assert_eq!(
+        refused("auth-duplicate"),
+        ConfigError::DuplicateAuthMethod(AuthMethod::Keypair)
+    );
+}
+
+#[test]
+fn a_method_this_release_cannot_serve_is_refused_when_named() {
+    assert_eq!(
+        refused("auth-machine-tokens"),
+        ConfigError::AuthMethodUnavailable(AuthMethod::MachineTokens)
+    );
+    assert_eq!(
+        refused("auth-human-login"),
+        ConfigError::AuthMethodUnavailable(AuthMethod::HumanLogin)
+    );
+    assert_eq!(
+        refused("auth-machine-tokens-alone"),
+        ConfigError::AuthMethodUnavailable(AuthMethod::MachineTokens),
+        "unavailable is named before the missing keypair"
+    );
+}
+
+#[test]
+fn a_list_that_authenticates_nobody_is_refused() {
+    assert_eq!(refused("auth-hmac-only"), ConfigError::NoWayIn);
+}
+
+#[test]
+fn every_binary_resolves_the_same_methods() {
+    // The worker enforces the hmac gate and the gateway serves the discovery
+    // document; both must read one answer from one file.
+    let env = env_for("auth-keypair-only");
+    for binary in [Binary::Gateway, Binary::Worker, Binary::ProviderTool] {
+        let config = Config::load_with_env(Some(&base()), "auth-keypair-only", binary, &|name| {
+            env.get(name).cloned()
+        })
+        .unwrap();
+        assert_eq!(permitted(&config), ["keypair"], "{binary:?}");
+    }
+}
+
 // --- shape rules -----------------------------------------------------------
 
 fn shape_message(profile: &str) -> String {
@@ -522,10 +644,18 @@ fn an_unknown_top_level_key_is_refused_and_named() {
 }
 
 #[test]
-fn auth_methods_are_not_a_key_yet() {
-    // VSA-1 adds the block. Until then a deployment that writes it believes it
-    // narrowed something, so the key is refused rather than dropped.
-    assert!(shape_message("shape-auth-not-yet").contains("auth"));
+fn a_misspelt_auth_key_is_refused_and_named_not_dropped() {
+    // vpay needs two rules of its own for these because its document ignores
+    // unknown top-level keys. Here every block refuses them, so a narrowing that
+    // was written in the wrong place is an error and not an all-four deployment.
+    for (profile, key) in [
+        ("shape-auth-methods-misspelt", "auth_methods"),
+        ("shape-auth-misplaced", "auth"),
+        ("shape-auth-unknown-key", "method"),
+    ] {
+        let message = shape_message(profile);
+        assert!(message.contains(key), "{profile}: {message}");
+    }
 }
 
 #[test]
