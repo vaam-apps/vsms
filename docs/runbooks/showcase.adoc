@@ -92,7 +92,12 @@ delivery and its receiver, through the `vsms_demo_endpoint` volume). The seed
 still has `--webhook-secret-out` (VS-8R) as the alternative to
 `--webhook-audience` that makes an `hmac` endpoint and writes its secret to that
 file; the stacks do not use it, and `demo-app` takes `DEMO_WEBHOOK_MODE=hmac`
-with `DEMO_WEBHOOK_SECRET_PATH` for such an endpoint. The two
+with `DEMO_WEBHOOK_SECRET_PATH` for such an endpoint. That flag is a demo opt-in
+that does not read `auth.methods`: against a deployment that excludes
+`hmac_webhooks` the endpoint is created all the same and its deliveries are held
+back (they stay `pending` until the method is permitted again or the endpoint is
+switched to `sealed`, `docs/runbooks/deployment.adoc`, "Narrowing the authentication
+methods"). The two
 flags exist only in a release that contains VS-8, so **showcasing a tag from
 before VS-8 fails at `seed-demo-webhook`** with `unexpected argument
 '--webhook-audience'`, and so does a worker from before it, which would

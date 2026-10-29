@@ -298,7 +298,10 @@ async fn ensure_demo_sender_id(
 enum Delivery<'a> {
     /// A sealed delivery to this audience.
     Sealed { audience: &'a str },
-    /// An HMAC-signed delivery; the secret goes to the file at this path.
+    /// An HMAC-signed delivery; the secret goes to the file at this path. Made
+    /// through the ORM whatever `auth.methods` says (this binary does not read the
+    /// YAML): a demo opt-in whose deliveries a deployment without `hmac_webhooks`
+    /// holds back (`main.md`, "`--webhook-secret-out` and `auth.methods`").
     Hmac { secret_path: &'a std::path::Path },
 }
 

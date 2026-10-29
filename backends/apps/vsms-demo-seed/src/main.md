@@ -80,4 +80,17 @@ row named by `--provider-key` to already exist (i.e. `sms-gateway
 seed-dispatch` has already run) — `SenderIdRegistration.providerId` is a
 real foreign key.
 
+# `--webhook-secret-out` and `auth.methods`
+
+`--webhook-secret-out` makes an `hmac` endpoint through the ORM, as the operator
+would never be allowed to if the deployment narrowed `auth.methods` to exclude
+`hmac_webhooks` (VSA-1): this binary does not read the YAML, so it does not know,
+and it writes the row regardless. That is a demo opt-in and is left so on purpose
+(reading the configuration here would make a seed tool depend on the deployment's
+policy). The consequence is the deployment's, not the seed's: against a deployment
+whose `auth.methods` excludes `hmac_webhooks` the endpoint exists and no worker
+claims its attempts, which stay `pending` until the method is permitted again or
+the endpoint is switched to `sealed`. The default of the stacks, `--webhook-audience`,
+makes a sealed endpoint and is unaffected.
+
 <!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->
