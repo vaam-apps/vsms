@@ -178,16 +178,47 @@ impl AuthMethods {
         self.permitted().filter(|method| method.is_restored())
     }
 
-    /// Whether something permitted can authenticate a caller of the API: a
-    /// signed request, a token or a signed-in person. `hmac_webhooks` cannot; it
+    /// Whether something permitted can authenticate a caller of the API's `/v1`
+    /// surface: a signed request or a token. vpay's `NoWayIn` is exactly
+    /// `!keypair && !machine_tokens` and R5 holds the two repositories to the same
+    /// rule, so `human_login` does not count: it signs a person in to the console,
+    /// it does not authenticate an API caller. `hmac_webhooks` cannot either; it
     /// authenticates what vsms sends, never who is asking.
     fn can_authenticate_a_caller(&self) -> bool {
-        [
-            AuthMethod::Keypair,
-            AuthMethod::MachineTokens,
-            AuthMethod::HumanLogin,
-        ]
-        .into_iter()
-        .any(|method| self.permits(method))
+        [AuthMethod::Keypair, AuthMethod::MachineTokens]
+            .into_iter()
+            .any(|method| self.permits(method))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn permitting(methods: &[AuthMethod]) -> AuthMethods {
+        AuthMethods {
+            permitted: methods.iter().copied().collect(),
+            explicit: true,
+        }
+    }
+
+    /// `resolve` refuses `human_login` as unavailable before it asks, so the list
+    /// that tells the rules apart cannot be written in YAML today; this builds it.
+    /// Without this test, counting `human_login` as a way in would change nothing
+    /// anyone could observe until VSA-4 restores it, and then diverge from vpay.
+    #[test]
+    fn human_login_is_not_a_way_in_for_an_api_caller() {
+        assert!(!permitting(&[AuthMethod::HumanLogin]).can_authenticate_a_caller());
+        assert!(
+            !permitting(&[AuthMethod::HumanLogin, AuthMethod::HmacWebhooks])
+                .can_authenticate_a_caller()
+        );
+        assert!(!permitting(&[AuthMethod::HmacWebhooks]).can_authenticate_a_caller());
+    }
+
+    #[test]
+    fn a_keypair_or_a_machine_token_is_a_way_in() {
+        assert!(permitting(&[AuthMethod::Keypair]).can_authenticate_a_caller());
+        assert!(permitting(&[AuthMethod::MachineTokens]).can_authenticate_a_caller());
     }
 }

@@ -1970,7 +1970,7 @@ auth:
 2. an unknown name is refused (`UnknownAuthMethod`);
 3. a duplicate is refused (`DuplicateAuthMethod`);
 4. naming `machine_tokens` or `human_login` is refused (`AuthMethodUnavailable`): they are not restored, and a list that names one promises a door that is not there. VSA-3 and VSA-4 change one function each (`AuthMethod::is_restored`) and the rule goes with them;
-5. a list that permits nothing able to authenticate a caller is refused (`NoWayIn`). Today that is every list without `keypair`: `[hmac_webhooks]` alone would be a gateway that answers every request with the unsigned 401. (Owner ruling R5 lets `keypair` be off once a legacy method is served; nothing is yet.)
+5. a list that permits nothing able to authenticate a caller is refused (`NoWayIn`): vpay's rule exactly, neither `keypair` nor `machine_tokens` (`human_login` signs a person in to the console and does not count). Today that is every list without `keypair`: `[hmac_webhooks]` alone would be a gateway that answers every request with the unsigned 401. (Owner ruling R5 lets `keypair` be off once a legacy method is served; nothing is yet.)
 
 vpay has a sixth, a block present for a method that is not permitted (`AuthMethodDisabled`). vsms has no such block yet: `keypair` has no YAML (its keys are database rows), `hmac_webhooks` has none either (endpoints are rows, so the gate is at run time, not at boot), and the `op:` and `human_login:` blocks do not exist, so the loader already refuses them as unknown keys. The rule arrives with the first of them.
 

@@ -47,7 +47,9 @@ One [`ConfigError`] variant each:
 4. `machine_tokens` or `human_login` named explicitly,
    [`ConfigError::AuthMethodUnavailable`];
 5. nothing permitted can authenticate a caller of the API,
-   [`ConfigError::NoWayIn`]. Today only `keypair` can, so `[hmac_webhooks]` alone
+   [`ConfigError::NoWayIn`]: vpay's rule exactly, `!keypair && !machine_tokens`
+   (R5 holds the two repositories to one rule), so `human_login` is not a way in
+   for an API caller. Today only `keypair` can be served, so `[hmac_webhooks]` alone
    is refused: a gateway that would answer every request with the unsigned 401.
 
 vpay has a sixth, a block present for a method that is not permitted
