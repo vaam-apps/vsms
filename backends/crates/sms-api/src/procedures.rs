@@ -11,6 +11,7 @@ use crate::audit_log;
 use crate::auth::PrincipalKind;
 use crate::cache::TtlCache;
 use crate::errors::map_database_error;
+use crate::hmac_gate::HmacWebhooks;
 use crate::pepper::{HashPepper, hmac_sha256_hex};
 use crate::rbac::require_permission;
 use crate::route_simulator;
@@ -149,6 +150,12 @@ pub struct Procedures {
     /// that two browser tabs open on the same dashboard don't double the
     /// ~26-query cost `dashboard_snapshot`'s own doc explains.
     dashboard_cache: std::sync::Arc<TtlCache<String, schema::DashboardSummary>>,
+    /// VSA-1: whether `auth.methods` permits `hmac_webhooks`. `rotateWebhookSecret`
+    /// and a `switchWebhookDeliveryMode` to `hmac` refuse (422,
+    /// `auth_method_disabled`) when it does not. [`Self::new`] permits it, which is
+    /// what an absent `auth.methods` means; the router always sets it explicitly
+    /// ([`Self::with_hmac_webhooks`]).
+    hmac_webhooks: HmacWebhooks,
 }
 
 // No `Default` impl on purpose (#134): a default would have to invent a
@@ -167,7 +174,16 @@ impl Procedures {
             operator_cache: std::sync::Arc::new(TtlCache::new(std::time::Duration::from_mins(5))),
             pepper,
             dashboard_cache: std::sync::Arc::new(TtlCache::new(std::time::Duration::from_secs(15))),
+            hmac_webhooks: HmacWebhooks::Permitted,
         }
+    }
+
+    /// Whether `auth.methods` permits `hmac_webhooks` (VSA-1). The default is
+    /// [`HmacWebhooks::Permitted`], an absent key's meaning; see [`HmacWebhooks`].
+    #[must_use]
+    pub fn with_hmac_webhooks(mut self, hmac_webhooks: HmacWebhooks) -> Self {
+        self.hmac_webhooks = hmac_webhooks;
+        self
     }
 
     /// `{HASH_SCHEME}:{hex}` — see `pepper.rs`'s `hmac_sha256_hex` for the
@@ -1010,6 +1026,10 @@ impl Procedures {
         args: schema::EndpointInput,
     ) -> Result<schema::WebhookEndpoint, CratestackError> {
         require_permission(ctx, "webhook:manage")?;
+        // VSA-1: before anything is read, so the answer does not depend on
+        // whether the endpoint exists or which mode it is in.
+        self.hmac_webhooks
+            .require("a signing secret cannot be rotated (rotateWebhookSecret)")?;
 
         let sys = Self::sys();
         let endpoint_id = args.endpointId;
@@ -1105,6 +1125,12 @@ impl Procedures {
             mode,
             audience,
         } = args;
+        // VSA-1: a switch to `sealed` is the way out of `hmac` and is always
+        // allowed; a switch to `hmac` mints a secret and is not.
+        if mode == schema::WebhookDeliveryMode::hmac {
+            self.hmac_webhooks
+                .require("an endpoint cannot be switched to hmac (switchWebhookDeliveryMode)")?;
+        }
 
         db.transaction(async |tx| {
             let sys = &sys;

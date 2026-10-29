@@ -31,4 +31,9 @@ on the database and reads no deployment configuration; their arguments stay
 arguments. `main.rs` refuses a retired flag (`sms_config::RETIRED`) before clap
 parses.
 
+`serve` also reads `auth.methods` (VSA-1): it passes the `hmac_webhooks` answer to
+`sms_api::router`, mounts `GET /.well-known/vsms-auth` beside `/healthz` (outside the
+envelope, `auth_discovery.md`) and logs the permitted and served methods and the
+`hmac` endpoint count at boot.
+
 <!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->
