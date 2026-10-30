@@ -933,7 +933,8 @@ async fn the_limiter_answers_before_the_password_is_looked_at() {
     let db = db().await;
     let deployment = Deployment::new(Serves::People, 3).await;
     deployment.prepare().await;
-    let (_, email) = seed_account(&db, &unique_suffix(), Some(TEST_PASSWORD.as_str()), true).await;
+    let (user_id, email) =
+        seed_account(&db, &unique_suffix(), Some(TEST_PASSWORD.as_str()), true).await;
     let gateway = deployment.spawn().await;
     let (_, challenge) = pkce_pair();
 
@@ -971,6 +972,19 @@ async fn the_limiter_answers_before_the_password_is_looked_at() {
         throttled.body
     );
     assert_eq!(throttled.body["error"], "rate_limited");
+    // The proof that the password was never looked at: a *verified* password stamps
+    // `lastLoginAt`, and the throttled request carried the right one.
+    let user = db
+        .user()
+        .find_unique(user_id)
+        .run(&sys())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        user.lastLoginAt, None,
+        "a throttled request must not have been authenticated"
+    );
     assert!(throttled.headers.contains_key("retry-after"));
     assert!(
         started.elapsed() < StdDuration::from_secs(2),
