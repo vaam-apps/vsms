@@ -479,17 +479,78 @@ mod tests {
                 "{token:?}"
             );
         }
-        // HS256 signed with the public modulus as the secret: refused on the
-        // algorithm before any key is looked up.
-        let mut header = Header::new(Algorithm::HS256);
-        header.kid = Some(a.kid.clone());
-        let hs = encode(
-            &header,
-            &claims(&json!({})),
-            &EncodingKey::from_secret(b"secret"),
-        )
-        .unwrap();
-        assert_eq!(refusal(&v, &hs).await, BearerRefusal::Malformed);
+    }
+
+    /// The algorithm-confusion attack: the public key is, well, public, so an
+    /// attacker signs an HS256 token using its bytes as the HMAC secret and
+    /// hopes the verifier reads the algorithm from the token and then "verifies"
+    /// with the key it holds, as a secret. Every encoding of the key an attacker
+    /// can reach is tried (`/jwks.json` publishes the modulus and exponent; PEM
+    /// and DER are one conversion away), under the genuine `kid`, with
+    /// otherwise perfect claims.
+    #[tokio::test]
+    async fn an_hs256_token_keyed_with_the_public_key_is_refused() {
+        use base64::Engine as _;
+        use rsa::pkcs1::EncodeRsaPublicKey;
+        use rsa::pkcs8::{DecodePrivateKey, EncodePublicKey};
+        use rsa::traits::PublicKeyParts;
+
+        let (a, _) = keys();
+        let public = RsaPrivateKey::from_pkcs8_pem(&a.pem)
+            .expect("the test key parses")
+            .to_public_key();
+        let published = a.manager.public_jwk().expect("the key publishes a JWK");
+        let modulus = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(published.n.expect("an RSA JWK has a modulus"))
+            .expect("a base64url modulus");
+        assert_eq!(modulus, public.n().to_bytes_be(), "the JWK is this key");
+        let secrets: [(&str, Vec<u8>); 5] = [
+            (
+                "SPKI PEM",
+                public
+                    .to_public_key_pem(LineEnding::LF)
+                    .unwrap()
+                    .into_bytes(),
+            ),
+            (
+                "SPKI DER",
+                public.to_public_key_der().unwrap().as_bytes().to_vec(),
+            ),
+            (
+                "PKCS#1 PEM",
+                public
+                    .to_pkcs1_pem(LineEnding::LF)
+                    .unwrap()
+                    .into_bytes(),
+            ),
+            (
+                "PKCS#1 DER",
+                public.to_pkcs1_der().unwrap().as_bytes().to_vec(),
+            ),
+            ("the modulus", modulus),
+        ];
+        let v = plain(&[a]);
+        for (what, secret) in secrets {
+            for algorithm in [Algorithm::HS256, Algorithm::HS384, Algorithm::HS512] {
+                let mut header = Header::new(algorithm);
+                header.kid = Some(a.kid.clone());
+                let forged = encode(
+                    &header,
+                    &claims(&json!({})),
+                    &EncodingKey::from_secret(&secret),
+                )
+                .expect("signing the forgery");
+                assert_eq!(
+                    refusal(&v, &forged).await,
+                    BearerRefusal::Malformed,
+                    "{algorithm:?} keyed with {what}"
+                );
+            }
+        }
+        // The same claims, signed properly, are accepted: the refusals above are
+        // about the algorithm and not about the claims.
+        let genuine = mint(a, Some(&a.kid), &claims(&json!({})));
+        assert!(v.verify(&genuine).await.is_ok());
     }
 
     #[tokio::test]
