@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use cratestack::sqlx::postgres::PgPoolOptions;
 use sms_api::schema::Cratestack;
 use sms_api::system_context;
-use sms_auth::gate::MachineTokens;
+use sms_auth::gate::Provider;
 
 /// `Command::RotateSigningKey`'s flags.
 #[derive(Debug, clap::Args)]
@@ -15,8 +15,9 @@ pub(crate) struct RotateSigningKeyArgs {
     pub(crate) database_url: String,
 
     /// The YAML deployment configuration (VSA-3a): it says whether this
-    /// deployment serves `machine_tokens` at all, and how long a rotated-out key
-    /// keeps publishing (`op.signing_key.rotation_overlap_secs`).
+    /// deployment mounts the provider at all (`machine_tokens` or `human_login`
+    /// served), and how long a rotated-out key keeps publishing
+    /// (`op.signing_key.rotation_overlap_secs`).
     #[command(flatten)]
     pub(crate) config: sms_config::ConfigArgs,
 }
@@ -31,11 +32,12 @@ pub(crate) async fn rotate_signing_key_command(args: RotateSigningKeyArgs) -> Re
         .context("loading the deployment configuration")?;
     // Before the database is touched: a deployment that mounts no provider has
     // nothing to sign for, and a key minted anyway would look like a rotation.
-    MachineTokens::from_methods(&config.auth_methods).require()?;
+    // Either method rides the provider, so either is a reason to rotate its key.
+    Provider::from_methods(&config.auth_methods).require()?;
     let op = config
         .op
         .as_ref()
-        .context("op: is missing although machine_tokens is served")?;
+        .context("op: is missing although the provider is served")?;
     let overlap = chrono::Duration::seconds(
         i64::try_from(op.signing_key.rotation_overlap_secs)
             .context("op.signing_key.rotation_overlap_secs does not fit an i64")?,

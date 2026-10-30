@@ -11,6 +11,8 @@ pub(crate) mod record_route_validation;
 pub(crate) mod register_client;
 pub(crate) mod rotate_signing_key;
 pub(crate) mod routes;
+pub(crate) mod secret_file;
+pub(crate) mod seed_console_client;
 pub(crate) mod seed_dispatch;
 pub(crate) mod serve;
 pub(crate) mod server_keys;

@@ -10,6 +10,8 @@ use sms_api::schema::{Cratestack, app as app_filter};
 use sms_api::{Principal, PrincipalKind, system_context};
 use sms_auth::gate::MachineTokens;
 
+use crate::commands::secret_file::write_new_secret_file;
+
 /// `Command::ProvisionClient`'s flags. See `Command::ProvisionClient`'s
 /// own doc comment in `main.rs` — the enum variant carries the "why",
 /// this struct only carries the flags themselves.
@@ -87,37 +89,6 @@ pub(crate) struct ProvisionClientArgs {
     /// provider to accept the client, so this command refuses.
     #[command(flatten)]
     pub(crate) config: sms_config::ConfigArgs,
-}
-
-/// Writes `pem` to a freshly created file at `path`, `0600` on Unix,
-/// refusing to overwrite an existing file (`O_EXCL` via
-/// [`std::fs::OpenOptions::create_new`]) — both the mode and the
-/// exclusivity are applied atomically at `open(2)` time, so there is no
-/// window where the file exists with looser permissions or already-visible
-/// contents. See `Command::ProvisionClient`'s own doc comment for why this
-/// exists: `ProvisionClientResult::privateKeyPem` is returned exactly once
-/// and this is the only place in this system it is ever persisted.
-fn write_private_key_pem(path: &std::path::Path, pem: &str) -> Result<()> {
-    use std::io::Write as _;
-
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(path).with_context(|| {
-        format!(
-            "creating {} — refusing to overwrite an existing file, since it may hold a private \
-             key still in use",
-            path.display()
-        )
-    })?;
-    file.write_all(pem.as_bytes())
-        .with_context(|| format!("writing the private key to {}", path.display()))?;
-    file.flush()
-        .with_context(|| format!("flushing the private key to {}", path.display()))
 }
 
 /// `Command::ProvisionClient`'s body, pulled out of `main`'s own `match`
@@ -249,12 +220,12 @@ pub(crate) async fn provision_client_command(args: ProvisionClientArgs) -> Resul
 
     // Destructured immediately and never reassembled: nothing past this
     // point may hold, log, or `{:?}`-print `provisioned` as a whole — see
-    // `write_private_key_pem`'s own doc for why the file below is the
+    // `write_new_secret_file`'s own doc for why the file below is the
     // only place this value's private key is ever allowed to land.
     let client_id = provisioned.client_id;
     let private_key_pem = provisioned.private_key_pem;
 
-    write_private_key_pem(&key_out, &private_key_pem)?;
+    write_new_secret_file(&key_out, &private_key_pem, "private key")?;
 
     if let Some(client_id_out) = &client_id_out {
         std::fs::write(client_id_out, &client_id)

@@ -2,12 +2,18 @@
 //! for the whole chain. Every step here calls the exact same function its own
 //! standalone subcommand does.
 
+use std::path::{Path, PathBuf};
+
 use anyhow::{Context, Result, bail};
 use cratestack::sqlx::postgres::PgPoolOptions;
 use sms_api::schema::{Cratestack, CreateProviderInput, ProviderKind};
 use sms_api::{Principal, PrincipalKind};
+use sms_auth::gate::HumanLogin;
 
-use crate::commands::provision_user::create_console_user_if_absent;
+use crate::commands::provision_user::{
+    announce_password, create_console_user_if_absent, issue_password,
+};
+use crate::commands::seed_console_client::seed_console_client_core;
 use crate::commands::seed_dispatch::seed_dispatch_core;
 
 /// `Command::Bootstrap`'s flags. See `Command::Bootstrap`'s own doc
@@ -40,6 +46,19 @@ pub(crate) struct BootstrapArgs {
     /// right call.
     #[arg(long)]
     pub(crate) skip_seed_dispatch: bool,
+
+    /// Also give the first owner a password (VSA-4a), generated here and written
+    /// to this path (`0600`, `O_EXCL`), never printed, and register the console
+    /// client (`seed-console-client`) in the same run. Needs `--owner-email` and a
+    /// deployment that serves `human_login`; refused before the database is
+    /// touched otherwise. Without it `bootstrap` reads no configuration, as
+    /// before.
+    #[arg(long, requires = "owner_email")]
+    pub(crate) owner_password_out: Option<PathBuf>,
+
+    /// The YAML deployment configuration, read only for `--owner-password-out`.
+    #[command(flatten)]
+    pub(crate) config: sms_config::ConfigArgs,
 }
 
 /// Bootstrap step 1/2 — see `bootstrap_command`'s own doc. Same defaults
@@ -80,22 +99,24 @@ async fn bootstrap_step_seed_dispatch(db: &Cratestack) -> Result<()> {
 }
 
 /// Bootstrap step 2/2 — see `bootstrap_command`'s own doc. The first
-/// operator account is a `User` row and nothing else: the person signs in by
-/// pairing a console key (`pair-console-key`, or a vaam admin phone), so
-/// there is no credential to hand over.
+/// operator account is a `User` row; the person signs in by pairing a console key
+/// (`pair-console-key`, or a vaam admin phone), or, with `--owner-password-out`
+/// on a deployment that serves `human_login`, with the password written there.
 async fn bootstrap_step_owner(
     db: &Cratestack,
     owner_email: Option<&str>,
     owner_display_name: Option<&str>,
     owner_role_key: &str,
+    password_out: Option<&Path>,
 ) -> Result<()> {
     println!("== bootstrap: step 2/2 — first operator account ==");
     let (Some(email), Some(display_name)) = (owner_email, owner_display_name) else {
         println!("skipped — no --owner-email given (backend-only deployment)");
         return Ok(());
     };
-    match create_console_user_if_absent(db, email, display_name, owner_role_key).await? {
-        Some(user_id) => {
+    let created = create_console_user_if_absent(db, email, display_name, owner_role_key).await?;
+    match (&created, password_out) {
+        (Some(user_id), None) => {
             println!("provisioned user: {email} (id={user_id})");
             println!(
                 "no credential exists to hand over: pair a browser key with `sms-gateway \
@@ -103,8 +124,25 @@ async fn bootstrap_step_owner(
                  phone."
             );
         }
-        None => {
+        (None, None) => {
             println!("a User with email {email:?} already exists — skipping provision-user");
+        }
+        (Some(user_id), Some(out)) => {
+            println!("provisioned user: {email} (id={user_id})");
+            let issued = issue_password(db, user_id, out, false).await?;
+            announce_password(issued, email, out);
+        }
+        (None, Some(out)) => {
+            println!("a User with email {email:?} already exists — skipping provision-user");
+            // The account was made by an earlier run that gave it no password (or
+            // one that did): a password is set only where none exists, and an
+            // existing one is refused, never replaced by a re-run (that is
+            // `provision-user --reset`).
+            let user_id = crate::commands::provision_user::user_id_by_email(db, email)
+                .await?
+                .with_context(|| format!("the User with email {email:?} vanished"))?;
+            let issued = issue_password(db, &user_id, out, false).await?;
+            announce_password(issued, email, out);
         }
     }
     Ok(())
@@ -126,6 +164,8 @@ pub(crate) async fn bootstrap_command(args: BootstrapArgs) -> Result<()> {
         owner_display_name,
         owner_role_key,
         skip_seed_dispatch,
+        owner_password_out,
+        config,
     } = args;
 
     // Refused before connecting to the database at all, the same
@@ -137,6 +177,25 @@ pub(crate) async fn bootstrap_command(args: BootstrapArgs) -> Result<()> {
     if owner_email.is_none() && owner_display_name.is_some() {
         bail!("--owner-display-name requires --owner-email — both are required together");
     }
+
+    // The password path needs the deployment to serve the sign-in, and its file
+    // not to exist: both refused before the database is touched.
+    let loaded = if let Some(out) = &owner_password_out {
+        let loaded = config
+            .load(sms_config::Binary::Operator)
+            .context("loading the deployment configuration")?;
+        HumanLogin::from_methods(&loaded.auth_methods).require()?;
+        if out.exists() {
+            bail!(
+                "{} already exists - refusing to overwrite a file that may hold a password \
+                 still in use; pass a different --owner-password-out",
+                out.display()
+            );
+        }
+        Some(loaded)
+    } else {
+        None
+    };
 
     // Same conservative pool size as every other one-shot command in this
     // file.
@@ -158,11 +217,18 @@ pub(crate) async fn bootstrap_command(args: BootstrapArgs) -> Result<()> {
     } else {
         bootstrap_step_seed_dispatch(&db).await?;
     }
+    if let Some(loaded) = &loaded {
+        // The console client the owner will sign in through, so the one run
+        // leaves a sign-in that works.
+        println!("== bootstrap: console client (human_login is served) ==");
+        seed_console_client_core(&db, loaded).await?;
+    }
     bootstrap_step_owner(
         &db,
         owner_email.as_deref(),
         owner_display_name.as_deref(),
         &owner_role_key,
+        owner_password_out.as_deref(),
     )
     .await?;
 

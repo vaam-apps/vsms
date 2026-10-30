@@ -40,11 +40,12 @@ enum Command {
     /// gateway that serves `machine_tokens` refuses to start without an active
     /// key.
     ///
-    /// Reads the YAML configuration only to learn whether the deployment serves
-    /// `machine_tokens`. When it does not (`auth.methods` omits it, or `op:` is
-    /// not written) it refuses, `auth_method_disabled`, before touching the
-    /// database: there is no provider to sign for, and a key minted anyway
-    /// would look like a rotation.
+    /// Reads the YAML configuration only to learn whether the deployment mounts
+    /// the provider, for `machine_tokens` or for `human_login`: the one key signs
+    /// a machine's access token and a person's `id_token`. When it does not
+    /// (`op:` is not written, or `auth.methods` permits neither method) it
+    /// refuses, `auth_method_disabled`, before touching the database: there is no
+    /// provider to sign for, and a key minted anyway would look like a rotation.
     RotateSigningKey(commands::rotate_signing_key::RotateSigningKeyArgs),
     /// Mint a `private_key_jwt` machine client: an `AppClient`, an `OauthClient`
     /// holding only the public JWK, and a fresh RSA keypair whose private half is
@@ -181,12 +182,34 @@ enum Command {
     /// on create, and a fresh deployment has no console key paired to either
     /// yet, so the very first account is necessarily made this way.
     ///
-    /// Makes **no credential**. Since VS-4 there is no password, token or
-    /// recovery code in this system for a command to generate or print: the
-    /// person signs in by pairing a browser key, through a vaam admin phone or
-    /// with `pair-console-key` (the break-glass), which attaches to the user
-    /// this command made. Idempotent on the email.
+    /// Makes **no credential** by default: the person signs in by pairing a
+    /// browser key, through a vaam admin phone or with `pair-console-key` (the
+    /// break-glass), which attaches to the user this command made. Idempotent on
+    /// the email.
+    ///
+    /// With `--password --password-out <path>` (VSA-4a), on a deployment that
+    /// serves `human_login`, it also gives the person a generated password,
+    /// written to the path (`0600`, `O_EXCL`, never overwriting) and **never
+    /// printed**. An existing account without a password gets one; an existing
+    /// password is refused unless `--reset`. On a deployment that does not serve
+    /// `human_login` it refuses, `auth_method_disabled`, before the database is
+    /// touched. Admin rights are a device's, never a password's: a password
+    /// yields a plain `user` session (VSA-4b).
     ProvisionUser(commands::provision_user::ProvisionUserArgs),
+    /// Registers (or reconciles) the console's `OauthClient` row from
+    /// `human_login.console_client`: the public client a person's sign-in is
+    /// issued to, with the `authorization_code` grant alone, the `openid profile`
+    /// scopes, PKCE required and exactly the configured redirect URIs. An
+    /// operator action: `OauthClient` is `hasRole('system')` only and has no route.
+    ///
+    /// **Reconciles** rather than only creating: a row that differs from the
+    /// configuration (a changed redirect URI, an `authorization_code
+    /// refresh_token` grant left from before #446) is brought into line, and an
+    /// operator is told what was wrong. `serve` refuses to start on a row that
+    /// does not match, naming this command. Idempotent. Refuses,
+    /// `auth_method_disabled`, before the database is touched when the deployment
+    /// does not serve `human_login`.
+    SeedConsoleClient(commands::seed_console_client::SeedConsoleClientArgs),
     /// Chains the idempotent steps a fresh deployment needs before
     /// `sms-gateway serve` can do anything useful, in the order
     /// `docs/runbooks/deployment.adoc`'s step 3 documents both as one
@@ -210,6 +233,13 @@ enum Command {
     /// deployment: `seed-dispatch`'s own two halves are already
     /// idempotent, and `provision-user`'s duplicate-email case is reported
     /// and skipped rather than failing the whole chain.
+    ///
+    /// `--owner-password-out <path>` (VSA-4a) also gives the first owner a
+    /// generated password, written to the path (`0600`, `O_EXCL`, never
+    /// printed), and registers the console client (`seed-console-client`) in the
+    /// same run. Needs `--owner-email` and a deployment that serves
+    /// `human_login`: otherwise it refuses, `auth_method_disabled`, before the
+    /// database is touched. Without the flag `bootstrap` reads no configuration.
     ///
     /// `--skip-seed-dispatch` skips step 1 (the hardcoded `orange_cm`
     /// `Provider` + catch-all `Route`, priority 0, weight 1). Use it when
@@ -359,6 +389,10 @@ async fn main() -> Result<()> {
             commands::provision_user::provision_user_command(args).await
         }
 
+        Command::SeedConsoleClient(args) => {
+            commands::seed_console_client::seed_console_client_command(args).await
+        }
+
         Command::Bootstrap(args) => commands::bootstrap::bootstrap_command(args).await,
 
         Command::RecordRouteValidation(args) => {
@@ -437,11 +471,14 @@ mod tests {
         assert_eq!(
             with_config,
             [
+                "bootstrap",
                 "mtn-subscribe-dlr",
                 "pair-console-key",
                 "provision-client",
+                "provision-user",
                 "register-client",
                 "rotate-signing-key",
+                "seed-console-client",
                 "serve"
             ]
         );
