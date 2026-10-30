@@ -15,9 +15,15 @@
 //!   grant are refused; a rotation reaches a running process; the per-`client_id`
 //!   bucket throttles.
 //!
-//! What is **not** asserted, on purpose: that the API accepts the token. It does
-//! not yet (VSA-3b), and `a_minted_token_is_not_yet_accepted_by_the_api` pins that
-//! so the day it changes the test fails and says so.
+//! And since VSA-3b the API accepts the token it mints, as a bearer beside the
+//! signed envelope: `a_minted_token_calls_a_real_procedure` sends and reads with
+//! one; `a_token_that_is_not_ours_is_refused_whatever_is_wrong_with_it` signs
+//! tokens with the deployment's own key (read from its table) to break each claim
+//! in turn; `the_standing_is_read_from_rows_not_from_the_token` retires and
+//! switches off the client behind a good token; `an_unknown_kid_reloads_the_key_set_once`
+//! rotates a key behind a running process that refreshes hourly;
+//! `machine_tokens_alone_boots_and_refuses_a_signature_and_a_key_registration`
+//! shuts the signed door.
 //!
 //! ```bash
 //! cargo test -p sms-gateway --test machine_tokens_live_postgres -- --ignored --test-threads=1 --nocapture
@@ -159,10 +165,22 @@ async fn seed_app(db: &Cratestack) -> schema::App {
 /// The overlay's `op:` block for `issuer`, with the given bucket and a one-second
 /// key refresh so a rotation reaches a running process inside the test.
 fn op_block(issuer: &str, burst: u32) -> String {
+    op_block_refreshing(issuer, burst, 1)
+}
+
+/// [`op_block`] with the key refresh every `refresh_secs`.
+fn op_block_refreshing(issuer: &str, burst: u32, refresh_secs: u32) -> String {
+    // The overlap has to outlast a refresh and a token's lifetime (the loader
+    // checks), which 1800 does for the one-second refresh and not for a slow one.
+    let overlap = if refresh_secs > 60 {
+        refresh_secs + 1800
+    } else {
+        1800
+    };
     format!(
         "op:\n  issuer: {issuer}\n  token_rate_limit:\n    burst: {burst}\n    \
-         refill_per_second: 0.01\n  signing_key:\n    refresh_interval_secs: 1\n    \
-         rotation_overlap_secs: 1800\n"
+         refill_per_second: 0.01\n  signing_key:\n    refresh_interval_secs: {refresh_secs}\n    \
+         rotation_overlap_secs: {overlap}\n"
     )
 }
 
@@ -801,67 +819,619 @@ async fn a_served_provider_mints_a_verifiable_token_with_no_refresh_and_follows_
     )
     .await;
 
-    // 8. The boot line says tokens are minted and not yet accepted (VSA-3b).
+    // 8. The boot line says tokens are minted and accepted as a bearer.
     let log = gateway.kill();
     assert!(log.contains("machine_tokens is served"), "{log}");
-    assert!(log.contains("VSA-3b"), "{log}");
+    assert!(log.contains("accepts them as a bearer"), "{log}");
+    assert!(!log.contains("not yet"), "{log}");
 }
 
-/// Pins the scope of this ticket: a token this OP mints is **not** a credential
-/// of the API yet. When VSA-3b lands, this test is the one to rewrite.
-#[tokio::test]
-#[ignore = "needs a live, fully migrated Postgres - see module docs"]
-async fn a_minted_token_is_not_yet_accepted_by_the_api() {
-    let _guard = TEST_MUTEX.lock().await;
-    let db = db().await;
-    ensure_orange_cm_provider(&db).await;
-    let app = seed_app(&db).await;
-    let port = free_port();
-    let issuer = format!("http://127.0.0.1:{port}");
-    let deployment = Deployment::on_port(port, &op_block(&issuer, 100), "scope").await;
-    let _ = deployment.cli("rotate-signing-key", &[]);
-    let key_out = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("op-scope-{port}.pem"));
-    let _ = std::fs::remove_file(&key_out);
-    let provisioned = deployment.cli(
-        "provision-client",
-        &[
-            "--app-id",
-            &app.id,
-            "--label",
-            "scope probe",
-            "--scope",
-            "sms:send",
-            "--key-out",
-            key_out.to_str().expect("utf-8 path"),
-        ],
-    );
-    assert!(provisioned.status.success(), "{}", stderr(&provisioned));
-    let client_id = client_id_of(&provisioned);
-    let pem = std::fs::read_to_string(&key_out).expect("the key file");
+// --- the API accepts the token (VSA-3b) -------------------------------------
 
-    let gateway = deployment.spawn().await;
+/// A provisioned client of a running deployment: its id, its key and its app.
+struct Machine {
+    client_id: String,
+    pem: String,
+    app_id: String,
+}
+
+/// `rotate-signing-key` and `provision-client` for a fresh `App`, with `scopes`.
+async fn provision(
+    db: &Cratestack,
+    deployment: &Deployment,
+    tag: &str,
+    scopes: &[&str],
+) -> Machine {
+    let app = seed_app(db).await;
+    let _ = deployment.cli("rotate-signing-key", &[]);
+    let key_out =
+        Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("op-{tag}-{}.pem", deployment.port));
+    let _ = std::fs::remove_file(&key_out);
+    let mut args = vec![
+        "--app-id",
+        app.id.as_str(),
+        "--label",
+        "bearer probe",
+        "--key-out",
+        key_out.to_str().expect("utf-8 path"),
+    ];
+    for scope in scopes {
+        args.push("--scope");
+        args.push(scope);
+    }
+    let provisioned = deployment.cli("provision-client", &args);
+    assert!(provisioned.status.success(), "{}", stderr(&provisioned));
+    Machine {
+        client_id: client_id_of(&provisioned),
+        pem: std::fs::read_to_string(&key_out).expect("the key file"),
+        app_id: app.id,
+    }
+}
+
+/// A real access token from the running deployment's `/token`.
+async fn mint(base_url: &str, machine: &Machine) -> String {
     let (status, token) = post_token(
-        &issuer,
-        &client_id,
+        base_url,
+        &machine.client_id,
         "client_credentials",
-        &sign_client_assertion(&client_id, &issuer, &pem),
+        &sign_client_assertion(&machine.client_id, base_url, &machine.pem),
     )
     .await;
     assert_eq!(status, 200, "{token}");
-    let bearer = token["access_token"].as_str().expect("an access token");
+    token["access_token"]
+        .as_str()
+        .expect("an access token")
+        .to_owned()
+}
 
-    let response = reqwest::Client::new()
-        .get(format!("{issuer}/messages"))
-        .bearer_auth(bearer)
-        .send()
+/// The status, content type and body of an API call made with `token` as a bearer.
+async fn api(
+    base_url: &str,
+    method: reqwest::Method,
+    path: &str,
+    token: &str,
+    body: Option<&serde_json::Value>,
+) -> (u16, Option<String>, String) {
+    let mut request = reqwest::Client::new()
+        .request(method, format!("{base_url}{path}"))
+        .bearer_auth(token)
+        .header("accept", "application/json");
+    if let Some(body) = body {
+        request = request
+            .header("content-type", "application/json")
+            .body(serde_json::to_vec(body).expect("JSON"));
+    }
+    let response = request.send().await.expect("calling the API with a token");
+    let status = response.status().as_u16();
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    (
+        status,
+        content_type,
+        response.text().await.unwrap_or_default(),
+    )
+}
+
+/// `previewMessage` with `token`: a procedure that needs no scope, so only the
+/// credential decides.
+async fn preview_with(base_url: &str, token: &str) -> (u16, Option<String>, String) {
+    api(
+        base_url,
+        reqwest::Method::POST,
+        "/$procs/previewMessage",
+        token,
+        Some(&serde_json::json!({"args": {"body": "hello"}})),
+    )
+    .await
+}
+
+/// What the layer says to anything it will not authenticate, byte for byte.
+const COARSE_REFUSAL: &str =
+    r#"{"code":"UNAUTHORIZED","message":"request could not be authenticated","details":null}"#;
+
+/// The real thing: a token the running OP minted sends a message and reads it
+/// back, as plain JSON, with the message in the client's own app.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn a_minted_token_calls_a_real_procedure() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    ensure_orange_cm_provider(&db).await;
+    let port = free_port();
+    let issuer = format!("http://127.0.0.1:{port}");
+    let deployment = Deployment::on_port(port, &op_block(&issuer, 100), "call").await;
+    let machine = provision(&db, &deployment, "call", &["sms:send", "sms:read"]).await;
+    let sender = sealed_fixtures::seed_sender(&db).await;
+    let gateway = deployment.spawn().await;
+    let token = mint(&issuer, &machine).await;
+
+    let client_ref = format!("minted-{}", unique_suffix());
+    let (status, content_type, body) = api(
+        &issuer,
+        reqwest::Method::POST,
+        "/$procs/sendMessage",
+        &token,
+        Some(&serde_json::json!({"args": {
+            "to": sealed_fixtures::unique_mtn_msisdn(),
+            "body": "sent with a minted token",
+            "senderId": sender,
+            "clientRef": client_ref,
+        }})),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        content_type
+            .as_deref()
+            .unwrap_or_default()
+            .starts_with("application/json"),
+        "a token caller is not sealed: {content_type:?}"
+    );
+    let sent: serde_json::Value = serde_json::from_str(&body).expect("plain JSON");
+    assert!(sent["messageId"].is_string(), "{body}");
+
+    let (status, _, body) = api(&issuer, reqwest::Method::GET, "/messages", &token, None).await;
+    assert_eq!(status, 200, "{body}");
+    let listed: serde_json::Value = serde_json::from_str(&body).expect("plain JSON");
+    let items = listed["items"].as_array().expect("a page");
+    assert!(
+        items.iter().any(
+            |item| item["id"] == sent["messageId"] && item["appId"] == machine.app_id.as_str()
+        ),
+        "the message is the client's app's: {body}"
+    );
+
+    // Nothing it was not given.
+    let (status, _, body) = api(&issuer, reqwest::Method::GET, "/jobs", &token, None).await;
+    assert_eq!(status, 403, "job:read was never provisioned: {body}");
+    gateway.kill();
+}
+
+/// Signs tokens with a signing key read out of the deployment's table (the test
+/// holds the database, as the gateway does): a token exactly as good as one the
+/// OP minted, except for whatever the test breaks.
+struct Forge {
+    kid: String,
+    pem: String,
+}
+
+impl Forge {
+    fn from_row(row: schema::OauthSigningKey) -> Self {
+        Self {
+            kid: row.id,
+            pem: row.privateKeyPem,
+        }
+    }
+
+    async fn by_id(db: &Cratestack, kid: &str) -> Self {
+        Self::from_row(
+            db.oauth_signing_key()
+                .find_unique(kid.to_owned())
+                .run(&context("system"))
+                .await
+                .expect("reading the signing key")
+                .expect("the signing key exists"),
+        )
+    }
+
+    async fn active(db: &Cratestack) -> Self {
+        Self::from_row(
+            db.oauth_signing_key()
+                .find_many()
+                .where_expr(FilterExpr::from(
+                    sms_api::schema::oauth_signing_key::active().is_true(),
+                ))
+                .order_by(sms_api::schema::oauth_signing_key::createdAt().desc())
+                .limit(1)
+                .run(&context("system"))
+                .await
+                .expect("reading the signing keys")
+                .into_iter()
+                .next()
+                .expect("an active signing key"),
+        )
+    }
+
+    fn sign(&self, kid: Option<&str>, claims: &serde_json::Value) -> String {
+        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+        header.kid = kid.map(str::to_owned);
+        jsonwebtoken::encode(
+            &header,
+            claims,
+            &jsonwebtoken::EncodingKey::from_rsa_pem(self.pem.as_bytes()).expect("the key"),
+        )
+        .expect("signing a forged token")
+    }
+
+    /// The claims `authkestra` stamps, each overridable (`null` removes it).
+    fn claims(issuer: &str, client_id: &str, patch: &serde_json::Value) -> serde_json::Value {
+        let now = chrono::Utc::now().timestamp();
+        let mut claims = serde_json::json!({
+            "iss": issuer, "sub": client_id, "aud": client_id,
+            "exp": now + 900, "iat": now, "scope": "sms:send",
+        });
+        for (name, value) in patch.as_object().expect("a patch is an object") {
+            if value.is_null() {
+                claims.as_object_mut().unwrap().remove(name);
+            } else {
+                claims[name] = value.clone();
+            }
+        }
+        claims
+    }
+}
+
+/// Every way a token can be wrong is the layer's own coarse 401, byte for byte,
+/// and the control, the same forgery with nothing broken, is accepted: the
+/// forging itself is not what is refused.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn a_token_that_is_not_ours_is_refused_whatever_is_wrong_with_it() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    ensure_orange_cm_provider(&db).await;
+    let port = free_port();
+    let issuer = format!("http://127.0.0.1:{port}");
+    let deployment = Deployment::on_port(port, &op_block(&issuer, 100), "forged").await;
+    let machine = provision(&db, &deployment, "forged", &["sms:send"]).await;
+    let gateway = deployment.spawn().await;
+    let forge = Forge::active(&db).await;
+    let now = chrono::Utc::now().timestamp();
+    let id = machine.client_id.as_str();
+    let patched = |patch: serde_json::Value| Forge::claims(&issuer, id, &patch);
+
+    // A key the deployment has never heard of.
+    let stranger = Forge {
+        kid: "kid-the-deployment-never-had".to_owned(),
+        pem: rsa::pkcs8::EncodePrivateKey::to_pkcs8_pem(
+            &rsa::RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048).expect("a key"),
+            rsa::pkcs8::LineEnding::LF,
+        )
+        .expect("a PEM")
+        .to_string(),
+    };
+    let person = serde_json::json!({
+        "provider_id": "console", "external_id": "usr1",
+        "email": null, "username": null, "attributes": {}
+    });
+    let good = patched(serde_json::json!({}));
+    let kid = Some(forge.kid.as_str());
+
+    let cases: Vec<(&str, String)> = vec![
+        (
+            "wrong issuer",
+            forge.sign(
+                kid,
+                &Forge::claims("https://evil.example", id, &serde_json::json!({})),
+            ),
+        ),
+        (
+            "no issuer",
+            forge.sign(kid, &patched(serde_json::json!({"iss": null}))),
+        ),
+        (
+            "audience is another resource",
+            forge.sign(kid, &patched(serde_json::json!({"aud": "vsms"}))),
+        ),
+        (
+            "audience leaves out sub",
+            forge.sign(kid, &patched(serde_json::json!({"aud": ["a", "b"]}))),
+        ),
+        (
+            "no audience",
+            forge.sign(kid, &patched(serde_json::json!({"aud": null}))),
+        ),
+        (
+            "expired",
+            forge.sign(kid, &patched(serde_json::json!({"exp": now - 3600}))),
+        ),
+        (
+            "not valid yet",
+            forge.sign(kid, &patched(serde_json::json!({"nbf": now + 3600}))),
+        ),
+        (
+            "no expiry",
+            forge.sign(kid, &patched(serde_json::json!({"exp": null}))),
+        ),
+        ("no kid", forge.sign(None, &good)),
+        (
+            "a kid nobody has",
+            forge.sign(Some("kid-nobody-has"), &good),
+        ),
+        (
+            "signed by a stranger's key under our kid",
+            stranger.sign(kid, &good),
+        ),
+        (
+            "signed by a stranger's key under its own kid",
+            stranger.sign(Some(&stranger.kid), &good),
+        ),
+        (
+            "a person's token",
+            forge.sign(kid, &patched(serde_json::json!({"identity": person}))),
+        ),
+        ("not a JWT", "not-a-token".to_owned()),
+    ];
+    for (case, token) in &cases {
+        let (status, _, body) = preview_with(&issuer, token).await;
+        assert_eq!(status, 401, "{case}: {body}");
+        assert_eq!(body, COARSE_REFUSAL, "{case}");
+    }
+
+    // The control: nothing broken.
+    let (status, _, body) = preview_with(&issuer, &forge.sign(kid, &good)).await;
+    assert_eq!(status, 200, "{body}");
+    gateway.kill();
+}
+
+/// What a good token may do is read from rows on every request: switching off
+/// the `OauthClient` ends it on the very next call, and a client whose
+/// `AppClient` is retired has no standing however the token verifies.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn the_standing_is_read_from_rows_not_from_the_token() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    ensure_orange_cm_provider(&db).await;
+    let port = free_port();
+    let issuer = format!("http://127.0.0.1:{port}");
+    let deployment = Deployment::on_port(port, &op_block(&issuer, 100), "standing").await;
+    let live = provision(&db, &deployment, "standing-live", &["sms:send"]).await;
+    let retired = provision(&db, &deployment, "standing-retired", &["sms:send"]).await;
+    let gateway = deployment.spawn().await;
+    let live_token = mint(&issuer, &live).await;
+    let retired_token = mint(&issuer, &retired).await;
+
+    // OauthClient.active: read on every request.
+    assert_eq!(preview_with(&issuer, &live_token).await.0, 200);
+    let oauth = db
+        .oauth_client()
+        .find_many()
+        .where_expr(FilterExpr::from(
+            sms_api::schema::oauth_client::clientId().eq(live.client_id.clone()),
+        ))
+        .limit(1)
+        .run(&context("system"))
         .await
-        .expect("calling the API with the token");
+        .unwrap()
+        .into_iter()
+        .next()
+        .expect("the oauth client");
+    for (active, expected) in [(false, 401), (true, 200)] {
+        db.oauth_client()
+            .update(oauth.id.clone())
+            .set(schema::UpdateOauthClientInput {
+                active: Some(active),
+                ..Default::default()
+            })
+            .run(&context("system"))
+            .await
+            .expect("flipping OauthClient.active");
+        let (status, _, body) = preview_with(&issuer, &live_token).await;
+        assert_eq!(status, expected, "OauthClient.active = {active}: {body}");
+        if !active {
+            assert_eq!(body, COARSE_REFUSAL);
+        }
+    }
+
+    // AppClient.retiredAt: a token minted while the client was live, used after.
+    let app_client = db
+        .app_client()
+        .find_many()
+        .where_expr(FilterExpr::from(
+            sms_api::schema::app_client::clientId().eq(retired.client_id.clone()),
+        ))
+        .limit(1)
+        .run(&context("system"))
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .expect("the app client");
+    db.app_client()
+        .update(app_client.id)
+        .set(schema::UpdateAppClientInput {
+            retiredAt: Some(Some(chrono::Utc::now())),
+            ..Default::default()
+        })
+        .if_match(app_client.version)
+        .run(&context("owner"))
+        .await
+        .expect("retiring the app client");
+    let (status, _, body) = preview_with(&issuer, &retired_token).await;
     assert_eq!(
-        response.status().as_u16(),
-        401,
-        "the API answers a bearer with the envelope layer's unsigned 401 until VSA-3b"
+        (status, body.as_str()),
+        (401, COARSE_REFUSAL),
+        "AppClient.retiredAt"
     );
     gateway.kill();
+}
+
+/// A key another process rotated in, noticed before the next periodic refresh does: the
+/// unknown `kid` forces one reload of the key set and the token verifies.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn an_unknown_kid_reloads_the_key_set_once() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    ensure_orange_cm_provider(&db).await;
+    let port = free_port();
+    let issuer = format!("http://127.0.0.1:{port}");
+    // Refreshing every twenty minutes: the periodic refresh cannot be what makes this pass.
+    let deployment =
+        Deployment::on_port(port, &op_block_refreshing(&issuer, 100, 1200), "reload").await;
+    let machine = provision(&db, &deployment, "reload", &["sms:send"]).await;
+    let gateway = deployment.spawn().await;
+    let old = mint(&issuer, &machine).await;
+    assert_eq!(preview_with(&issuer, &old).await.0, 200);
+
+    // Another process rotates: a new key the running gateway has not loaded.
+    let rotated = deployment.cli("rotate-signing-key", &[]);
+    assert!(rotated.status.success(), "{}", stderr(&rotated));
+    let new_kid = stdout(&rotated)
+        .lines()
+        .find_map(|line| line.strip_prefix("rotated: new signing key "))
+        .and_then(|rest| rest.split_whitespace().next())
+        .expect("the new key id")
+        .to_owned();
+    let forge = Forge::by_id(&db, &new_kid).await;
+    let token = forge.sign(
+        Some(&new_kid),
+        &Forge::claims(&issuer, &machine.client_id, &serde_json::json!({})),
+    );
+    let (status, _, body) = preview_with(&issuer, &token).await;
+    assert_eq!(status, 200, "the forced reload found {new_kid}: {body}");
+
+    // And the key it loaded is the published one.
+    let jwks: serde_json::Value = reqwest::get(format!("{issuer}/jwks.json"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        jwks["keys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|key| key["kid"] == new_kid.as_str()),
+        "{jwks}"
+    );
+    // The token signed by the key that was current still verifies in the overlap.
+    assert_eq!(preview_with(&issuer, &old).await.0, 200);
+    gateway.kill();
+}
+
+/// `auth.methods: [keypair]`: no provider, so no token to present; a bearer is
+/// the layer's own 401.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn with_keypair_alone_a_bearer_is_a_401() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    ensure_orange_cm_provider(&db).await;
+    let deployment = Deployment::new("auth:\n  methods: [keypair]\n", "keypair-only").await;
+    let gateway = deployment.spawn().await;
+    let (status, _, body) = preview_with(&gateway.base_url, "any-token-at-all").await;
+    assert_eq!((status, body.as_str()), (401, COARSE_REFUSAL));
+    gateway.kill();
+}
+
+/// `auth.methods: [machine_tokens]`: boots (the list is legal since VSA-3b), a
+/// token works, a signed body is the layer's 415, a key registration is a 422,
+/// and the two key-registering commands refuse and write nothing; with `keypair`
+/// permitted the same command runs.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn machine_tokens_alone_boots_and_refuses_a_signature_and_a_key_registration() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    ensure_orange_cm_provider(&db).await;
+    let port = free_port();
+    let issuer = format!("http://127.0.0.1:{port}");
+    let tokens_only = Deployment::on_port(
+        port,
+        &format!(
+            "auth:\n  methods: [machine_tokens]\n{}",
+            op_block(&issuer, 100)
+        ),
+        "tokens-only",
+    )
+    .await;
+    let machine = provision(&db, &tokens_only, "tokens-only", &["sms:send"]).await;
+    let gateway = tokens_only.spawn().await;
+    let token = mint(&issuer, &machine).await;
+
+    let (status, _, body) = preview_with(&issuer, &token).await;
+    assert_eq!(status, 200, "{body}");
+
+    // A signed request is refused by the layer, whoever signed it.
+    let key = sms_test_support::sealed::TestKey::app();
+    let signed = sealed_fixtures::client(&issuer, &key)
+        .request("POST", "/$procs/previewMessage")
+        .json(&serde_json::json!({"args": {"body": "hello"}}))
+        .send()
+        .await;
+    assert_eq!(signed.status, 415, "{}", signed.text());
+    assert!(!signed.sealed);
+
+    // A key registration is a 422 for the one caller who can reach the route.
+    for (procedure, mention) in [
+        ("registerAppClientKey", "provision-client"),
+        ("registerConsoleKey", "VSA-5"),
+    ] {
+        let (status, _, body) = api(
+            &issuer,
+            reqwest::Method::POST,
+            &format!("/$procs/{procedure}"),
+            &token,
+            Some(&serde_json::json!({"args": {}})),
+        )
+        .await;
+        assert_eq!(status, 422, "{procedure}: {body}");
+        assert!(
+            body.contains("auth_method_disabled") && body.contains(mention),
+            "{body}"
+        );
+    }
+    gateway.kill();
+
+    // The commands refuse with the deployment's configuration, before the database.
+    let app = seed_app(&db).await;
+    let before = count_rows(&db).await;
+    let public_key = key.public_key_b64u();
+    let console_key = sms_test_support::sealed::TestKey::console().public_key_b64u();
+    let refused = tokens_only.cli(
+        "register-client",
+        &["--app", &app.slug, "--public-key", &public_key],
+    );
+    let text = stderr(&refused);
+    assert!(!refused.status.success(), "register-client must refuse");
+    assert!(
+        text.contains("auth_method_disabled") && text.contains("provision-client"),
+        "{text}"
+    );
+    let refused = tokens_only.cli(
+        "pair-console-key",
+        &[
+            "--user",
+            "nobody@example.invalid",
+            "--public-key",
+            &console_key,
+        ],
+    );
+    let text = stderr(&refused);
+    assert!(!refused.status.success(), "pair-console-key must refuse");
+    assert!(
+        text.contains("auth_method_disabled") && text.contains("VSA-5"),
+        "{text}"
+    );
+    assert_eq!(count_rows(&db).await, before, "a refusal writes nothing");
+
+    // The control: a configuration that permits keypair runs the same command.
+    let both = Deployment::new(
+        &format!(
+            "auth:\n  methods: [keypair, machine_tokens]\n{}",
+            op_block(&issuer, 100)
+        ),
+        "both",
+    )
+    .await;
+    let registered = both.cli(
+        "register-client",
+        &[
+            "--app",
+            &app.slug,
+            "--public-key",
+            &public_key,
+            "--scope",
+            "sms:send",
+        ],
+    );
+    assert!(registered.status.success(), "{}", stderr(&registered));
 }
 
 #[tokio::test]

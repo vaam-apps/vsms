@@ -616,8 +616,9 @@ async fn a_resealed_retry_under_one_idempotency_key_replays_the_first_answer() {
     );
 }
 
-/// Nothing re-reads an `Authorization` header: beside a good signature it is
-/// refused outright, so a stale client cannot believe a bearer still counts.
+/// One caller, one credential: an `Authorization` header beside a good signature
+/// is refused outright (VSA-3b: whichever door is open), so a client that sends
+/// both has to decide who it is.
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres - see module docs"]
 async fn a_bearer_on_a_sealed_route_is_refused() {
@@ -637,7 +638,9 @@ async fn a_bearer_on_a_sealed_route_is_refused() {
 
     assert_eq!(reply.status, 400, "{}", reply.text());
     assert!(
-        reply.text().contains("bearer credentials are not accepted"),
+        reply
+            .text()
+            .contains("cannot also carry an Authorization header"),
         "{}",
         reply.text()
     );
