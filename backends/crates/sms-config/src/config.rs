@@ -58,8 +58,8 @@ pub struct Config {
     /// permits (every one when the key is absent).
     pub auth_methods: AuthMethods,
     /// `security:` - `Some` for [`Binary::Gateway`], `None` for
-    /// [`Binary::Worker`] and [`Binary::ProviderTool`], which do not read or
-    /// resolve the block. Use
+    /// [`Binary::Worker`], [`Binary::ProviderTool`] and [`Binary::Operator`],
+    /// which do not read or resolve the block. Use
     /// [`Config::security`] to ask for it.
     pub security: Option<Security>,
     /// `api:`.
@@ -304,12 +304,20 @@ fn validate_op(op: &Op, livemode: bool) -> Result<(), ConfigError> {
             "must be at least 1",
         ));
     }
-    if op.signing_key.rotation_overlap_secs <= ACCESS_TOKEN_TTL_SECS {
+    // A running `serve` signs with the old key until its next refresh, so the
+    // last token under it is issued as late as T + refresh_interval_secs and
+    // lives until T + refresh_interval_secs + ACCESS_TOKEN_TTL_SECS. The old key
+    // stops being published at T + rotation_overlap_secs.
+    let latest_old_key_token_expiry = op
+        .signing_key
+        .refresh_interval_secs
+        .saturating_add(ACCESS_TOKEN_TTL_SECS);
+    if op.signing_key.rotation_overlap_secs <= latest_old_key_token_expiry {
         return Err(invalid(
             "op.signing_key.rotation_overlap_secs",
             &format!(
-                "must exceed the {ACCESS_TOKEN_TTL_SECS}-second access token lifetime, or a \
-                 token signed just before a rotation could not be verified before it expires"
+                "must exceed refresh_interval_secs ({}) plus the {ACCESS_TOKEN_TTL_SECS}-second                  access token lifetime ({latest_old_key_token_expiry}): a running gateway keeps                  signing with the old key until its next refresh, so the last token under it                  would outlive the key's place in /jwks.json",
+                op.signing_key.refresh_interval_secs
             ),
         ));
     }

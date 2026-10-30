@@ -70,7 +70,7 @@ deployment:
 #     refill_per_second: 0.3333333333333333
 #   signing_key:
 #     refresh_interval_secs: 60             # how soon a running serve sees a rotation
-#     rotation_overlap_secs: 1800           # a rotated-out key keeps publishing; > 900
+#     rotation_overlap_secs: 1800           # a rotated-out key keeps publishing; > refresh_interval_secs + 900
 
 security:
   # The server-held pepper behind Message.msisdnHash / bodyHash. At least 32

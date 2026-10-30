@@ -40,7 +40,12 @@ shape error naming the missing keys, not an empty block.
 - `op.token_rate_limit` is a bucket with a burst of at least 1 and a positive
   refill, like the `api` buckets;
 - `op.signing_key.refresh_interval_secs` is at least 1;
-- `op.signing_key.rotation_overlap_secs` exceeds [`ACCESS_TOKEN_TTL_SECS`]
-  (`ConfigError::InvalidValue` each).
+- `op.signing_key.rotation_overlap_secs` exceeds
+  `op.signing_key.refresh_interval_secs` plus [`ACCESS_TOKEN_TTL_SECS`]
+  (`ConfigError::InvalidValue` each). A running `serve` keeps signing with the
+  old key until its next refresh, so the last old-key token is issued as late as
+  T + `refresh_interval_secs` and lives until T + `refresh_interval_secs` + 900 s,
+  while the old key stops being published at T + `rotation_overlap_secs`. The
+  shipped values (60 and 1800) pass; 3600 and 1800 do not.
 
 <!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->

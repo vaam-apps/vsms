@@ -7,7 +7,8 @@ use crate::model::Bucket;
 /// How long an access token the `OpenID` Provider issues is valid, in seconds.
 /// Fifteen minutes. It is a constant and not a YAML key: `client_credentials`
 /// has no refresh, so a caller that wants a longer session asks again, and
-/// [`SigningKey::rotation_overlap_secs`] is held above it.
+/// [`SigningKey::rotation_overlap_secs`] is held above it (plus the refresh
+/// interval).
 pub const ACCESS_TOKEN_TTL_SECS: u64 = 900;
 
 /// `op:` - the deployment's own `OpenID` Provider, the `machine_tokens` method's
@@ -38,7 +39,9 @@ pub struct SigningKey {
     /// `rotate-signing-key` run against it takes effect without a restart.
     pub refresh_interval_secs: u64,
     /// How long a rotated-out key keeps publishing in the JWKS after it stops
-    /// signing. It must exceed [`ACCESS_TOKEN_TTL_SECS`], or a token signed a
-    /// moment before the rotation could not be verified before it expires.
+    /// signing. It must exceed [`SigningKey::refresh_interval_secs`] plus
+    /// [`ACCESS_TOKEN_TTL_SECS`]: a running `serve` signs with the old key until
+    /// its next refresh, so the last old-key token is issued that late and lives
+    /// that much longer, and must still find its key in the JWKS.
     pub rotation_overlap_secs: u64,
 }
