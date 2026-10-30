@@ -21,12 +21,60 @@ use sms_auth::op::MachineOnlyOpStore;
 
 use crate::token_rate_limit::{TokenRateLimitState, enforce_token_client_rate_limit};
 
+/// What a rotation changes: the key tokens are signed with and the key set
+/// `/jwks.json` publishes. They sit under two locks, so a swap is two steps, and
+/// [`Self::publish`] takes them in the one order that never lets a token carry a
+/// `kid` the JWKS does not advertise. Generic so a test can drive the order with
+/// plain values.
+struct Keyring<T, J> {
+    tokens: RwLock<Arc<T>>,
+    jwks: RwLock<Arc<J>>,
+}
+
+impl<T, J> Keyring<T, J> {
+    fn new(tokens: Arc<T>, jwks: J) -> Self {
+        Self {
+            tokens: RwLock::new(tokens),
+            jwks: RwLock::new(Arc::new(jwks)),
+        }
+    }
+
+    fn tokens(&self) -> Arc<T> {
+        self.tokens
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn jwks(&self) -> Arc<J> {
+        self.jwks
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Publishes the new key set **before** the new signing key. The two writes
+    /// are not one atomic step, so the order is the guarantee: between them
+    /// `/jwks.json` already advertises the new `kid` while tokens are still signed
+    /// with the old one (every such token verifies), whereas the other order has a
+    /// window in which a token carries a `kid` the JWKS does not list yet.
+    fn publish(&self, tokens: Arc<T>, jwks: J) {
+        *self
+            .jwks
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(jwks);
+        *self
+            .tokens
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = tokens;
+    }
+}
+
 #[derive(Clone)]
 pub struct OpState {
     store: Arc<MachineOnlyOpStore>,
-    tokens: Arc<RwLock<Arc<TokenManager>>>,
+    keys: Arc<Keyring<TokenManager, Vec<Jwk>>>,
     config: OpConfig,
-    jwks: Arc<RwLock<Arc<Vec<Jwk>>>>,
 }
 
 impl OpState {
@@ -39,23 +87,16 @@ impl OpState {
     ) -> Self {
         Self {
             store: Arc::new(store),
-            tokens: Arc::new(RwLock::new(tokens)),
+            keys: Arc::new(Keyring::new(tokens, jwks)),
             config,
-            jwks: Arc::new(RwLock::new(Arc::new(jwks))),
         }
     }
 
-    /// Atomically swaps in a freshly loaded signing key and key set — see
-    /// [`spawn_key_refresh`], the only caller.
+    /// Swaps in a freshly loaded key set and signing key, the key set first
+    /// ([`Keyring::publish`]) — see [`spawn_key_refresh`], the only caller. Two
+    /// steps, not one atomic swap.
     fn refresh(&self, tokens: Arc<TokenManager>, jwks: Vec<Jwk>) {
-        *self
-            .tokens
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = tokens;
-        *self
-            .jwks
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(jwks);
+        self.keys.publish(tokens, jwks);
     }
 }
 
@@ -78,11 +119,7 @@ impl FromRef<OpState> for Result<Arc<dyn CloneableOpStore>, AxumError> {
 
 impl FromRef<OpState> for Result<Arc<TokenManager>, AxumError> {
     fn from_ref(state: &OpState) -> Self {
-        Ok(state
-            .tokens
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone())
+        Ok(state.keys.tokens())
     }
 }
 
@@ -93,11 +130,7 @@ impl FromRef<OpState> for OpConfig {
 }
 
 async fn jwks_handler(State(state): State<OpState>) -> Json<JwksResponse> {
-    let jwks = state
-        .jwks
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone();
+    let jwks = state.keys.jwks();
     Json(JwksResponse::new((*jwks).clone()))
 }
 
@@ -177,4 +210,48 @@ pub fn spawn_key_refresh(
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    use super::Keyring;
+
+    /// The new key set is visible while the signing key is still the old one.
+    /// Deterministic, no race harness: the test holds the signing-key lock, so
+    /// `publish` can finish its first write and no more, and the test reads what
+    /// that first write was. In the other order `publish` blocks on the held lock
+    /// before touching the JWKS, which then never changes.
+    #[test]
+    fn the_key_set_is_published_before_the_signing_key() {
+        let keyring = std::sync::Arc::new(Keyring::new(std::sync::Arc::new("old"), vec!["old"]));
+        let (blocked_tx, blocked_rx) = mpsc::channel();
+        let held = keyring.tokens.write().expect("lock");
+        let publisher = {
+            let keyring = keyring.clone();
+            std::thread::spawn(move || {
+                keyring.publish(std::sync::Arc::new("new"), vec!["old", "new"]);
+                blocked_tx.send(()).ok();
+            })
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while keyring.jwks().len() != 2 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            keyring.jwks().len(),
+            2,
+            "the new key set must be published first, while the signing key is still held back"
+        );
+        assert!(
+            blocked_rx.try_recv().is_err(),
+            "the signing key is still the old one"
+        );
+        drop(held);
+        publisher.join().expect("publish finishes");
+        assert_eq!(*keyring.tokens(), "new");
+        assert_eq!(*keyring.jwks(), vec!["old", "new"]);
+    }
 }

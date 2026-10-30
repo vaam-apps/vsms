@@ -34,8 +34,13 @@ never gained the new one, until a restart. That defeats the point of
 rotation (a suspected-compromised key would keep signing) and the
 entire 30-minute overlap window (`op.signing_key.rotation_overlap_secs`) was
 only ever exercised at process start, never on a live server.
-[`spawn_key_refresh`] closes this: a background poll reloads and
-atomically swaps both.
+[`spawn_key_refresh`] closes this: a background poll reloads both and
+swaps them in two steps, **the key set before the signing key**
+(`Keyring::publish`; the two sit under separate locks, so the swap is not
+atomic and the order is the guarantee). Between the steps `/jwks.json` already
+advertises the new `kid` while tokens are still signed with the old one, which
+every verifier can check; the other order had a window in which a token carried a
+`kid` the JWKS did not list yet (inherited from `29f93c4^`).
 
 # Restored by VSA-3a, and mounted only when `machine_tokens` is served
 
@@ -44,7 +49,8 @@ no `vsms_sso_login_endpoint` in the discovery document. `serve` mounts [`router`
 **only** when `AuthMethods::machine_tokens_served` (the method permitted **and**
 the `op:` block present); otherwise `/token`, `/jwks.json` and
 `/.well-known/openid-configuration` are simply not routes, and answer 404 like
-any other path (`tests/machine_tokens_gate.rs`). The routes sit **outside** the
+any other path (`tests/machine_tokens_live_postgres.rs`,
+`with_the_method_off_nothing_is_mounted_and_the_commands_refuse`). The routes sit **outside** the
 envelope layer, as before: a `/token` caller has no key to sign with yet, it is
 asking for a token. A token this module mints is not yet accepted by the API
 (VSA-3b adds the bearer realm); until then it is minted and verifiable against
