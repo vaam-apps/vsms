@@ -371,11 +371,14 @@ op:
     refill_per_second: 0.3333333333333333
   signing_key:
     refresh_interval_secs: 60
-    rotation_overlap_secs: 1800       # must exceed the 900-second token lifetime
+    rotation_overlap_secs: 1800       # must exceed refresh_interval_secs + the 900-second token lifetime
 ----
 
 Every key is required and there is no secret in the block. With `auth.methods`
-absent the method is permitted; with a list, it must name `machine_tokens`.
+absent the method is permitted; with a list, it must name `machine_tokens`, and
+the list must also name `keypair`: until the API accepts a token (VSA-3b) a list
+of `machine_tokens` alone is refused at boot (`NoWayIn`), since such a gateway
+would answer every API call with the unsigned 401.
 
 *Order matters, once, on a fresh deployment.* `serve` refuses to start while no
 signing key is active, so mint one first. Run it with `run --rm`, never `exec`:

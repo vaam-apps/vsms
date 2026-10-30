@@ -40,14 +40,14 @@ allow = [
 #     (`rsa = "0.9.6"` in authkestra-engine's own Cargo.toml — a caret
 #     requirement, not a pin; resolves to `rsa 0.9.10` in this workspace's
 #     own Cargo.lock, verified rather than assumed) and
-#     transitively through `jsonwebtoken 11.0.0`'s `rust_crypto` backend —
+#     transitively through `jsonwebtoken 11.1.0`'s `rust_crypto` backend —
 #     both reached via `authkestra-op`/`authkestra-axum`/`authkestra-resource`,
 #     which all depend on `authkestra-engine` as of 0.8.0's restructuring
 #     (`ClientStore`/`ClientAssertionStore`/`ClientRegistration` moved there
 #     too — see item A3) -> the OP that signs every access token and
 #     verifies `private_key_jwt` client assertions (RS256).
 #   - `jsonwebtoken`'s rsa backend
-#     (jsonwebtoken-11.0.0/src/crypto/rust_crypto/rsa.rs — unchanged file,
+#     (jsonwebtoken-11.1.0/src/crypto/rust_crypto/rsa.rs — unchanged file,
 #     same jsonwebtoken version as before this bump) still calls only
 #     `Pkcs1v15Sign`/`Pss` `Signer::sign_with_rng` (private key) and
 #     `Verifier::verify` (public key, no private-key operation at all). No
@@ -70,7 +70,7 @@ allow = [
 # 0.8.0 vendored source specifically, not just the 0.3.3 source these lines
 # originally described
 # (`rg -i 'rsa::.*[Dd]ecrypt|Oaep.*decrypt|Pkcs1v15Encrypt|Decryptor'` across
-# authkestra-engine-0.8.0's and jsonwebtoken-11.0.0's own sources returns
+# authkestra-engine-0.8.0's and jsonwebtoken-11.1.0's own sources returns
 # nothing).
 #
 # Accepted, not silenced: if `authkestra` ever adds a decrypt path through
@@ -152,7 +152,8 @@ allow = [
 # against `unsafe-libyaml` under a different id - still fails this job.
 # Time-boxed: revisit by 2026-12-04, with the RUSTSEC-2023-0071 and
 # RUSTSEC-2023-0089 entries above (all three in one pass), or sooner if vpay
-# replaces its parser.#
+# replaces its parser.
+#
 # RUSTSEC-2026-0387 — crypto-bigint 0.5.5: timing variability in operations
 # meant to be constant-time. Only 0.7.6+ is fixed, and 0.5.5 enters through
 # elliptic-curve 0.13 <- p256/p384 0.13 <- jsonwebtoken 11 <- authkestra 0.8
@@ -163,11 +164,17 @@ allow = [
 # its newest release (0.13.1, which vpay runs) does not help: it depends on the
 # same jsonwebtoken 11. (The 0.7 line, via cratestack-cose's p256 0.14, is at
 # 0.7.10 and clean.)
-# What the P-256/P-384 code does here: vsms's own OP and every AppClient sign
-# RS256 with RSA, and the P-256/P-384 code in jsonwebtoken is only reached to
-# VERIFY ES256/ES384 signatures against PUBLIC keys (the OP's `private_key_jwt`
-# check of a client assertion, whose registered keys are RSA JWKs we generated).
-# A timing leak in a public-key verification exposes no secret. Same reasoning
+# What the P-256/P-384 code does here: vsms's own OP signs its access tokens
+# RS256 with RSA, and the token clients `provision-client` creates sign their
+# assertions RS256 too (keypair clients sign Ed25519 COSE envelopes instead and
+# never reach this code). The P-256/P-384 code in jsonwebtoken could only VERIFY
+# ES256/ES384 signatures against PUBLIC keys (the OP's `private_key_jwt` check of
+# a client assertion), and it is not reached at all for the RSA JWKs we register:
+# authkestra-op 0.8.0 derives the allowed algorithms from the registered JWK's
+# `kty` (`assertion_algorithms` in authkestra-op-0.8.0/src/client_assertion.rs),
+# never from the assertion's header, so an RSA key allows RS*/PS* and nothing
+# else. Even where it would run, a timing leak in a public-key verification
+# exposes no secret. Same reasoning
 # and decision as vpay's entry (vaam-apps/vpay 55e848f). Goes when authkestra and
 # jsonwebtoken reach elliptic-curve 0.14, or when cargo-deny reports the entry as
 # no longer matching.
