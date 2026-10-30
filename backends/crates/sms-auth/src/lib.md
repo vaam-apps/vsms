@@ -46,12 +46,18 @@ that can see this class of regression, since a hand-constructed
 `CratestackError::DatabaseTyped` never exercises the conversion, and
 `cargo build` / `cratestack check` stay green through it either way.
 
-# What this crate is not (VSA-3a)
+# What this crate holds (VSA-4a)
 
-Only the machine half of the pre-#446 crate is restored: the stores, [`op`] (the
-OP's keys, store and config) and [`provision`] (a machine client and its keypair).
-The human half, `login` (Argon2id password sign-in) and `sso` (the Keycloak
-relying party), is VSA-4 and is not in this crate yet; nothing here reads
-`user_credentials` or `sso_transactions`.
+The OP's stores and keys ([`op`]), a machine client's provisioning
+([`provision`]), the console's client row ([`console_client`]: the boot check and
+the reconcile `seed-console-client` runs) and a person's password sign-in
+([`login`]: Argon2id, timing-equal for a missing account, stamping `lastLoginAt`).
+The two gates ([`gate`]) are the one question the operator commands ask before
+they touch the database: is the method served?
+
+Not here, and VSA-4c's: `sso` (the Keycloak relying party) and its transaction
+table. Not here, and VSA-4b's: accepting a person's token at the API; this crate
+issues a code and `sms-gateway` redeems it, and the API still refuses what comes
+out.
 
 <!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->

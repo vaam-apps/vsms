@@ -63,6 +63,131 @@ impl MachineTokens {
     }
 }
 
+/// `rotate-signing-key` was run against a deployment that mounts no `OpenID`
+/// Provider, so there is no key to rotate. Leads with `auth_method_disabled`
+/// like [`TokensNotServed`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "auth_method_disabled: this deployment mounts no OpenID Provider ({reason}), so it has no \
+     signing key to rotate; the provider is mounted when machine_tokens or human_login is \
+     served"
+)]
+pub struct ProviderNotServed {
+    reason: &'static str,
+}
+
+/// Whether the provider is mounted (`AuthMethods::op_served`: `op:` is written
+/// and `machine_tokens` or `human_login` is served). The question
+/// `rotate-signing-key` asks: the signing key signs a machine's access token and a
+/// person's `id_token` alike, so either method is a reason to rotate it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Provider {
+    /// `/token` and `/jwks.json` are mounted.
+    Served,
+    /// Nothing is mounted; the command refuses.
+    NotServed {
+        /// Why, in words an operator can act on.
+        reason: &'static str,
+    },
+}
+
+impl Provider {
+    /// The gate for a resolved `auth.methods` and its blocks.
+    #[must_use]
+    pub fn from_methods(methods: &sms_config::AuthMethods) -> Self {
+        if methods.op_served() {
+            Self::Served
+        } else if !methods.permits(sms_config::AuthMethod::MachineTokens)
+            && !methods.permits(sms_config::AuthMethod::HumanLogin)
+        {
+            Self::NotServed {
+                reason: "auth.methods permits neither machine_tokens nor human_login",
+            }
+        } else {
+            Self::NotServed {
+                reason: "no op: block in the configuration",
+            }
+        }
+    }
+
+    /// `Ok` when the provider is mounted.
+    ///
+    /// # Errors
+    ///
+    /// [`ProviderNotServed`], whose message leads with `auth_method_disabled`.
+    pub fn require(self) -> Result<(), ProviderNotServed> {
+        match self {
+            Self::Served => Ok(()),
+            Self::NotServed { reason } => Err(ProviderNotServed { reason }),
+        }
+    }
+}
+
+/// A command that sets a person's password or registers the console client was
+/// run against a deployment that does not serve `human_login`.
+///
+/// Leads with `auth_method_disabled` like [`TokensNotServed`], so a script switches
+/// on one string for every disabled method.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "auth_method_disabled: this deployment signs no person in ({reason}); a person gets in by \
+     pairing a browser key (pair-console-key)"
+)]
+pub struct LoginNotServed {
+    reason: &'static str,
+}
+
+/// Whether this deployment serves `human_login` (`auth.methods` permits it, the
+/// `human_login:` block is written **and** `op:` is:
+/// `sms_config::AuthMethods::human_login_served`).
+///
+/// A two-valued type for the reason [`MachineTokens`] is one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HumanLogin {
+    /// `POST /login` and the `authorization_code` grant are mounted;
+    /// `seed-console-client`, `provision-user --password` and
+    /// `bootstrap --owner-password-out` run.
+    Served,
+    /// Nothing is mounted; they refuse.
+    NotServed {
+        /// Why, in words an operator can act on.
+        reason: &'static str,
+    },
+}
+
+impl HumanLogin {
+    /// The gate for a resolved `auth.methods` and its blocks.
+    #[must_use]
+    pub fn from_methods(methods: &sms_config::AuthMethods) -> Self {
+        if methods.human_login_served() {
+            Self::Served
+        } else if !methods.permits(sms_config::AuthMethod::HumanLogin) {
+            Self::NotServed {
+                reason: "auth.methods does not permit human_login",
+            }
+        } else {
+            // Permitted by the absent default and not served: a block is
+            // missing. `human_login:` without `op:` is refused at load, so
+            // the one that can be missing here is `human_login:` itself.
+            Self::NotServed {
+                reason: "no human_login: block in the configuration",
+            }
+        }
+    }
+
+    /// `Ok` when the sign-in is served.
+    ///
+    /// # Errors
+    ///
+    /// [`LoginNotServed`], whose message leads with `auth_method_disabled`.
+    pub fn require(self) -> Result<(), LoginNotServed> {
+        match self {
+            Self::Served => Ok(()),
+            Self::NotServed { reason } => Err(LoginNotServed { reason }),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -100,5 +225,52 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(message.contains("no op: block"), "{message}");
+    }
+
+    #[test]
+    fn the_provider_gate_is_open_for_either_method_and_shut_for_neither() {
+        let tokens_only = methods(Some(&["keypair", "machine_tokens"]));
+        assert!(!tokens_only.op_served(), "no block, nothing is mounted");
+        let message = Provider::from_methods(&methods(Some(&["keypair"])))
+            .require()
+            .unwrap_err()
+            .to_string();
+        assert!(
+            message.starts_with(&format!("{AUTH_METHOD_DISABLED}:")),
+            "{message}"
+        );
+        assert!(
+            message.contains("neither machine_tokens nor human_login"),
+            "{message}"
+        );
+        let absent = Provider::from_methods(&methods(None))
+            .require()
+            .unwrap_err()
+            .to_string();
+        assert!(absent.contains("no op: block"), "{absent}");
+    }
+
+    #[test]
+    fn the_login_gate_refuses_with_the_stable_word_and_says_which_piece_is_missing() {
+        let keypair_only = HumanLogin::from_methods(&methods(Some(&["keypair"])))
+            .require()
+            .unwrap_err()
+            .to_string();
+        assert!(
+            keypair_only.starts_with(&format!("{AUTH_METHOD_DISABLED}:")),
+            "{keypair_only}"
+        );
+        assert!(
+            keypair_only.contains("does not permit human_login"),
+            "{keypair_only}"
+        );
+        assert!(keypair_only.contains("pair-console-key"), "{keypair_only}");
+
+        // The absent default permits human_login; with no block it serves nothing.
+        let absent = HumanLogin::from_methods(&methods(None))
+            .require()
+            .unwrap_err()
+            .to_string();
+        assert!(absent.contains("no human_login: block"), "{absent}");
     }
 }

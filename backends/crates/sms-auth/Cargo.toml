@@ -1,6 +1,6 @@
 [package]
 name = "sms-auth"
-description = "The embedded OpenID Provider's stores over the CrateStack delegates (R1): oauth_clients and client_assertions, signing-key management, and provisioning a machine client (VSA-3a)"
+description = "The embedded OpenID Provider's stores over the CrateStack delegates (R1): oauth_clients and client_assertions, signing-key management, provisioning a machine client (VSA-3a), the console client and the Argon2id password login (VSA-4a)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -18,8 +18,7 @@ sms-core.workspace = true
 sms-config.workspace = true
 authkestra-op.workspace = true
 # TokenManager/MemoryStore: op.rs's key management and the stores
-# CompositeOpStore's unused (client_credentials-only) authorization
-# code/refresh/device-code slots need to type-check.
+# CompositeOpStore's authorization-code and device-code slots are made of.
 authkestra-engine.workspace = true
 rsa.workspace = true
 rand.workspace = true
@@ -29,9 +28,10 @@ chrono.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+# login.rs runs the Argon2 verification on the blocking pool.
+tokio.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 # The live suite gets its DATABASE_URL from this instead of the environment.
 sms-test-support.workspace = true
 

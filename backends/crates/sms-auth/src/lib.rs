@@ -1,6 +1,8 @@
 #![doc = include_str!("lib.md")]
 
+pub mod console_client;
 pub mod gate;
+pub mod login;
 pub mod op;
 pub mod provision;
 
@@ -185,7 +187,7 @@ fn to_registration(row: schema::OauthClient) -> Result<ClientRegistration, Regis
 /// fields are themselves cheap, state-sharing handles: `Arc<Cratestack>`
 /// clones the pool handle, not the pool, and `CratestackContext` was
 /// already `Clone` before this (see `SmsClientStore::new`'s caller,
-/// `machine_only_store`, which already called `.clone()` on both before
+/// `op_store`, which already called `.clone()` on both before
 /// this derive existed).
 #[derive(Clone)]
 pub struct SmsClientStore {

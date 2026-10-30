@@ -1351,11 +1351,14 @@ model User {
   //     middleware on `POST /users` and `PATCH /users/{id}` (router.rs).
   //     Do not remove either half without re-reading this comment.
   @@allow("create", hasRole('owner') || (hasRole('admin') && roleKey != 'owner'))
-  // update: no `system` clause. The write that needed one, a login stamping
-  // lastLoginAt, was deleted with the OpenID Provider (VS-4), and nothing writes
-  // lastLoginAt now: the column is kept because dropping it is a lossy migration
-  // of its own, not because a path still fills it.
-  @@allow("update", hasRole('owner') || (hasRole('admin') && roleKey != 'owner'))
+  // update: hasRole('system') alongside - a successful password login stamps
+  // lastLoginAt (backends/crates/sms-auth/src/login.rs, VSA-4a), and that write
+  // runs under the same system context the read above does, for the same reason:
+  // it happens before any human principal exists to hold owner/admin. (It was
+  // removed in VS-4 with the login that needed it, and restored with it.) The
+  // clause admits a role no HTTP caller can carry (the owner-grant guard and the
+  // reserved-role CHECK see to that), so it widens nothing a request can reach.
+  @@allow("update", hasRole('owner') || (hasRole('admin') && roleKey != 'owner') || hasRole('system'))
   @@allow("delete", hasRole('owner'))
   @@emit(created, updated, deleted)
 }
