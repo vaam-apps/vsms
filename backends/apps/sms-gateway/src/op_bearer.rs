@@ -557,6 +557,35 @@ mod tests {
         assert_eq!(reload.calls.load(Ordering::SeqCst), 1);
     }
 
+    /// The callers queued behind the one reload do not each give up because the
+    /// interval has not elapsed: the key the first one loaded is theirs too.
+    #[tokio::test]
+    async fn callers_queued_behind_a_reload_use_the_key_it_loaded() {
+        let (a, b) = keys();
+        let reload = quiet();
+        reload.then.lock().unwrap().push((
+            b.manager.clone(),
+            vec![
+                a.manager.public_jwk().unwrap(),
+                b.manager.public_jwk().unwrap(),
+            ],
+        ));
+        let v = Arc::new(verifier(&[a], reload.clone(), Duration::from_secs(60)));
+        let token = mint(b, Some(&b.kid), &claims(&json!({})));
+        let mut handles = Vec::new();
+        for _ in 0..16 {
+            let (v, token) = (v.clone(), token.clone());
+            handles.push(tokio::spawn(async move { v.verify(&token).await }));
+        }
+        for handle in handles {
+            assert!(
+                handle.await.unwrap().is_ok(),
+                "every queued caller verifies"
+            );
+        }
+        assert_eq!(reload.calls.load(Ordering::SeqCst), 1, "behind one read");
+    }
+
     #[tokio::test]
     async fn the_interval_elapsing_allows_the_next_forced_reload() {
         let (a, b) = keys();
