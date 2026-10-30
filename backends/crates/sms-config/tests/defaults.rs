@@ -134,8 +134,8 @@ fn the_committed_base_leaves_auth_methods_absent_so_every_method_is_permitted() 
 
 /// The commented examples in `config/application.yml` are claims about what a
 /// deployment may write, and a comment is the one place nothing would notice them
-/// drifting. Uncommented, the `op:` and `human_login:` examples load, and serve
-/// both methods.
+/// drifting. Uncommented, the `op:` and `human_login:` examples (the second with
+/// `sso:` nested in it) load, and serve both methods.
 #[test]
 fn the_commented_op_and_human_login_examples_load_once_uncommented_and_serve_both() {
     let text = std::fs::read_to_string(
@@ -172,14 +172,24 @@ fn the_commented_op_and_human_login_examples_load_once_uncommented_and_serve_bot
         Some(&dir.join("application.yml")),
         "example",
         Binary::Gateway,
-        &|name| (name == "SMS_HASH_PEPPER").then(|| "p".repeat(48)),
+        &|name| matches!(name, "SMS_HASH_PEPPER" | "SMS_SSO_CLIENT_SECRET").then(|| "p".repeat(48)),
     )
     .unwrap_or_else(|error| panic!("the commented examples do not load: {error}\n{overlay}"));
     assert!(config.auth_methods.machine_tokens_served(), "{overlay}");
     assert!(config.auth_methods.human_login_served(), "{overlay}");
-    let human = config.human_login.expect("the block is read");
+    let human = config.human_login.clone().expect("the block is read");
     assert_eq!(human.console_client.client_id, "sms-console");
     assert_eq!(human.login_rate_limit.per_email.burst, 5);
     assert_eq!(human.login_rate_limit.aggregate.burst, 10);
+    // VSA-4c: the `sso:` example nested in it loads too, with its secret from the
+    // placeholder the comment writes.
+    let sso = config
+        .sso()
+        .unwrap_or_else(|| panic!("no sso example read\n{overlay}"));
+    assert_eq!(sso.issuer, "https://auth.example.org/realms/staff");
+    assert_eq!(sso.jit_role, "support");
+    assert_eq!(sso.accepted_amr, ["otp"]);
+    assert_eq!(sso.rate_limit.burst, 30);
+    assert_eq!(sso.client_secret.expose(), "p".repeat(48));
     std::fs::remove_dir_all(&dir).ok();
 }

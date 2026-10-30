@@ -89,6 +89,10 @@ deployment:
 # access token this issues as that person (VSA-4b), except as an owner or an
 # admin, which act only from a paired console key; the console has no sign-in
 # screen until VSA-5. Every key is required. docs/architecture.md, sections 4.9 and 4.10.
+# `sso:` inside it (VSA-4c) adds the single sign-on routes beside the password: the
+# callback registered at the provider is `<op.issuer>/login/sso/callback`, derived
+# and never written, and the secret is the one `${SMS_SSO_CLIENT_SECRET}` only the
+# gateway reads. docs/runbooks/sso.adoc.
 #
 # human_login:
 #   console_client:
@@ -102,6 +106,20 @@ deployment:
 #     aggregate:                            # one bucket for every sign-in together, the Argon2 CPU
 #       burst: 10                           # budget: 10, then 1 a second (about a tenth of the API's
 #       refill_per_second: 1.0              # per-peer refill; an Argon2id verify is far dearer than a call)
+#   sso:                                  # optional: sign in through an OpenID Connect provider too (VSA-4c)
+#     issuer: https://auth.example.org/realms/staff   # byte for byte what the provider's discovery says
+#     client_id: vsms-gateway             # this gateway's confidential client at the provider
+#     client_secret: ${SMS_SSO_CLIENT_SECRET}         # a placeholder under livemode, never a literal
+#     scopes: [openid, email, profile]    # must include openid
+#     required_group: vsms-staff          # an exact match in the groups claim: a gate, never a role
+#     groups_claim: groups
+#     accepted_amr: [otp]                 # the multi-factor rule: any one of amr or acr suffices,
+#     accepted_acr: []                    # and the two lists are never both empty
+#     jit_role: support                   # the role a first sign-in creates: never owner, admin, system, app
+#     jwks_min_refresh_secs: 30           # floor between two fetches of the provider's signing keys
+#     rate_limit:                         # one bucket for /login/sso/start, one for /login/sso/callback
+#       burst: 30
+#       refill_per_second: 1.0
 
 security:
   # The server-held pepper behind Message.msisdnHash / bodyHash. At least 32
