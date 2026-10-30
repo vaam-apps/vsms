@@ -11,12 +11,12 @@ use crate::error::ConfigError;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum AuthMethod {
     /// A request signed by a registered Ed25519 key, and the sealed answer
-    /// (`COSE_Sign1`): the only way in vsms serves today.
+    /// (`COSE_Sign1`).
     Keypair,
     /// A bearer token the deployment's own `OpenID` Provider minted from a
-    /// `private_key_jwt` assertion. The provider is back (VSA-3a); the API
-    /// accepting the token is VSA-3b, and until then a list naming this method
-    /// without `keypair` is refused as [`ConfigError::NoWayIn`].
+    /// `private_key_jwt` assertion. The provider is back (VSA-3a) and the API
+    /// accepts the token beside the signed envelope (VSA-3b), so a list naming
+    /// this method without `keypair` is a legal one.
     MachineTokens,
     /// A webhook endpoint delivered with `X-Sms-Signature`, a signature keyed by
     /// a secret both sides hold (`WebhookEndpoint.deliveryMode = hmac`).
@@ -229,19 +229,16 @@ impl AuthMethods {
     }
 
     /// Whether something permitted can authenticate a caller of the API's `/v1`
-    /// surface. vpay's `NoWayIn` is `!keypair && !machine_tokens` and R5 holds the
-    /// two repositories to that rule once the API accepts a token; **until VSA-3b
-    /// it does not, so only `keypair` counts**: a `[machine_tokens]` list would boot
-    /// a gateway that mints tokens and answers every API call with the unsigned
-    /// 401, which is exactly what `NoWayIn` exists to refuse. VSA-3b adds
-    /// `AuthMethod::MachineTokens` back to the list below (and flips
-    /// `machine_tokens_alone_is_refused_until_vsa_3b`). `human_login` does not
-    /// count: it signs a person in to the console, it does not authenticate an API
-    /// caller. `hmac_webhooks` cannot either; it authenticates what vsms sends,
-    /// never who is asking.
+    /// surface: vpay's `NoWayIn` is `!keypair && !machine_tokens`, and R5 holds
+    /// the two repositories to that rule. Since VSA-3b the API accepts a machine
+    /// token beside the signed envelope, so `machine_tokens` counts and
+    /// `[machine_tokens]` alone is a legal list (it boots with its `op:` block;
+    /// without one it is `AuthMethodNotConfigured`, the next rule). `human_login`
+    /// does not count: it signs a person in to the console, it does not
+    /// authenticate an API caller. `hmac_webhooks` cannot either; it
+    /// authenticates what vsms sends, never who is asking.
     fn can_authenticate_a_caller(&self) -> bool {
-        // VSA-3b: add `AuthMethod::MachineTokens` here when the API accepts a bearer.
-        [AuthMethod::Keypair]
+        [AuthMethod::Keypair, AuthMethod::MachineTokens]
             .into_iter()
             .any(|method| self.permits(method))
     }
@@ -282,12 +279,15 @@ mod tests {
         );
     }
 
-    /// VSA-3b flips this: once the API accepts a bearer, a machine token is a way
-    /// in and this assertion becomes `assert!`. Until then a list of machine
-    /// tokens alone would boot a gateway that answers every API call with the
-    /// unsigned 401.
+    /// Since VSA-3b the API accepts a bearer, so a machine token is a way in on
+    /// its own. (`resolve` still needs its `op:` block for it afterwards, which
+    /// is a different rule.)
     #[test]
-    fn machine_tokens_alone_is_refused_until_vsa_3b() {
-        assert!(!permitting(&[AuthMethod::MachineTokens]).can_authenticate_a_caller());
+    fn machine_tokens_alone_is_a_way_in() {
+        assert!(permitting(&[AuthMethod::MachineTokens]).can_authenticate_a_caller());
+        assert!(
+            permitting(&[AuthMethod::MachineTokens, AuthMethod::HmacWebhooks])
+                .can_authenticate_a_caller()
+        );
     }
 }

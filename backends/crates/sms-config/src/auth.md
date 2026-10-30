@@ -20,12 +20,12 @@ edit was meant to shut. vaam writes `methods: [keypair]`.
 This is vpay's key (`vpay-config`, VPA-1), with the same rules and the same
 spellings, so one operator's muscle memory covers both repositories.
 
-| Method           | What it permits                                                                              | Where it is enforced                                                                                                                                        |
-| ---------------- | -------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `keypair`        | requests signed by a registered key, and the sealed answers; the console's paired keys       | the envelope layer, always `Required`                                                                                                                       |
-| `machine_tokens` | `Authorization: Bearer` from the deployment's own `OpenID` Provider                          | the provider (`/token`, `/jwks.json`, discovery) is mounted when `op:` is present (VSA-3a); the API accepting its tokens is **not yet** (VSA-3b)            |
-| `hmac_webhooks`  | webhook endpoints delivered with `X-Sms-Signature` (`deliveryMode: hmac`), and their secrets | `sms_api::HmacWebhooks`: the create, update, switch, rotate and replay calls refuse; `sms-worker`'s `hooks` claims no `hmac` attempt, which stays `pending` |
-| `human_login`    | a person's password or SSO sign-in to the console                                            | **not restored** (VSA-4)                                                                                                                                    |
+| Method           | What it permits                                                                              | Where it is enforced                                                                                                                                                   |
+| ---------------- | -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `keypair`        | requests signed by a registered key, and the sealed answers; the console's paired keys       | the envelope layer: `Required` alone, `Optional` beside tokens, a 415 when off                                                                                         |
+| `machine_tokens` | `Authorization: Bearer` from the deployment's own `OpenID` Provider                          | the provider (`/token`, `/jwks.json`, discovery) is mounted when `op:` is present (VSA-3a); the API accepts its tokens beside the envelope (VSA-3b, `sms_api::bearer`) |
+| `hmac_webhooks`  | webhook endpoints delivered with `X-Sms-Signature` (`deliveryMode: hmac`), and their secrets | `sms_api::HmacWebhooks`: the create, update, switch, rotate and replay calls refuse; `sms-worker`'s `hooks` claims no `hmac` attempt, which stays `pending`            |
+| `human_login`    | a person's password or SSO sign-in to the console                                            | **not restored** (VSA-4)                                                                                                                                               |
 
 # Permitted is not served
 
@@ -51,12 +51,12 @@ One [`ConfigError`] variant each:
 5. nothing permitted can authenticate a caller of the API,
    [`ConfigError::NoWayIn`]: vpay's rule is `!keypair && !machine_tokens` (R5
    holds the two repositories to one rule) and `human_login` is not a way in for
-   an API caller. **Until VSA-3b the API does not accept a token, so only
-   `keypair` counts here:** `[machine_tokens]` alone, with or without its `op:`
-   block, would boot a gateway that mints tokens and answers every API call with
-   the unsigned 401, and is refused like `[hmac_webhooks]` alone. Once the API
-   accepts a bearer (VSA-3b) `machine_tokens` counts and `[machine_tokens]` alone
-   becomes a legal list. `[keypair, machine_tokens]` boots and serves `/token`.
+   an API caller. **Since VSA-3b the API accepts a machine token, so
+   `machine_tokens` counts:** `[machine_tokens]` alone, with its `op:` block, is
+   a legal list and boots a gateway whose only way in is a bearer token (the
+   signed envelope then refuses a `COSE_Sign1` body with a 415, and pairing a
+   console is unavailable until VSA-5). `[hmac_webhooks]` alone is still
+   refused. `[keypair, machine_tokens]` boots and serves `/token`.
 6. `machine_tokens` named explicitly with no `op:` block,
    [`ConfigError::AuthMethodNotConfigured`] (the absent default never raises it);
 7. an `op:` block on a list that does not permit `machine_tokens`,

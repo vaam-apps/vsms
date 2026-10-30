@@ -17,7 +17,9 @@ use cratestack::axum::Router;
 use cratestack::{CratestackContext, FilterExpr};
 use sms_api::auth::system_context;
 use sms_api::envelope::{ServerKeys, pem_of_seed};
-use sms_api::schema::{self, Cratestack, app_client, user};
+use sms_api::schema::{
+    self, Cratestack, SenderIdKind, SenderIdRegistrationStatus, app_client, user,
+};
 use sms_test_support::sealed::{SealedClient, TestKey};
 
 /// The seed of the key the test servers seal with.
@@ -56,6 +58,17 @@ pub fn api_router(db: &Cratestack, pepper: &str) -> Router {
 /// [`api_router`] for a deployment whose `auth.methods` says whether
 /// `hmac_webhooks` is permitted (VSA-1).
 pub fn api_router_with(db: &Cratestack, pepper: &str, hmac: sms_api::HmacWebhooks) -> Router {
+    api_router_doors(db, pepper, hmac, sms_api::ApiDoors::keypair_only())
+}
+
+/// [`api_router_with`] for a deployment whose `auth.methods` opened `doors`
+/// (VSA-3b): the signed envelope, a machine token, or both.
+pub fn api_router_doors(
+    db: &Cratestack,
+    pepper: &str,
+    hmac: sms_api::HmacWebhooks,
+    doors: sms_api::ApiDoors,
+) -> Router {
     sms_api::router(
         db.clone(),
         server_keys().into_signer(),
@@ -63,7 +76,10 @@ pub fn api_router_with(db: &Cratestack, pepper: &str, hmac: sms_api::HmacWebhook
         sms_api::DEFAULT_IDEMPOTENCY_TTL,
         sms_api::default_rate_limit_config(),
         sms_api::default_source_rate_limit_config(),
-        hmac,
+        sms_api::ApiAuth {
+            hmac_webhooks: hmac,
+            doors,
+        },
     )
     .expect("the envelope layer accepts its configuration")
 }
@@ -247,4 +263,72 @@ pub async fn deactivate_user(db: &Cratestack, user_id: &str) {
         .run(&owner())
         .await
         .expect("deactivating the user");
+}
+
+/// A random Cameroonian MTN number, so a send never collides with another run's.
+pub fn unique_mtn_msisdn() -> String {
+    let n = u128::from_le_bytes(*cratestack::uuid::Uuid::new_v4().as_bytes()) % 1_000_000;
+    format!("+237677{n:06}")
+}
+
+/// An active sender with an approved registration, so `sendMessage` accepts a
+/// send. Returns the sender id value.
+pub async fn seed_sender(db: &Cratestack) -> String {
+    let tag = cratestack::uuid::Uuid::new_v4().simple().to_string()[..12].to_owned();
+    let value = format!("S{}", &tag[..8]).to_uppercase();
+    let provider = db
+        .provider()
+        .create(schema::CreateProviderInput {
+            key: format!("fixture_{tag}"),
+            displayName: "Sealed Fixture Provider".to_owned(),
+            kind: schema::ProviderKind::aggregator_http,
+            config: "{}".to_owned(),
+            credentialRef: "vault://test".to_owned(),
+            maxTps: 5.0,
+            maxDailySubmissions: 1000,
+            supportsDlr: true,
+            supportsAlphaSender: true,
+            supportsUcs2: true,
+            supportsConcat: true,
+            costPerSegmentXaf: "15".parse().unwrap(),
+            healthCheckedAt: None,
+            circuitOpenUntil: None,
+        })
+        .run(&owner())
+        .await
+        .expect("seeding a provider");
+    let sender = db
+        .sender_id()
+        .create(schema::CreateSenderIdInput {
+            value: value.clone(),
+            kind: SenderIdKind::alphanumeric,
+            notes: None,
+        })
+        .run(&owner())
+        .await
+        .expect("seeding a sender id");
+    db.sender_id_registration()
+        .create(schema::CreateSenderIdRegistrationInput {
+            senderIdId: sender.id.clone(),
+            providerId: provider.id,
+            status: SenderIdRegistrationStatus::approved,
+            submittedAt: Some(Utc::now()),
+            approvedAt: Some(Utc::now()),
+            reference: None,
+            rejectionReason: None,
+        })
+        .run(&owner())
+        .await
+        .expect("seeding an approved registration");
+    db.sender_id()
+        .update(sender.id)
+        .set(schema::UpdateSenderIdInput {
+            active: Some(true),
+            ..Default::default()
+        })
+        .if_match(sender.version)
+        .run(&owner())
+        .await
+        .expect("activating the sender id");
+    value
 }

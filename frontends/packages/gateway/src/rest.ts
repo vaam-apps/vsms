@@ -29,7 +29,7 @@
 // request it wants as an ordinary one and hands it to `gatewayFetch`
 // (`./upstream.ts`); in the console that is the sealing fetch
 // (`./sealing-fetch.ts`), which signs it with the paired person's own browser
-// key, so the gateway authenticates the signed-in person (`SignedAuth`,
+// key, so the gateway authenticates the signed-in person (`GatewayAuth`,
 // `backends/crates/sms-api/src/auth.rs`) and their role's policies decide. A 401
 // is the gateway's unsigned refusal of a key it does not accept, and is a
 // denial, not a prompt to retry.

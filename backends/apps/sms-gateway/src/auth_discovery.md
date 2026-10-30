@@ -10,7 +10,9 @@ methods this release has code for and, for `machine_tokens`, whose `op:` block i
 written. So the absent default answers two of the four on a deployment with no
 `op:` (`machine_tokens` is permitted and not served; `human_login` is permitted and
 served by nothing until VSA-4), three with one, and vaam's `[keypair]` answers one. A console or an SDK reads
-this instead of a second switch that could disagree with the server's.
+this instead of a second switch that could disagree with the server's. Listing
+`machine_tokens` now also means the API accepts the token it mints (VSA-3b); the
+shape of the document did not change.
 
 - **Unauthenticated and outside the envelope**, like `/healthz` and `/readyz`:
   `serve` merges it beside them, after `sms_api::router` has applied its layers

@@ -1,7 +1,11 @@
 Assembling the generated router.
 
-`router` takes `HmacWebhooks` (VSA-1), the answer `auth.methods` gives for
-`hmac_webhooks`. It reaches the router twice: `Procedures::new`'s argument,
+`router` takes `ApiAuth`, the answer `auth.methods` gives for the API: which doors
+are open (`ApiDoors`, VSA-3b: the signed envelope, a machine token, or both; see
+`bearer.md`) and `HmacWebhooks` (VSA-1), whether `hmac_webhooks` is permitted. The
+doors set the envelope's mode and add `enforce_bearer_door` between it and the
+per-principal limiter, and `keypair_gate.md` is the innermost layer's. `HmacWebhooks`
+reaches the router twice: `Procedures::new`'s argument,
 and `enforce_hmac_gate`, the innermost layer, which refuses a generated
 `WebhookEndpoint` write that would make an `hmac` endpoint. It sits under the RBAC
 layers on purpose, so a caller who lacks `webhook:manage` is told so before being

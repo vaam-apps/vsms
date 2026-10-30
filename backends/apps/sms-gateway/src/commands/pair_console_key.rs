@@ -38,6 +38,16 @@ pub(crate) struct PairConsoleKeyArgs {
     /// `"break-glass, 2026-10"`.
     #[arg(long)]
     pub(crate) label: Option<String>,
+
+    /// The YAML deployment configuration (VSA-3b), optional here. When one is
+    /// named (`--config`, or `SMS_CONFIG`, which the images set) and its
+    /// `auth.methods` does not permit `keypair`, this command refuses,
+    /// `auth_method_disabled`, before touching the database: nothing on that
+    /// deployment is accepted signed, so a key registered here would look
+    /// registered and never be honoured. Without one the command behaves as it
+    /// did before `auth.methods` existed; the API enforces the method either way.
+    #[command(flatten)]
+    pub(crate) config: sms_config::ConfigArgs,
 }
 
 /// `Command::PairConsoleKey`'s body. The key is identified by its RFC 9679
@@ -48,7 +58,22 @@ pub(crate) async fn pair_console_key_command(args: PairConsoleKeyArgs) -> Result
         user,
         public_key,
         label,
+        config,
     } = args;
+
+    // Before the database, so a deployment that cannot honour a key is told so
+    // with nothing touched. `None` is a command run outside any deployment's
+    // configuration: nothing to consult, and the API is the enforcement.
+    if config.config.is_some() {
+        let loaded = config
+            .load(sms_config::Binary::Operator)
+            .context("loading the deployment configuration")?;
+        sms_api::Keypair::from_permitted(
+            loaded.auth_methods.permits(sms_config::AuthMethod::Keypair),
+        )
+        .require("a console key cannot be paired; pairing a console returns with VSA-5")
+        .map_err(|error| anyhow::anyhow!("{}", error.public_message()))?;
+    }
 
     // Before the database, so a typo'd key fails with nothing touched.
     sms_api::console_keys::parse_public_key(&public_key).context("--public-key")?;

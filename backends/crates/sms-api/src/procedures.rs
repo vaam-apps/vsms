@@ -1524,7 +1524,7 @@ impl Procedures {
     /// `DeliveryReceipt`'s own `list`/`detail` policy is
     /// `auth().kind == "user" || hasRole('system')` — it has never admitted
     /// `kind == "app"`, the only real caller kind this deployment mints
-    /// (`SignedAuth::context_for` hardcodes `role: "app"` for every
+    /// (`GatewayAuth::context_for` hardcodes `role: "app"` for every
     /// app key; see `auth.rs`'s own doc). So the console's own
     /// credential cannot read `GET /delivery_receipts` directly, the same
     /// structural wall #59's own finding already named for `Provider`/

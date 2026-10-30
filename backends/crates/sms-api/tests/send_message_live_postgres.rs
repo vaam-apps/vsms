@@ -61,11 +61,11 @@ fn sys() -> CratestackContext {
 /// produce (#20/#21) — `kind == "app"`, `sub == clientId`. `role` doesn't
 /// affect `sendMessage` itself; only `kind` and `sub` do.
 ///
-/// #24: `SignedAuth::authenticate` now also projects the app client's `scope`
+/// #24: `GatewayAuth::authenticate` now also projects the app client's `scope`
 /// claim into `extensions`, which `sendMessage`'s own `require_permission(ctx,
 /// "sms:send")` gate (Layer 2) checks before anything else in the
 /// procedure runs. A hand-built context — this function never goes through
-/// `SignedAuth` — has to carry the same claim by hand, or every test below
+/// `GatewayAuth` — has to carry the same claim by hand, or every test below
 /// would fail on that gate rather than on whatever it actually means to
 /// exercise.
 fn app_caller(client_id: &str) -> CratestackContext {

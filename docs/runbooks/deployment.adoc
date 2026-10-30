@@ -359,8 +359,14 @@ curl -s https://$SMS_GATEWAY_DOMAIN/.well-known/vsms-auth     # {"methods":["key
 A deployment that serves other applications than vaam can mint short-lived bearer
 tokens for a machine client (owner ruling R5; `docs/architecture.md`, section 4.10).
 It is off unless you write the `op:` block, and vaam's `methods: [keypair]` keeps it
-off even then. *A token minted by this release is not yet accepted by the API*
-(VSA-3b): do not switch a caller to tokens until that lands.
+off even then. *The API accepts the tokens this provider mints* (VSA-3b), as a bearer
+beside the signed envelope, exactly when `machine_tokens` is served. A token caller
+gets plain JSON (no response seal, no contract-lock `426`); a deployment whose
+`auth.methods` is `[machine_tokens]` alone refuses a signed request (`415`) and
+cannot register a key or pair a console (`422 auth_method_disabled`) until VSA-5.
+`register-client` and `pair-console-key` apply the same rule when the
+configuration they are given (`--config`, which the images set through
+`SMS_CONFIG`) omits `keypair`.
 
 [,yaml]
 ----
@@ -375,10 +381,15 @@ op:
 ----
 
 Every key is required and there is no secret in the block. With `auth.methods`
-absent the method is permitted; with a list, it must name `machine_tokens`, and
-the list must also name `keypair`: until the API accepts a token (VSA-3b) a list
-of `machine_tokens` alone is refused at boot (`NoWayIn`), since such a gateway
-would answer every API call with the unsigned 401.
+absent the method is permitted; with a list, it must name `machine_tokens`. Since
+VSA-3b `[machine_tokens]` alone is a legal list: the API accepts a token, so the
+gateway has a way in. It has no signed way in, though: `serve` still needs the
+two envelope signing key files (they seal nothing for a token caller; the files
+are the deployment's identity, the ones `server-keys` prints and the worker's
+`hooks` role seals webhook deliveries with, and `serve` keeps requiring them
+whatever `auth.methods` says), a signed request is refused with a `415`, and
+registering a key or pairing a console is a `422` until VSA-5. A list with neither
+`keypair` nor `machine_tokens` is still refused at boot (`NoWayIn`).
 
 *Order matters, once, on a fresh deployment.* `serve` refuses to start while no
 signing key is active, so mint one first. Run it with `run --rm`, never `exec`:

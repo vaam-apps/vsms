@@ -5,6 +5,7 @@ mod commands;
 mod dlr;
 mod health;
 mod op;
+mod op_bearer;
 mod token_rate_limit;
 
 use anyhow::Result;
@@ -56,9 +57,9 @@ enum Command {
     /// refuses to overwrite an existing file, and never logs or prints it.
     ///
     /// A client made here gets a **token** from `/token`; it is not a signing
-    /// key, and a token is not yet accepted by the API (VSA-3b). It refuses on a
+    /// key, and the API accepts the token as a bearer (VSA-3b). It refuses on a
     /// deployment that serves no tokens, `auth_method_disabled`, and points at
-    /// `register-client`, which every deployment serves.
+    /// `register-client`, which a deployment that permits `keypair` serves.
     ProvisionClient(commands::provision_client::ProvisionClientArgs),
     /// Registers an Ed25519 public key for an `App`'s signing client (VS-2),
     /// the only way a machine caller gets in. The caller generates the keypair
@@ -417,7 +418,8 @@ mod tests {
     /// them. `seed-dispatch` has an unrelated `--config` (the provider's JSON
     /// settings), which is why this looks at the variable and not the name.
     /// `provision-client` and `rotate-signing-key` read it since VSA-3a, to learn
-    /// whether the deployment serves `machine_tokens`.
+    /// whether the deployment serves `machine_tokens`; `register-client` and
+    /// `pair-console-key` since VSA-3b, to learn whether it permits `keypair`.
     #[test]
     fn exactly_the_commands_that_need_the_configuration_take_its_options() {
         let command = super::Cli::command();
@@ -434,7 +436,9 @@ mod tests {
             with_config,
             [
                 "mtn-subscribe-dlr",
+                "pair-console-key",
                 "provision-client",
+                "register-client",
                 "rotate-signing-key",
                 "serve"
             ]

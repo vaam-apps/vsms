@@ -6,21 +6,31 @@ reads `role`; `auth().kind == "app"` reads `kind`; `appId == auth().appId`
 reads `appId`. [`Principal::into_context`] is the single place those names
 are produced, so a rename in the schema breaks exactly one function.
 
-# VS-3: the only credential is the key that signed the request
+# VS-3, VSA-3b: two ways in, each verified before this runs
 
-[`SignedAuth`] is the generated router's one `AuthProvider`. The envelope
-layer (`crate::envelope`) opens the `COSE_Sign1` message, checks the signature
-and records a `VerifiedSigner` in the request's extensions; [`SignedAuth`]
-maps that signer through `crate::signers::SignerDirectory` and reads nothing
-else. There is no token to validate, no JWKS to fetch, and an `Authorization`
-header is refused with a 400 rather than ignored.
+[`GatewayAuth`] is the generated router's one `AuthProvider`. It verifies
+nothing itself: a layer above has already, and recorded the fact in the
+request's extensions.
+
+- the envelope layer (`crate::envelope`) opens the `COSE_Sign1` message, checks
+  the signature and records a `VerifiedSigner`; [`GatewayAuth`] maps that signer
+  through `crate::signers::SignerDirectory`;
+- the bearer door (`crate::bearer`, VSA-3b, only when `machine_tokens` is served)
+  verifies a machine token, resolves its client **from rows**, and records a
+  `BearerCaller` holding the same `Standing`.
+
+Both end in one `GatewayAuth::context_for`, so no policy can tell the doors
+apart. There is no JWKS to fetch here and the header is never read as an
+identity: an `Authorization` header beside a verified signature is a 400, and one
+the door did not record authenticates nobody. A request that carries both a
+signer and a bearer caller is refused as well.
 
 ```mermaid
 sequenceDiagram
     participant C as Caller
     participant E as Envelope layer
     participant D as SignerDirectory
-    participant A as SignedAuth
+    participant A as GatewayAuth
     participant R as Router (policies)
     C->>E: `COSE_Sign1` over the JSON payload
     E->>D: resolve kid (ClientKey, ConsoleKey: live rows only)
@@ -37,7 +47,7 @@ sequenceDiagram
 ```mermaid
 stateDiagram-v2
     [*] --> Unsigned: no COSE body
-    Unsigned --> [*]: 401, unsigned
+    Unsigned --> [*]: 401, unsigned, unless the bearer door admits it (bearer.md)
     [*] --> Opened: signature verifies, nonce unseen
     Opened --> Refused: key revoked or expired, client or user inactive
     Refused --> [*]: 401, unsigned
@@ -77,7 +87,7 @@ ctx.request_id().unwrap_or("")` (`cratestack-macros`'s
 `list_result_log_tokens`/`dispatch_tail.rs`) — but nothing in this
 deployment ever called `with_request_id`, so that field had been empty
 on every single one of those log lines since the router first existed.
-[`SignedAuth::authenticate`] is the one place a [`CratestackContext`] is
+[`GatewayAuth::authenticate`] is the one place a [`CratestackContext`] is
 constructed per inbound HTTP request, so it is the natural, and only,
 place to close that gap: honour an inbound `X-Request-Id` if the caller
 sent one (so a client's own trace id survives into this system's logs

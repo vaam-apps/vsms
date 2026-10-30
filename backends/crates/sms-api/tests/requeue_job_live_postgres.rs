@@ -49,7 +49,7 @@ fn sys() -> CratestackContext {
 /// scope (#56) — `kind == "app"`, matching `Job`'s own `@@allow` (schema.
 /// cstack), plus the Layer 2 scope `requeue_job`'s `require_permission`
 /// checks. A hand-built context, since this test never goes through
-/// `SignedAuth` — same shape `send_message_live_postgres.rs`'s own
+/// `GatewayAuth` — same shape `send_message_live_postgres.rs`'s own
 /// `app_caller` documents.
 fn app_caller_with_job_enqueue() -> CratestackContext {
     let mut ctx = Principal {

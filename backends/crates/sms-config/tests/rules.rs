@@ -617,22 +617,26 @@ fn machine_tokens_named_without_the_op_block_is_refused() {
     );
 }
 
-/// `[machine_tokens]` alone is refused until VSA-3b: the API accepts no bearer
-/// yet, so such a gateway would answer every API call with the unsigned 401.
-/// VSA-3b makes `machine_tokens` a way in; then the first profile is
-/// `not_configured` again (it names the method without its block) and the second
-/// loads, and this test is the one to rewrite.
+/// `[machine_tokens]` alone is a legal list since VSA-3b: the API accepts a
+/// bearer, so a gateway that serves only tokens answers a caller who has one.
+/// It still needs its `op:` block (rule 6), and without it is refused for that
+/// reason and not as a list with no way in.
 #[test]
-fn machine_tokens_alone_is_refused_until_vsa_3b_with_or_without_its_block() {
-    for profile in [
-        "auth-machine-tokens-alone",
-        "auth-machine-tokens-alone-with-op",
-    ] {
-        assert_eq!(refused(profile), ConfigError::NoWayIn, "{profile}");
-    }
+fn machine_tokens_alone_boots_with_its_block_and_is_not_a_no_way_in() {
+    let config = load("auth-machine-tokens-alone-with-op").expect("a legal deployment");
+    assert_eq!(permitted(&config), ["machine_tokens"]);
+    assert_eq!(served(&config), ["machine_tokens"]);
+    assert!(config.auth_methods.machine_tokens_served());
+    assert!(!config.auth_methods.permits(AuthMethod::Keypair));
+
+    assert_eq!(
+        refused("auth-machine-tokens-alone"),
+        not_configured(AuthMethod::MachineTokens),
+        "without its block it is the missing block that is refused, not NoWayIn"
+    );
     let message = ConfigError::NoWayIn.to_string();
     assert!(
-        message.contains("VSA-3b") && message.contains("Add keypair"),
+        message.contains("Add keypair or machine_tokens") && !message.contains("VSA-3b"),
         "{message}"
     );
 }

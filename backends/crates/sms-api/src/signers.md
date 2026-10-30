@@ -14,7 +14,7 @@ request:
 2. **What does it stand as?** [`SignerDirectory::standing`] looks the verified
    key up by its full thumbprint and returns an [`AppStanding`] (the
    `AppClient`'s id, app and scopes) or a [`UserStanding`] (the person's role
-   and the role's permissions). [`crate::auth::SignedAuth`] turns that into the
+   and the role's permissions). [`crate::auth::GatewayAuth`] turns that into the
    policy context, and `crate::envelope::SignerPrincipal` into the name the rate
    limiter and the idempotency layer charge the request to.
 
@@ -28,6 +28,12 @@ stateDiagram-v2
     Refused --> [*]: Unauthorized, so unsigned 401
     Standing --> [*]
 ```
+
+A machine token is the second way to a [`Standing`]: [`SignerDirectory::bearer_standing`]
+reads the `OauthClient` (active, on every request), its `AppClient` (active, not
+retired, the token's `sub`) and acts with the `AppClient`'s scopes that the
+`OauthClient` row also lists, narrowed by the token's claim when it has one,
+never `console:pair` (`bearer.md`).
 
 Nothing about a key is cached. The standing of the key's owner is, for 60
 seconds, which is how long a deactivated client or person may keep acting.

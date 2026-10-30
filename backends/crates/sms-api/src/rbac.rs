@@ -10,7 +10,7 @@ use cratestack::{
     Value,
 };
 
-use crate::auth::SignedAuth;
+use crate::auth::GatewayAuth;
 
 /// Check the caller's `perms` (§5.2's human/role-token vocabulary) and
 /// `scope` (§5.2's service-account vocabulary) against `required`. Either
@@ -78,21 +78,21 @@ pub(crate) fn error_response(error: &CratestackError) -> Response {
 }
 
 /// Authenticates `request` exactly the way the generated router's own
-/// handler is about to — [`SignedAuth::authenticate`] against the request's
+/// handler is about to — [`GatewayAuth::authenticate`] against the request's
 /// method, path, query and headers — for the middlewares in this crate that
 /// must decide *before* the generated router runs ([`enforce_route_permission`]
 /// here, `owner_grant::enforce_owner_grant_guard`). Cheap: an indexed key lookup and a
 /// 60s-TTL `AppClient`/`User` standing, the same cost the generated router pays
 /// a moment later on the same request. It reads the `VerifiedSigner` the
 /// envelope layer recorded in the request's extensions (nothing re-reads an
-/// `Authorization` header: `SignedAuth` refuses one).
+/// `Authorization` header: `GatewayAuth` refuses one).
 ///
 /// A plain `fn` returning an owned (`'static`) future rather than an
 /// `async fn` borrowing `request`: an axum `Request` is `!Sync` (its body
 /// is), so a `&Request` held across the `.await` would make the calling
 /// middleware's future `!Send` and `from_fn_with_state` would refuse it.
 pub(crate) fn authenticate_request(
-    auth: &SignedAuth,
+    auth: &GatewayAuth,
     request: &Request,
 ) -> impl core::future::Future<Output = Result<CratestackContext, CratestackError>> + Send + 'static
 {
@@ -103,7 +103,7 @@ pub(crate) fn authenticate_request(
     let query = request.uri().query().map(str::to_owned);
     // cratestack 0.7.13 (cratestack#552): `RequestContext` carries the
     // request's `extensions` so an `AuthProvider` can read whatever a
-    // preceding layer inserted. `SignedAuth::authenticate` reads exactly one
+    // preceding layer inserted. `GatewayAuth::authenticate` reads exactly one
     // thing there, the `VerifiedSigner` the envelope layer recorded, so this
     // helper — which builds the context by hand, outside the generated
     // dispatch path that already threads it through — must hand over
@@ -116,7 +116,7 @@ pub(crate) fn authenticate_request(
             path: &path,
             query: query.as_deref(),
             headers: &headers,
-            // `SignedAuth::authenticate` never reads the body — only the
+            // `GatewayAuth::authenticate` never reads the body — only the
             // generated router's own handler does, and the middlewares
             // calling this leave `request`'s body for it.
             body: &[],
@@ -126,12 +126,12 @@ pub(crate) fn authenticate_request(
     }
 }
 
-/// State for [`enforce_route_permission`] — a `SignedAuth` to
+/// State for [`enforce_route_permission`] — a `GatewayAuth` to
 /// (re-)authenticate against, plus the fixed set of routes this middleware
 /// instance gates.
 #[derive(Clone)]
 pub struct RbacState {
-    pub auth: SignedAuth,
+    pub auth: GatewayAuth,
     pub requirements: &'static [RoutePermission],
 }
 
@@ -140,7 +140,7 @@ pub struct RbacState {
 /// other route passes straight through to Layer 1 exactly as before this
 /// existed.
 ///
-/// For a match: re-runs [`SignedAuth::authenticate`] (cheap — an indexed key
+/// For a match: re-runs [`GatewayAuth::authenticate`] (cheap — an indexed key
 /// lookup and a 60s-TTL standing, the same cost the generated router's
 /// own auth is about to pay a moment later on the same request) and
 /// [`require_permission`], short-circuiting with 401/403 *before* the

@@ -21,7 +21,7 @@
 // hasRole('operator')` — no `auth().kind == "app"` at all. The call is an
 // ordinary `PATCH` through `gatewayFetch` (`./upstream.ts`): in the console the
 // paired person's own browser key signs it, the gateway resolves that key to the
-// person and their role (`SignedAuth`), and the policy decides, so a role
+// person and their role (`GatewayAuth`), and the policy decides, so a role
 // without the permission gets the gateway's 403 and nothing is hidden behind a
 // shared credential. `updateProvider` is tested (`rest.test.ts`) against a fake
 // upstream.

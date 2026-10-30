@@ -3,7 +3,7 @@ opens every request and seals every response of the generated router.
 
 The layer proves *who holds the key*; it authenticates no one. What a key may
 do is [`crate::signers::SignerDirectory`]'s answer, read by
-[`crate::auth::SignedAuth`]. This module is the Postgres-backed plumbing the
+[`crate::auth::GatewayAuth`]. This module is the Postgres-backed plumbing the
 layer needs:
 
 - [`ServerKeys`]: the Ed25519 key that seals every response, and the `next`
@@ -16,7 +16,10 @@ layer needs:
   generated delegates, and swept by the worker (`sweep_envelope_nonces`).
 - [`SignerPrincipal`]: names the principal a verified request is charged to
   (`client:<clientId>` or `user:<id>`) and refuses an inactive signer.
-- [`layer`]: assembles the above with `Required` for every op.
+- [`layer`]: assembles the above. The mode follows the doors `auth.methods` opened
+  (`mode_for`: `Required` for the signed envelope alone, `Optional` beside a
+  machine token, `Off` for tokens alone), with unresolved routes pinned to
+  `Required` and no response seal for an unsigned request (`bearer.md`).
 
 ```mermaid
 sequenceDiagram

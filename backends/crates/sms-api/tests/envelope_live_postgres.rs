@@ -379,7 +379,7 @@ async fn an_unsigned_request_is_a_401_and_runs_nothing() {
         );
         // The envelope layer's own coarse answer, not the inner auth provider's:
         // with `EnvelopeMode::Optional` an unsigned request would reach
-        // `SignedAuth`, which also says 401 but in its own words (and 400 for a
+        // `GatewayAuth`, which also says 401 but in its own words (and 400 for a
         // bearer), so the status alone cannot tell the two modes apart.
         let body = response.text().await.expect("reading the refusal");
         assert_eq!(
@@ -616,8 +616,9 @@ async fn a_resealed_retry_under_one_idempotency_key_replays_the_first_answer() {
     );
 }
 
-/// Nothing re-reads an `Authorization` header: beside a good signature it is
-/// refused outright, so a stale client cannot believe a bearer still counts.
+/// One caller, one credential: an `Authorization` header beside a good signature
+/// is refused outright (VSA-3b: whichever door is open), so a client that sends
+/// both has to decide who it is.
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres - see module docs"]
 async fn a_bearer_on_a_sealed_route_is_refused() {
@@ -637,7 +638,9 @@ async fn a_bearer_on_a_sealed_route_is_refused() {
 
     assert_eq!(reply.status, 400, "{}", reply.text());
     assert!(
-        reply.text().contains("bearer credentials are not accepted"),
+        reply
+            .text()
+            .contains("cannot also carry an Authorization header"),
         "{}",
         reply.text()
     );

@@ -4,6 +4,7 @@ use cratestack::{
     AuthProvider, CratestackContext, CratestackError, RequestContext, Value, VerifiedSigner,
 };
 
+use crate::bearer::BearerCaller;
 use crate::signers::{SignerDirectory, Standing};
 
 /// Who a request is. Mirrors the `auth Principal` block in `schema.cstack`
@@ -65,33 +66,41 @@ impl Principal {
     }
 }
 
-/// Turns the key that signed a request into the [`Principal`] the schema's
-/// policies read. This is the only `AuthProvider` the generated router has.
+/// Turns the credential a request was admitted with into the [`Principal`] the
+/// schema's policies read. This is the only `AuthProvider` the generated router
+/// has.
 ///
-/// There is no credential in a request but its signature. The envelope layer
-/// (`crate::envelope`) has already verified it and recorded a
-/// `VerifiedSigner` in the request extensions; [`SignedAuth`] maps that signer
-/// through [`SignerDirectory`] and reads nothing else, so there is no token to
-/// validate, no JWKS to fetch and no `Authorization` header to trust:
+/// There are two ways in, and each is verified by a layer **before** this
+/// provider runs, which records the fact in the request's extensions:
 ///
-/// - a `ClientKey` of an active `AppClient` is an **app** principal
-///   (`sub = AppClient.clientId`, `role = "app"`, the client's scopes);
+/// - the envelope layer (`crate::envelope`) opens a `COSE_Sign1` message and
+///   records a `VerifiedSigner`; [`GatewayAuth`] maps that signer through
+///   [`SignerDirectory`];
+/// - the bearer door (`crate::bearer`) verifies a machine token, resolves its
+///   client from rows, and records a [`BearerCaller`] holding the [`Standing`].
+///
+/// Both end in the same [`Standing`] and the same [`GatewayAuth::context_for`], so
+/// a policy cannot tell them apart:
+///
+/// - a `ClientKey` of an active `AppClient`, or a token of an active
+///   `OauthClient` linked to one, is an **app** principal (`sub =
+///   AppClient.clientId`, `role = "app"`, the client's scopes);
 /// - a paired, unexpired `ConsoleKey` of an active `User` is a **user**
-///   principal, that person's role and the permissions of that role.
+///   principal, that person's role and the permissions of that role. A token
+///   never is one: the human realm is VSA-4.
 ///
-/// A request that carries an `Authorization` header is refused outright, even
-/// beside a good signature, rather than ignored: a stale client must not
-/// believe a bearer still counts, and nothing downstream may start reading
-/// one. A request with no verified signer cannot reach here (the envelope is
-/// `Required` for every op); if one ever did, it is refused rather than
-/// treated as anonymous, because no policy in this schema admits an
-/// unauthenticated caller.
+/// Nothing here reads an `Authorization` header as an identity. A request that
+/// carries one beside a verified signature is refused outright (400), and one
+/// that carries one the door did not record authenticates nobody. A request
+/// with no recorded credential cannot reach here (the door answers it 401
+/// first); if one ever did, it is refused rather than treated as anonymous,
+/// because no policy in this schema admits an unauthenticated caller.
 #[derive(Clone)]
-pub struct SignedAuth {
+pub struct GatewayAuth {
     directory: SignerDirectory,
 }
 
-impl SignedAuth {
+impl GatewayAuth {
     /// An auth provider answering from `directory`.
     #[must_use]
     pub fn new(directory: SignerDirectory) -> Self {
@@ -109,10 +118,10 @@ impl SignedAuth {
     /// meant to.
     ///
     /// ```
-    /// use sms_api::auth::SignedAuth;
+    /// use sms_api::auth::GatewayAuth;
     /// use sms_api::signers::{AppStanding, Standing};
     ///
-    /// let ctx = SignedAuth::context_for(Standing::App(AppStanding {
+    /// let ctx = GatewayAuth::context_for(Standing::App(AppStanding {
     ///     client_id: "appc_demo".to_owned(),
     ///     app_id: "app1".to_owned(),
     ///     scopes: " sms:send ".to_owned(),
@@ -182,7 +191,7 @@ fn request_id_from(headers: &cratestack::axum::http::HeaderMap) -> String {
         )
 }
 
-impl AuthProvider for SignedAuth {
+impl AuthProvider for GatewayAuth {
     type Error = CratestackError;
 
     fn authenticate(
@@ -190,24 +199,44 @@ impl AuthProvider for SignedAuth {
         request: &RequestContext<'_>,
     ) -> impl core::future::Future<Output = Result<CratestackContext, Self::Error>> + Send {
         // Read out of the borrow first: the future owns what it needs.
-        let bearer = request
+        let authorization = request
             .headers
             .contains_key(cratestack::axum::http::header::AUTHORIZATION);
         let signer = request.extensions.get::<VerifiedSigner>().cloned();
+        let bearer = request.extensions.get::<BearerCaller>().cloned();
         // #71: see this module's own doc.
         let request_id = request_id_from(request.headers);
         let directory = self.directory.clone();
 
         async move {
-            if bearer {
-                return Err(CratestackError::BadRequest(
-                    "bearer credentials are not accepted: sign the request (`COSE_Sign1`)"
-                        .to_owned(),
-                ));
-            }
-            let signer = signer
-                .ok_or_else(|| CratestackError::Unauthorized("no verified signer".to_owned()))?;
-            let standing = directory.standing(&signer, chrono::Utc::now()).await?;
+            let standing = match (signer, bearer) {
+                // Both doors vouched for one request: neither is believed. The
+                // bearer door never records a caller for a signed request, so
+                // this is a bug somewhere above, not a client to be helped.
+                (Some(_), Some(_)) => {
+                    return Err(CratestackError::Unauthorized(
+                        "more than one verified credential".to_owned(),
+                    ));
+                }
+                // One caller, one credential: refused beside a good signature,
+                // the same answer the bearer door gives first. Defence in depth
+                // for a request that reaches an extractor some other way.
+                (Some(_), None) if authorization => {
+                    return Err(CratestackError::BadRequest(
+                        "a signed request cannot also carry an Authorization header: send one \
+                         credential"
+                            .to_owned(),
+                    ));
+                }
+                (Some(signer), None) => directory.standing(&signer, chrono::Utc::now()).await?,
+                // Resolved by the bearer door from rows, not from the token.
+                (None, Some(caller)) => caller.0,
+                (None, None) => {
+                    return Err(CratestackError::Unauthorized(
+                        "no verified credential".to_owned(),
+                    ));
+                }
+            };
             // #71: `with_request_id` returns `Self`, so it is the last thing
             // done to the context.
             Ok(Self::context_for(standing).with_request_id(request_id))
@@ -227,8 +256,8 @@ impl AuthProvider for SignedAuth {
 /// place to hold, not six independently-drifting copies of it.
 ///
 /// **The invariant: this must never be reachable from an HTTP request.**
-/// Nothing in [`SignedAuth::authenticate`] ever produces `role: "system"`
-/// for a real signer — [`SignedAuth::context_for`] hardcodes `role: "app"`
+/// Nothing in [`GatewayAuth::authenticate`] ever produces `role: "system"`
+/// for a real signer — [`GatewayAuth::context_for`] hardcodes `role: "app"`
 /// for an app key (see the comment there on why `"system"` specifically
 /// must never slip), and `crate::signers` refuses a person whose
 /// `Role.key` is `"system"` (or `"app"`) before a `Principal` is ever built
@@ -269,7 +298,7 @@ pub fn system_context(sub: impl Into<String>) -> CratestackContext {
 ///   the design doc. A `Role` row keyed `"system"` would let
 ///   `hasRole('system')` match for a real human.
 /// - `"app"` is reserved too, defensively, even though it is not
-///   currently a privilege escalation: [`SignedAuth::context_for`]'s
+///   currently a privilege escalation: [`GatewayAuth::context_for`]'s
 ///   `role: "app"` sentinel matches no `hasRole(...)` clause in the schema,
 ///   so a human
 ///   `Role` keyed `"app"` would be confusing, not exploitable — reserved
@@ -319,11 +348,11 @@ mod tests {
     /// A lazy pool only parses the URL and never connects. The tests below
     /// all fail before the directory is asked anything, so no database is
     /// reached.
-    fn signed_auth() -> SignedAuth {
+    fn signed_auth() -> GatewayAuth {
         let pool = cratestack::sqlx::postgres::PgPoolOptions::new()
             .connect_lazy("postgres://unused:unused@127.0.0.1/none")
             .expect("a lazy pool only parses the URL");
-        SignedAuth::new(SignerDirectory::new(
+        GatewayAuth::new(SignerDirectory::new(
             crate::schema::Cratestack::builder(pool).build(),
         ))
     }
@@ -353,36 +382,109 @@ mod tests {
         assert!(matches!(error, CratestackError::Unauthorized(_)));
     }
 
-    /// One caller, one credential: a bearer is refused even beside a verified
-    /// signature, and even from a caller who signed nothing, so no code path
-    /// can come to treat an `Authorization` header as an identity again.
+    /// One caller, one credential: an `Authorization` header beside a verified
+    /// signature is refused, whichever door the header was meant for.
     #[tokio::test]
-    async fn an_authorization_header_is_refused_with_or_without_a_signer() {
+    async fn an_authorization_header_beside_a_signature_is_refused() {
         let mut headers = cratestack::axum::http::HeaderMap::new();
         headers.insert(
             cratestack::axum::http::header::AUTHORIZATION,
             "Bearer anything".parse().unwrap(),
         );
-        for signed in [true, false] {
-            let mut extensions = cratestack::axum::http::Extensions::new();
-            if signed {
-                extensions.insert(VerifiedSigner::new(vec![0_u8; 8], [7_u8; 32], -19));
-            }
-            let error = signed_auth()
-                .authenticate(&request(&headers, &extensions))
-                .await
-                .unwrap_err();
-            assert!(
-                matches!(&error, CratestackError::BadRequest(message)
-                    if message.contains("bearer credentials are not accepted")),
-                "{error:?}"
+        let mut extensions = cratestack::axum::http::Extensions::new();
+        extensions.insert(VerifiedSigner::new(vec![0_u8; 8], [7_u8; 32], -19));
+        let error = signed_auth()
+            .authenticate(&request(&headers, &extensions))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, CratestackError::BadRequest(message)
+                if message.contains("cannot also carry an Authorization header")),
+            "{error:?}"
+        );
+    }
+
+    /// A header is not an identity: with nothing in the extensions the door
+    /// recorded, `Authorization: Bearer ...` authenticates nobody, so no code
+    /// path can come to read the header itself.
+    #[tokio::test]
+    async fn an_authorization_header_alone_authenticates_nobody() {
+        let mut headers = cratestack::axum::http::HeaderMap::new();
+        headers.insert(
+            cratestack::axum::http::header::AUTHORIZATION,
+            "Bearer anything".parse().unwrap(),
+        );
+        let extensions = cratestack::axum::http::Extensions::new();
+        let error = signed_auth()
+            .authenticate(&request(&headers, &extensions))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, CratestackError::Unauthorized(_)),
+            "{error:?}"
+        );
+    }
+
+    /// Two credentials vouched for one request: neither is believed.
+    #[tokio::test]
+    async fn a_signer_and_a_bearer_caller_together_are_refused() {
+        let headers = cratestack::axum::http::HeaderMap::new();
+        let mut extensions = cratestack::axum::http::Extensions::new();
+        extensions.insert(VerifiedSigner::new(vec![0_u8; 8], [7_u8; 32], -19));
+        extensions.insert(BearerCaller(app_standing("appc_demo", "sms:send")));
+        let error = signed_auth()
+            .authenticate(&request(&headers, &extensions))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, CratestackError::Unauthorized(_)),
+            "{error:?}"
+        );
+    }
+
+    fn app_standing(client_id: &str, scopes: &str) -> Standing {
+        Standing::App(crate::signers::AppStanding {
+            client_id: client_id.to_owned(),
+            app_id: "app1".to_owned(),
+            scopes: format!(" {scopes} "),
+        })
+    }
+
+    /// The bearer door's caller is the same context a signed request from the
+    /// same client gets: one `context_for`, so no policy can tell the doors
+    /// apart. Compared field by field and through Layer 2.
+    #[tokio::test]
+    async fn a_bearer_caller_is_the_context_a_signature_from_the_same_client_gets() {
+        let standing = app_standing("appc_demo", "sms:send job:read");
+        let headers = cratestack::axum::http::HeaderMap::new();
+        let mut extensions = cratestack::axum::http::Extensions::new();
+        extensions.insert(BearerCaller(standing.clone()));
+        let from_bearer = signed_auth()
+            .authenticate(&request(&headers, &extensions))
+            .await
+            .expect("a recorded bearer caller authenticates");
+        let from_standing = GatewayAuth::context_for(standing);
+        for field in ["sub", "kind", "role", "appId"] {
+            assert_eq!(
+                from_bearer.auth_field(field),
+                from_standing.auth_field(field)
             );
         }
+        // The rest of the extensions are Layer 2's; the request id is the one
+        // thing that is per request, and each context mints its own.
+        for key in ["perms", "scope"] {
+            assert_eq!(
+                from_bearer.extensions.get(key),
+                from_standing.extensions.get(key)
+            );
+        }
+        assert!(crate::rbac::require_permission(&from_bearer, "job:read").is_ok());
+        assert!(crate::rbac::require_permission(&from_bearer, "provider:update").is_err());
     }
 
     #[test]
     fn an_app_key_is_an_app_principal_with_its_scopes_and_no_permissions() {
-        let ctx = SignedAuth::context_for(Standing::App(crate::signers::AppStanding {
+        let ctx = GatewayAuth::context_for(Standing::App(crate::signers::AppStanding {
             client_id: "appc_demo".to_owned(),
             app_id: "app1".to_owned(),
             scopes: "message:send job:read".to_owned(),
@@ -409,7 +511,7 @@ mod tests {
 
     #[test]
     fn a_console_key_is_a_user_principal_with_its_roles_permissions_and_no_scope() {
-        let ctx = SignedAuth::context_for(Standing::User(crate::signers::UserStanding {
+        let ctx = GatewayAuth::context_for(Standing::User(crate::signers::UserStanding {
             user_id: "usr1".to_owned(),
             role: "operator".to_owned(),
             perms: vec!["provider:update".to_owned()],
@@ -436,12 +538,12 @@ mod tests {
     #[test]
     fn no_standing_ever_produces_the_system_role() {
         for ctx in [
-            SignedAuth::context_for(Standing::App(crate::signers::AppStanding {
+            GatewayAuth::context_for(Standing::App(crate::signers::AppStanding {
                 client_id: "system".to_owned(),
                 app_id: "system".to_owned(),
                 scopes: String::new(),
             })),
-            SignedAuth::context_for(Standing::User(crate::signers::UserStanding {
+            GatewayAuth::context_for(Standing::User(crate::signers::UserStanding {
                 user_id: "system".to_owned(),
                 role: "operator".to_owned(),
                 perms: Vec::new(),
