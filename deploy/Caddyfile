@@ -38,15 +38,22 @@
 # hardcoded, since getting those wrong is a security property, not a
 # capacity tuning knob.
 #
-# **There is no `/token` zone any more.** Until VS-4 the gateway embedded an
-# OpenID Provider whose `/token` endpoint was rate limited here (per source
-# IP, plus an aggregate bucket) and again in the application (per
-# `client_id`). The endpoint, `/login`, `/login/sso/*`, `/jwks.json` and the
-# discovery document are deleted, so a request for one of them is answered by
-# the gateway's own 404 and costs it nothing worth bounding. Every other
-# route is a sealed request: an unsigned one is refused at the envelope layer
-# before any database work, and the application's two per-source and
-# per-principal limiters (`sms_api::router`) bound the rest.
+# **`/login` and `/token` are served again (VSA-4a) when `human_login` or
+# `machine_tokens` is configured, and have one zone here, `auth_per_source`.**
+# Until VS-4 the gateway embedded an OpenID Provider whose `/token` was limited at
+# this edge (per source IP, plus an aggregate bucket) and again in the application
+# (per `client_id`); VS-4 deleted it, and this file said so. VSA-3a/VSA-4a put the
+# routes back behind the `op:` block, and a deployment that serves neither method
+# still answers them with the gateway's own 404, which costs it nothing worth
+# bounding. The zone is per source only, on purpose: the dimensions the edge
+# cannot see (the `client_id` and the code in a form body, the email in a JSON
+# body) are the application's, `token_rate_limit.rs` and `login.rs`, and a
+# per-email or per-code bucket here would mean reading a request body in Caddy.
+# What this zone is for is the one thing the application cannot do: it sees one
+# peer (this proxy) for everybody, so it has no per-source limit of its own.
+# Every other route is a sealed request: an unsigned one is refused at the
+# envelope layer before any database work, and the application's two per-source
+# and per-principal limiters (`sms_api::router`) bound the rest.
 #
 # `/dlr/{providerKey}` is worth rate limiting because it is unauthenticated
 # at this layer by design (a provider cannot sign a request, and each
@@ -161,6 +168,26 @@
 			key dlr-aggregate
 			events {$RATE_LIMIT_DLR_GLOBAL_EVENTS:200}
 			window {$RATE_LIMIT_DLR_GLOBAL_WINDOW:10s}
+		}
+
+		# `/login` (an Argon2id verification per request) and `/token` (a client
+		# lookup, and a signature check for a machine client): the paths a caller
+		# can reach unauthenticated that cost real work. One bucket per source, shared
+		# by the two, deliberately small: a person types a password a handful of
+		# times and a machine client caches its token for fifteen minutes. Sized
+		# below the application's aggregate `/login` bucket on purpose (see
+		# `human_login.login_rate_limit.aggregate`): one source cannot spend that
+		# budget alone, so a single bad actor cannot lock every operator out; it takes
+		# at least `aggregate refill / (events / window)` distinct /64 prefixes.
+		# `ipv6_prefix 64` for the same reason as `dlr_per_source`.
+		zone auth_per_source {
+			match {
+				path /login /token
+			}
+			key {http.request.remote.host}
+			events {$RATE_LIMIT_AUTH_PER_KEY_EVENTS:10}
+			window {$RATE_LIMIT_AUTH_PER_KEY_WINDOW:60s}
+			ipv6_prefix 64
 		}
 
 		log_key
