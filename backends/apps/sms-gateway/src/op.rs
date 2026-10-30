@@ -133,6 +133,9 @@ pub struct OpState {
     store: Arc<ProviderStore>,
     keys: Arc<OpKeyring>,
     config: OpConfig,
+    /// The gateway's own `/login/sso/start` URL, advertised in discovery when
+    /// `human_login.sso` is served - see [`discovery_document`].
+    sso_login_endpoint: Option<Arc<str>>,
 }
 
 impl OpState {
@@ -147,7 +150,18 @@ impl OpState {
             store: Arc::new(store),
             keys: Arc::new(Keyring::new(tokens, PublishedKeys::new(jwks))),
             config,
+            sso_login_endpoint: None,
         }
+    }
+
+    /// Advertises `endpoint` (the public `/login/sso/start` URL) in the discovery
+    /// document, which is how the console learns that single sign-on exists and
+    /// where to send the browser. `None` advertises nothing. Set by `serve` only
+    /// when `human_login.sso` is served.
+    #[must_use]
+    pub fn with_sso_login_endpoint(mut self, endpoint: Option<String>) -> Self {
+        self.sso_login_endpoint = endpoint.map(Arc::from);
+        self
     }
 
     /// The OP's store, for [`crate::login`]'s own call into
@@ -234,14 +248,34 @@ async fn jwks_handler(State(state): State<OpState>) -> Json<JwksResponse> {
 /// discovery document that points a client at a route that 404s is worse than one
 /// that says nothing.
 async fn discovery_handler(State(state): State<OpState>) -> Json<serde_json::Value> {
-    Json(discovery_document(&state.config))
+    Json(discovery_document(
+        &state.config,
+        state.sso_login_endpoint.as_deref(),
+    ))
 }
 
 /// The discovery document for `config`: see [`discovery_handler`].
-pub(crate) fn discovery_document(config: &OpConfig) -> serde_json::Value {
+///
+/// **`vsms_sso_login_endpoint`** is a vendor extension member (OIDC Discovery
+/// permits additional members), present only when single sign-on is served: the
+/// absolute URL of `GET /login/sso/start`, built from `op.issuer`. It is how the
+/// console learns, from the one authority that knows, both *whether* to offer
+/// "Sign in with ..." and *where* to send the browser - no console setting to
+/// drift out of step with the gateway's.
+pub(crate) fn discovery_document(
+    config: &OpConfig,
+    sso_login_endpoint: Option<&str>,
+) -> serde_json::Value {
     let mut document = OidcDiscovery::from_config(config).with_private_key_jwt();
     document.authorization_endpoint = None;
-    serde_json::to_value(document).unwrap_or_default()
+    let mut document = serde_json::to_value(document).unwrap_or_default();
+    if let (Some(endpoint), Some(object)) = (sso_login_endpoint, document.as_object_mut()) {
+        object.insert(
+            "vsms_sso_login_endpoint".to_owned(),
+            serde_json::Value::String(endpoint.to_owned()),
+        );
+    }
+    document
 }
 
 /// The OP's routes, already `.with_state(...)` — mergeable directly with
@@ -330,13 +364,38 @@ mod tests {
     use super::{Keyring, discovery_document};
 
     fn document(machine_tokens: bool, human_login: bool) -> serde_json::Value {
-        discovery_document(&op_config(
+        discovery_document(
+            &op_config(
+                "https://sms.example.org".to_owned(),
+                ServedGrants {
+                    machine_tokens,
+                    human_login,
+                },
+            ),
+            None,
+        )
+    }
+
+    /// The extension member is there exactly when single sign-on is served.
+    #[test]
+    fn discovery_names_the_sso_start_url_only_when_it_is_given_one() {
+        let config = op_config(
             "https://sms.example.org".to_owned(),
             ServedGrants {
-                machine_tokens,
-                human_login,
+                machine_tokens: false,
+                human_login: true,
             },
-        ))
+        );
+        let without = discovery_document(&config, None);
+        assert!(
+            without.get("vsms_sso_login_endpoint").is_none(),
+            "{without}"
+        );
+        let with = discovery_document(&config, Some("https://sms.example.org/login/sso/start"));
+        assert_eq!(
+            with["vsms_sso_login_endpoint"],
+            "https://sms.example.org/login/sso/start"
+        );
     }
 
     /// Exactly the grants served, never the refresh grant, and **no

@@ -17,7 +17,7 @@ use tracing::{info, warn};
 
 use crate::commands::server_keys;
 use crate::op_bearer::{DbKeys, OpBearerVerifier, Realms};
-use crate::{dlr, health, login, op, token_rate_limit};
+use crate::{dlr, health, login, op, sso, token_rate_limit};
 use sms_api::system_context;
 
 /// `Command::Serve`'s flags. See `Command::Serve`'s own doc comment in
@@ -516,12 +516,17 @@ async fn build_op_router(
             .context("human_login is served but its console client is not usable")?;
         sms_auth::login::warm_up();
     }
+    let sso = build_sso(db, config, &op_config.issuer).await?;
     let store = sms_auth::op::op_store(Arc::new(db.clone()), sys.clone());
     let state = op::OpState::new(
         store,
         signing,
         sms_auth::op::op_config(op_config.issuer.clone(), served),
         jwks,
+    )
+    .with_sso_login_endpoint(
+        sso.as_ref()
+            .map(|_| format!("{}{}", op_config.issuer, sms_auth::sso::START_PATH)),
     );
     // Keeps a rotate-signing-key run against this already-running process
     // effective without a restart.
@@ -562,13 +567,7 @@ async fn build_op_router(
         .as_ref()
         .filter(|_| config.auth_methods.human_login_served())
     {
-        router = router.merge(login::router(
-            db.clone(),
-            state,
-            &human.console_client.client_id,
-            &human.console_client.redirect_uris,
-            login::Limiter::new(&human.login_rate_limit),
-        ));
+        router = router.merge(human_login_routes(db, state, human, sso, config.sso()));
     }
     info!(
         issuer = %op_config.issuer,
@@ -585,6 +584,80 @@ async fn build_op_router(
         );
     }
     Ok(Some((router, verifier)))
+}
+
+/// `POST /login`, and the single-sign-on routes when `human_login.sso` is served
+/// (`sso` is the provider `build_sso` made for `block`).
+fn human_login_routes(
+    db: &Cratestack,
+    state: op::OpState,
+    human: &sms_config::HumanLogin,
+    sso: Option<sms_auth::sso::SsoProvider>,
+    block: Option<&sms_config::Sso>,
+) -> axum::Router {
+    let mut router = login::router(
+        db.clone(),
+        state.clone(),
+        &human.console_client.client_id,
+        &human.console_client.redirect_uris,
+        login::Limiter::new(&human.login_rate_limit),
+    );
+    if let (Some(provider), Some(block)) = (sso, block) {
+        router = router.merge(sso::router(
+            db.clone(),
+            system_context("sms-gateway:sso"),
+            state,
+            provider,
+            &human.console_client.client_id,
+            &human.console_client.redirect_uris,
+            block.rate_limit,
+        ));
+    }
+    router
+}
+
+/// The single-sign-on broker, when `human_login.sso` is served; `Ok(None)` when it
+/// is not.
+///
+/// **Nothing here may be fatal on a dead identity provider**: the provider is
+/// reached lazily, on the first sign-in, so a gateway whose Keycloak is down
+/// still starts and the password stays the break-glass way in. What is fatal is
+/// what only an operator can fix and the gateway can check offline: a
+/// `human_login.sso.jit_role` that names no `Role` row. Starts the transaction
+/// reaper.
+async fn build_sso(
+    db: &Cratestack,
+    config: &sms_config::Config,
+    op_issuer: &str,
+) -> Result<Option<sms_auth::sso::SsoProvider>> {
+    let Some(block) = config.sso() else {
+        return Ok(None);
+    };
+    let sys = system_context("sms-gateway:sso");
+    let sso_config = sms_auth::sso::SsoConfig::new(block, op_issuer, config.deployment.livemode)
+        .context("human_login.sso is not usable")?;
+    if !sms_auth::sso::store::jit_role_exists(db, &sys, &block.jit_role)
+        .await
+        .context("checking human_login.sso.jit_role")?
+    {
+        anyhow::bail!(
+            "human_login.sso.jit_role {:?} names no Role row: create the role (an owner can), \
+             or name one of the built-in roles",
+            block.jit_role
+        );
+    }
+    info!(
+        issuer = %sso_config.issuer,
+        redirect_uri = %sso_config.redirect_uri,
+        required_group = %sso_config.required_group,
+        jit_role = %sso_config.jit_role_key,
+        "single sign-on is served: register this redirect URI at the identity provider"
+    );
+    let provider = sms_auth::sso::SsoProvider::new(sso_config)
+        .map_err(|error| anyhow::anyhow!("{error}"))
+        .context("building the SSO provider")?;
+    sso::spawn_transaction_reaper(db.clone(), sys);
+    Ok(Some(provider))
 }
 
 /// The token realms the API accepts, from what is served: `None` when neither
@@ -670,6 +743,7 @@ mod tests {
                 per_email: bucket,
                 aggregate: bucket,
             },
+            sso: None,
         }
     }
 

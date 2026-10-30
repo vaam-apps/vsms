@@ -11,7 +11,9 @@ use serde::Deserialize;
 use crate::auth::{AuthConfig, AuthMethods};
 use crate::cli::DEFAULT_PROFILE;
 use crate::error::ConfigError;
-use crate::human_login::{CLIENT_ID_LENGTH, HumanLogin};
+use crate::human_login::{
+    CLIENT_ID_LENGTH, HumanLogin, JWKS_MIN_REFRESH_SECS, REFUSED_JIT_ROLES, Sso,
+};
 use crate::model::{Api, Bucket, Database, Deployment, Security};
 use crate::op::{ACCESS_TOKEN_TTL_SECS, Op};
 use crate::provider::{Providers, RawProvider, validate_providers};
@@ -44,6 +46,13 @@ pub enum Binary {
 impl Binary {
     /// Whether this process reads `security:`. Only the gateway does.
     const fn reads_security(self) -> bool {
+        matches!(self, Self::Gateway)
+    }
+
+    /// Whether this process reads `human_login.sso`, and with it the identity
+    /// provider client secret. Only the gateway does: the worker never signs a
+    /// person in.
+    const fn reads_sso(self) -> bool {
         matches!(self, Self::Gateway)
     }
 }
@@ -213,6 +222,16 @@ impl Config {
             dict.remove("security");
         }
 
+        // The same for the identity provider client secret: only the gateway
+        // signs a person in, so only it is handed the secret. The block is
+        // dropped whole, so a worker neither resolves its placeholder nor checks
+        // its shape; the gateway does both.
+        if !binary.reads_sso()
+            && let Some(Value::Dict(_, human_login)) = dict_entry(&mut document, "human_login")
+        {
+            human_login.remove("sso");
+        }
+
         resolve_placeholders(&mut document, env, &secret_keys)?;
 
         // figment's `Value` and serde_yaml_ng's are different crates' types with
@@ -234,6 +253,20 @@ impl Config {
     /// a [`Binary`] other than the gateway, which never reads the block.
     pub fn security(&self) -> Result<&Security, ConfigError> {
         self.security.as_ref().ok_or(ConfigError::SecurityNotLoaded)
+    }
+
+    /// The `human_login.sso:` block, for the process that loaded it.
+    ///
+    /// `Some` only on the gateway ([`Binary::Gateway`] is the one process that
+    /// reads the block) and only when `human_login` is served; a worker, a
+    /// provider tool or an operator command is never handed the secret, so it
+    /// gets `None` whatever the document says.
+    #[must_use]
+    pub fn sso(&self) -> Option<&Sso> {
+        self.human_login
+            .as_ref()
+            .and_then(|human_login| human_login.sso.as_ref())
+            .filter(|_| self.auth_methods.human_login_served())
     }
 
     fn validate(raw: Raw, binary: Binary, literal_secrets: &[String]) -> Result<Self, ConfigError> {
@@ -297,6 +330,11 @@ impl Config {
         }
         if let Some(human_login) = &human_login {
             validate_human_login(human_login, livemode)?;
+            if binary.reads_sso()
+                && let Some(sso) = &human_login.sso
+            {
+                validate_sso(sso, livemode)?;
+            }
         }
 
         Ok(Self {
@@ -364,6 +402,167 @@ fn validate_human_login(human_login: &HumanLogin, livemode: bool) -> Result<(), 
     let limits = &human_login.login_rate_limit;
     validate_bucket("human_login.login_rate_limit.per_email", limits.per_email)?;
     validate_bucket("human_login.login_rate_limit.aggregate", limits.aggregate)
+}
+
+/// The rules of `human_login.sso:` (`human_login.md`, "Rules of `sso`").
+fn validate_sso(sso: &Sso, livemode: bool) -> Result<(), ConfigError> {
+    let key = |name: &str| format!("human_login.sso.{name}");
+    validate_sso_issuer(&sso.issuer, livemode)?;
+    require_text(&key("client_id"), &sso.client_id)?;
+    if sso.client_id.chars().any(char::is_whitespace) {
+        return Err(invalid(&key("client_id"), "must not contain whitespace"));
+    }
+    if sso.client_secret.is_blank() {
+        return Err(ConfigError::EmptyField {
+            key: key("client_secret"),
+        });
+    }
+    validate_sso_scopes(&sso.scopes)?;
+    require_text(&key("required_group"), &sso.required_group)?;
+    require_text(&key("groups_claim"), &sso.groups_claim)?;
+    validate_sso_values(&key("accepted_amr"), &sso.accepted_amr)?;
+    validate_sso_values(&key("accepted_acr"), &sso.accepted_acr)?;
+    if sso.accepted_amr.is_empty() && sso.accepted_acr.is_empty() {
+        return Err(invalid(
+            &key("accepted_amr"),
+            "the multi-factor rule is empty: write at least one amr value or one acr value, \
+             because an empty rule would read as no rule",
+        ));
+    }
+    validate_jit_role(&sso.jit_role)?;
+    if !JWKS_MIN_REFRESH_SECS.contains(&sso.jwks_min_refresh_secs) {
+        return Err(invalid(
+            &key("jwks_min_refresh_secs"),
+            &format!(
+                "must be {} to {} seconds",
+                JWKS_MIN_REFRESH_SECS.start(),
+                JWKS_MIN_REFRESH_SECS.end()
+            ),
+        ));
+    }
+    validate_bucket("human_login.sso.rate_limit", sso.rate_limit)
+}
+
+/// The issuer is compared byte for byte, so it is checked as written: a URL with
+/// a host and nothing else on it, `https` in every mode except plain `http` to a
+/// loopback host (a developer's Keycloak, the tests' fake), and under `livemode`
+/// the same real-host rule as every other URL.
+/// `FederatedLink.issuer`'s `@length(max: ...)` in `schemas/vsms.cstack`.
+const ISSUER_MAX_CHARS: usize = 512;
+
+fn validate_sso_issuer(issuer: &str, livemode: bool) -> Result<(), ConfigError> {
+    const KEY: &str = "human_login.sso.issuer";
+    // `FederatedLink.issuer` is `@length(max: 512)`: a longer issuer would pass every
+    // other rule and then fail the first account creation as a validation error.
+    if issuer.chars().count() > ISSUER_MAX_CHARS {
+        return Err(invalid(
+            KEY,
+            &format!(
+                "must be at most {ISSUER_MAX_CHARS} characters: it is stored in FederatedLink.issuer"
+            ),
+        ));
+    }
+    let parsed = url::Url::parse(issuer).map_err(|error| ConfigError::InvalidValue {
+        key: KEY.to_owned(),
+        reason: format!("{issuer:?} is not a URL: {error}"),
+    })?;
+    let loopback = match parsed.host() {
+        Some(url::Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    };
+    match parsed.scheme() {
+        "https" => {}
+        "http" if loopback => {}
+        _ => {
+            return Err(invalid(
+                KEY,
+                "must be https (plain http only to a loopback host): the client secret and the \
+                 authorization code travel over it",
+            ));
+        }
+    }
+    if parsed.host().is_none() {
+        return Err(invalid(KEY, "has no host"));
+    }
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err(invalid(KEY, "must not carry a query or a fragment"));
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(invalid(KEY, "must not carry credentials"));
+    }
+    if livemode {
+        check_url(KEY, issuer, true)?;
+    }
+    Ok(())
+}
+
+fn validate_sso_scopes(scopes: &[String]) -> Result<(), ConfigError> {
+    const KEY: &str = "human_login.sso.scopes";
+    if scopes.is_empty() {
+        return Err(invalid(KEY, "at least one scope is required"));
+    }
+    for (index, scope) in scopes.iter().enumerate() {
+        if scope.trim().is_empty() || scope.chars().any(char::is_whitespace) {
+            return Err(invalid(
+                &format!("{KEY}[{index}]"),
+                "must be one scope with no whitespace in it: the request joins the list with spaces",
+            ));
+        }
+        if scopes[..index].contains(scope) {
+            return Err(invalid(&format!("{KEY}[{index}]"), "is listed twice"));
+        }
+    }
+    if !scopes.iter().any(|scope| scope == "openid") {
+        return Err(invalid(
+            KEY,
+            "must include `openid`: without it there is no id_token",
+        ));
+    }
+    Ok(())
+}
+
+/// An `amr` or `acr` list: each entry non-blank, trimmed, listed once.
+fn validate_sso_values(key: &str, values: &[String]) -> Result<(), ConfigError> {
+    for (index, value) in values.iter().enumerate() {
+        if value.trim().is_empty() || value.trim() != value {
+            return Err(invalid(
+                &format!("{key}[{index}]"),
+                "must be non-blank with no leading or trailing whitespace: it is compared exactly",
+            ));
+        }
+        if values[..index].contains(value) {
+            return Err(invalid(&format!("{key}[{index}]"), "is listed twice"));
+        }
+    }
+    Ok(())
+}
+
+/// `Role.key`'s own shape (`^[a-z][a-z0-9_]{2,31}$`) and not a refused role.
+fn validate_jit_role(role: &str) -> Result<(), ConfigError> {
+    const KEY: &str = "human_login.sso.jit_role";
+    let mut chars = role.chars();
+    let shaped = (3..=32).contains(&role.chars().count())
+        && chars.next().is_some_and(|first| first.is_ascii_lowercase())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+    if !shaped {
+        return Err(invalid(
+            KEY,
+            "must be a Role.key: 3 to 32 characters of a-z, 0-9 and _, starting with a letter",
+        ));
+    }
+    if REFUSED_JIT_ROLES.contains(&role) {
+        return Err(invalid(
+            KEY,
+            &format!(
+                "{role:?} can never be a just-in-time role: an account created by an \
+                 unsupervised sign-in is never given {}",
+                REFUSED_JIT_ROLES.join(", ")
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// The rules of `op:` (`op.md`).
@@ -596,6 +795,9 @@ fn secret_entries(document: &Value) -> Vec<(String, &Value)> {
     if let Some(pepper) = document.find_ref("security.hash_pepper") {
         found.push(("security.hash_pepper".to_owned(), pepper));
     }
+    if let Some(secret) = document.find_ref("human_login.sso.client_secret") {
+        found.push(("human_login.sso.client_secret".to_owned(), secret));
+    }
     let providers = document
         .find_ref("providers")
         .and_then(Value::as_array)
@@ -648,6 +850,14 @@ fn require_text_secrets(document: &Value) -> Result<(), ConfigError> {
         }
     }
     Ok(())
+}
+
+/// The child `name` of a document that is a dict, mutably.
+fn dict_entry<'a>(document: &'a mut Value, name: &str) -> Option<&'a mut Value> {
+    match document {
+        Value::Dict(_, dict) => dict.get_mut(name),
+        _ => None,
+    }
 }
 
 /// Replaces every `${VAR}` in a string leaf with what `env` returns.

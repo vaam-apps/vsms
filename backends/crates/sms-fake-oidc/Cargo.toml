@@ -1,0 +1,37 @@
+[package]
+name = "sms-fake-oidc"
+description = "A fake upstream OpenID Provider (a Keycloak stand-in) for vsms's SSO tests: discovery, JWKS, a browserless /authorize, and a /token that signs whatever id_token a test scripts - including the malformed ones. Dev/test-only."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Pure, dev/test-only: knows OIDC's wire shapes and nothing about vsms. No
+# cratestack, no schema - the same discipline `sms-fake-orange` keeps.
+axum.workspace = true
+base64.workspace = true
+form_urlencoded.workspace = true
+# `use_pem`: the workspace turns jsonwebtoken's default features off (the gateway
+# never reads a PEM through it); the fake's throwaway keys are PEM literals.
+jsonwebtoken = { workspace = true, features = ["use_pem"] }
+# The throwaway keys are generated, not committed (src/keys.rs). The P-256 one
+# comes from the same p256 0.13 copy jsonwebtoken already links (its default
+# features, which carry PEM), so Cargo.lock gains no crate: p256 0.14, the
+# workspace pin, would bring a second pkcs8 for one test key.
+p256 = { version = "0.13", features = ["pem"] }
+rand.workspace = true
+rsa.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+reqwest.workspace = true
+
+[lints]
+workspace = true

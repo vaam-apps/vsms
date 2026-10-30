@@ -189,6 +189,7 @@ fn the_chart_declares_no_retired_variable_but_the_secrets_the_overlay_reads() {
     // the process would refuse.
     let sources: BTreeSet<&str> = [
         "SMS_HASH_PEPPER",
+        "SMS_SSO_CLIENT_SECRET",
         "ORANGE_CM_CLIENT_SECRET",
         "MTN_CLIENT_SECRET",
         "AWS_SMS_SECRET_ACCESS_KEY",
@@ -219,6 +220,13 @@ fn the_chart_declares_no_retired_variable_but_the_secrets_the_overlay_reads() {
             controller == "gateway",
             "the chart's {controller} and the hash pepper"
         );
+        // So is the identity-provider secret (VSA-4c): the worker drops
+        // `human_login.sso` before it resolves placeholders.
+        assert_eq!(
+            names.contains("SMS_SSO_CLIENT_SECRET"),
+            controller == "gateway",
+            "the chart's {controller} and the identity-provider secret"
+        );
     }
 }
 
@@ -240,4 +248,67 @@ fn the_dockerfiles_bake_the_configuration_the_chart_overlays() {
             "{dockerfile} does not name the base file"
         );
     }
+}
+
+/// The gateway's log filter names `sms_auth` (VSA-4c). The crate logs every refusal
+/// of a sign-in (`email_in_use`, a login the Argon2 check refused, a console
+/// client that drifted) and an unnamed target is `ERROR`-only under a filter that
+/// lists the others: VS-4 dropped it when it deleted the code that needed it, and
+/// the sign-in's errors went missing from the log until now. Three places spell the
+/// default - the binary, the chart, the compose stack - and they must agree.
+#[test]
+fn the_gateways_default_log_filter_names_sms_auth_everywhere_it_is_written() {
+    let main =
+        std::fs::read_to_string(repo().join("backends/apps/sms-gateway/src/main.rs")).unwrap();
+    assert!(
+        main.contains("sms_gateway=info,sms_api=info,sms_auth=info,"),
+        "main.rs's default filter lost sms_auth"
+    );
+    let values = yaml("deploy/charts/vsms/values.yaml");
+    let chart = values["controllers"]["gateway"]["containers"]["main"]["env"]["RUST_LOG"]["value"]
+        .as_str()
+        .expect("the chart sets the gateway's RUST_LOG");
+    assert!(
+        chart.contains("sms_auth=info"),
+        "the chart's filter: {chart}"
+    );
+    let compose = yaml("deploy/docker-compose.yml");
+    let filter = compose["services"]["sms-gateway"]["environment"]["RUST_LOG"]
+        .as_str()
+        .expect("compose sets the gateway's RUST_LOG");
+    assert!(
+        filter.contains("sms_auth=info"),
+        "compose's filter: {filter}"
+    );
+    let example = std::fs::read_to_string(repo().join("deploy/.env.example")).unwrap();
+    assert!(
+        example.contains("SMS_GATEWAY_LOG=sms_gateway=info,sms_api=info,sms_auth=info,"),
+        ".env.example's documented default lost sms_auth"
+    );
+}
+
+/// The secret's commented line in the production compose file is the bare-key
+/// form. A key with a value, or `${...:-}`, is present in the environment when
+/// uncommented, and a variable the overlay does not read is refused at boot - so
+/// the form is what makes uncommenting it safe only when the overlay reads it.
+#[test]
+fn the_compose_file_offers_the_sso_secret_as_a_bare_key_for_the_gateway_only() {
+    let text = std::fs::read_to_string(repo().join("deploy/docker-compose.yml")).unwrap();
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|line| {
+            line.trim_start_matches([' ', '#'])
+                .starts_with("SMS_SSO_CLIENT_SECRET:")
+        })
+        .collect();
+    assert_eq!(lines, ["      # SMS_SSO_CLIENT_SECRET:"], "{lines:?}");
+    let compose = yaml("deploy/docker-compose.yml");
+    assert!(
+        !compose_env(&compose, "sms-worker").contains("SMS_SSO_CLIENT_SECRET"),
+        "the worker is never given the identity-provider secret"
+    );
+    assert!(
+        !compose_env(&compose, "sms-gateway").contains("SMS_SSO_CLIENT_SECRET"),
+        "it is offered commented out: the default stack serves no SSO, and a variable the overlay does not read is refused"
+    );
 }

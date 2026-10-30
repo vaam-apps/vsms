@@ -21,7 +21,7 @@ use sms_config::{Binary, Config, ConfigError, RETIRED};
 /// the process plumbing that stays (`DATABASE_URL`, the listen and metrics
 /// addresses, the envelope key file paths, `SMS_WORKER_ROLES`, `SMS_WORKER_ID`).
 /// `(variable, flag)`.
-const OLD_CLI: [(&str, &str); 33] = [
+const OLD_CLI: [(&str, &str); 44] = [
     // serve: backends/apps/sms-gateway/src/commands/serve.rs
     ("SMS_DB_MAX_CONNECTIONS", "--max-connections"),
     ("SMS_HASH_PEPPER", "--hash-pepper"),
@@ -77,6 +77,21 @@ const OLD_CLI: [(&str, &str); 33] = [
     (
         "AWS_SMS_TIME_TO_LIVE_SECONDS",
         "--aws-sms-time-to-live-seconds",
+    ),
+    // serve, 29f93c4^: the single-sign-on flags VSA-4c retires as `human_login.sso`
+    ("SMS_SSO_ISSUER", "--sso-issuer"),
+    ("SMS_SSO_CLIENT_ID", "--sso-client-id"),
+    ("SMS_SSO_CLIENT_SECRET", "--sso-client-secret"),
+    ("SMS_SSO_REDIRECT_URI", "--sso-redirect-uri"),
+    ("SMS_SSO_SCOPES", "--sso-scopes"),
+    ("SMS_SSO_REQUIRED_GROUP", "--sso-required-group"),
+    ("SMS_SSO_GROUPS_CLAIM", "--sso-groups-claim"),
+    ("SMS_SSO_ACCEPTED_ACR", "--sso-accepted-acr"),
+    ("SMS_SSO_ACCEPTED_AMR", "--sso-accepted-amr"),
+    ("SMS_SSO_JIT_ROLE", "--sso-jit-role"),
+    (
+        "SMS_SSO_JWKS_MIN_REFRESH_SECS",
+        "--sso-jwks-min-refresh-secs",
     ),
 ];
 
@@ -162,9 +177,12 @@ fn every_retired_key_is_a_key_the_model_reads() {
             Binary::Gateway,
             &|name| (name == "SMS_HASH_PEPPER").then(|| "p".repeat(48)),
         );
-        // Anything but a `Shape` error means the key was understood: it may
-        // still be an incomplete provider, which is a different rule.
-        if let Err(ConfigError::Shape(message)) = &result {
+        // Anything but an `unknown field` means the key was understood: it may
+        // still be an incomplete provider or a block missing its siblings (a
+        // `human_login.sso.*` key alone is), which are different rules.
+        if let Err(ConfigError::Shape(message)) = &result
+            && message.contains("unknown field")
+        {
             panic!(
                 "{} maps to `{}`, which the model does not read: {message}\n{}",
                 retired.env,

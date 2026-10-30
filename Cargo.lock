@@ -3886,19 +3886,28 @@ dependencies = [
  "async-trait",
  "authkestra-engine",
  "authkestra-op",
+ "base64 0.22.1",
  "chrono",
  "cratestack-pg",
+ "hex",
+ "jsonwebtoken",
  "rand 0.8.7",
+ "reqwest 0.12.28",
  "rsa",
+ "serde",
  "serde_json",
+ "sha2 0.10.9",
  "sms-api",
  "sms-config",
  "sms-core",
+ "sms-fake-oidc",
  "sms-test-support",
+ "subtle",
  "thiserror",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
@@ -3975,6 +3984,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "sms-fake-oidc"
+version = "0.9.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "form_urlencoded",
+ "jsonwebtoken",
+ "p256 0.13.2",
+ "rand 0.8.7",
+ "reqwest 0.12.28",
+ "rsa",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+]
+
+[[package]]
 name = "sms-fake-orange"
 version = "0.9.0"
 dependencies = [
@@ -4030,6 +4057,7 @@ dependencies = [
  "sms-config",
  "sms-core",
  "sms-fake-aws",
+ "sms-fake-oidc",
  "sms-provider",
  "sms-provider-aws-sms",
  "sms-provider-mtn",

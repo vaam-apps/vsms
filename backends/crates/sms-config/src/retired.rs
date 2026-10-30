@@ -21,7 +21,7 @@ const fn retired(env: &'static str, flag: &'static str, key: &'static str) -> Re
     Retired { env, flag, key }
 }
 
-/// Every flag and variable VSC-1 moved into the YAML, in the order the old
+/// Every flag and variable VSC-1 (and VSA-4c, for the single-sign-on ones) moved into the YAML, in the order the old
 /// `--help` listed them. `sms-gateway serve`, `sms-gateway mtn-subscribe-dlr`
 /// and `sms-worker` each declared a subset; the union is refused everywhere,
 /// because a name that meant "the Orange client id" must not mean anything else
@@ -187,6 +187,52 @@ pub const RETIRED: &[Retired] = &[
         "AWS_SMS_FAKE_SNS_CERT_BASE",
         "--aws-sms-fake-sns-cert-base",
         "providers[code=aws_sms].settings.fake_sns_cert_base",
+    ),
+    // VSA-4c: the single-sign-on flags of the deleted `serve`, back as
+    // `human_login.sso`. The redirect URI is not a key any more: it is derived from
+    // `op.issuer`. `SMS_SSO_CLIENT_SECRET` is still the secret's source.
+    retired("SMS_SSO_ISSUER", "--sso-issuer", "human_login.sso.issuer"),
+    retired(
+        "SMS_SSO_CLIENT_ID",
+        "--sso-client-id",
+        "human_login.sso.client_id",
+    ),
+    retired(
+        "SMS_SSO_CLIENT_SECRET",
+        "--sso-client-secret",
+        "human_login.sso.client_secret",
+    ),
+    retired("SMS_SSO_REDIRECT_URI", "--sso-redirect-uri", "op.issuer"),
+    retired("SMS_SSO_SCOPES", "--sso-scopes", "human_login.sso.scopes"),
+    retired(
+        "SMS_SSO_REQUIRED_GROUP",
+        "--sso-required-group",
+        "human_login.sso.required_group",
+    ),
+    retired(
+        "SMS_SSO_GROUPS_CLAIM",
+        "--sso-groups-claim",
+        "human_login.sso.groups_claim",
+    ),
+    retired(
+        "SMS_SSO_ACCEPTED_ACR",
+        "--sso-accepted-acr",
+        "human_login.sso.accepted_acr",
+    ),
+    retired(
+        "SMS_SSO_ACCEPTED_AMR",
+        "--sso-accepted-amr",
+        "human_login.sso.accepted_amr",
+    ),
+    retired(
+        "SMS_SSO_JIT_ROLE",
+        "--sso-jit-role",
+        "human_login.sso.jit_role",
+    ),
+    retired(
+        "SMS_SSO_JWKS_MIN_REFRESH_SECS",
+        "--sso-jwks-min-refresh-secs",
+        "human_login.sso.jwks_min_refresh_secs",
     ),
 ];
 

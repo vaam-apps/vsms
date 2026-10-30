@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use authkestra_engine::auth::state::Identity;
-use authkestra_op::handlers::authorize::{AuthorizeOutcome, AuthorizeRequest, handle_authorize};
+use authkestra_op::handlers::authorize::{AuthorizeOutcome, handle_authorize};
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderValue, StatusCode, header};
@@ -18,6 +18,7 @@ use sms_api::schema::Cratestack;
 use sms_auth::login::{LoginError, authenticate_user, stamp_last_login};
 use sms_config::LoginRateLimit;
 
+use crate::console_authorize::{ConsoleAuthorize, redirect_carries_an_error};
 use crate::op::OpState;
 
 /// A sign-in body is a few hundred bytes. The cap is checked before any password
@@ -29,8 +30,10 @@ const MAX_LOGIN_BODY_BYTES: usize = 16 * 1024;
 /// attacker cannot make the limiter store one huge key per request.
 const MAX_EMAIL_KEY_BYTES: usize = 254;
 
-/// The `provider_id` of the identity a code carries.
-const PROVIDER_ID: &str = "sms-console";
+/// The `provider_id` of the identity a code carries, for a password sign-in and
+/// for single sign-on alike: a person is the same person whichever way they
+/// proved it, and the bearer door keys the person realm on the `sub`, not on this.
+pub(crate) const PROVIDER_ID: &str = "sms-console";
 
 #[derive(Clone)]
 struct LoginState {
@@ -164,23 +167,21 @@ struct LoginFailure {
     error: &'static str,
 }
 
-/// `AuthorizeRequest` is `#[non_exhaustive]` (authkestra-op 0.8.0), so it cannot
-/// be built with a struct literal from outside the crate, and has no constructor;
-/// it derives `Deserialize`, so the wire shape is built by hand and deserialised.
-/// A future release that renames a field would not fail this for an `Option`
-/// field (it would silently become `None`): `the_authorize_request_keeps_its_optional_fields`
-/// below and the live suite's `state`/`nonce` round trip are what catch that.
-fn build_authorize_request(request: &LoginRequest) -> Result<AuthorizeRequest, serde_json::Error> {
-    serde_json::from_value(serde_json::json!({
-        "client_id": request.client_id,
-        "redirect_uri": request.redirect_uri,
-        "response_type": request.response_type,
-        "scope": request.scope,
-        "state": request.state,
-        "code_challenge": request.code_challenge,
-        "code_challenge_method": request.code_challenge_method,
-        "nonce": request.nonce,
-    }))
+impl LoginRequest {
+    /// The OAuth half of the body, which `POST /login` and `GET /login/sso/start`
+    /// share (`console_authorize.rs`).
+    fn console(&self) -> ConsoleAuthorize {
+        ConsoleAuthorize {
+            client_id: self.client_id.clone(),
+            redirect_uri: self.redirect_uri.clone(),
+            response_type: self.response_type.clone(),
+            scope: self.scope.clone(),
+            state: self.state.clone(),
+            code_challenge: self.code_challenge.clone(),
+            code_challenge_method: self.code_challenge_method.clone(),
+            nonce: self.nonce.clone(),
+        }
+    }
 }
 
 /// A deliberately narrow, fixed error vocabulary: never `OpError`'s `Display` and
@@ -201,35 +202,6 @@ fn refused() -> Response {
     failure(StatusCode::UNAUTHORIZED, "invalid_credentials")
 }
 
-/// The shortest and longest `code_challenge` this route takes: RFC 7636, section
-/// 4.2 (43 to 128 characters), and a `S256` challenge is always the 43 of a
-/// base64url-encoded SHA-256.
-const CODE_CHALLENGE_LENGTH: std::ops::RangeInclusive<usize> = 43..=128;
-
-/// What the request alone proves wrong, before it costs a bucket token or an
-/// Argon2 hash: a challenge method other than `S256`, a challenge that is not 43
-/// to 128 base64url characters (the library accepts an empty one), and a
-/// `redirect_uri` the console is not registered with. Each is a malformed
-/// *request*, so each is the `400` the library's own refusal would be mapped to,
-/// never the person's `401`: nothing here depends on who the caller is.
-fn malformed(request: &LoginRequest, redirect_uris: &[String]) -> Option<&'static str> {
-    if request.code_challenge_method != "S256" {
-        return Some("code_challenge_method");
-    }
-    if !CODE_CHALLENGE_LENGTH.contains(&request.code_challenge.len())
-        || !request
-            .code_challenge
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
-    {
-        return Some("code_challenge");
-    }
-    if !redirect_uris.contains(&request.redirect_uri) {
-        return Some("redirect_uri");
-    }
-    None
-}
-
 async fn login_handler(
     State(state): State<LoginState>,
     body: Result<Json<LoginRequest>, JsonRejection>,
@@ -247,7 +219,8 @@ async fn login_handler(
 
     // The checks that need no account and no secret, before the limiter and
     // before any Argon2 work: a request that can never succeed spends nothing.
-    if let Some(field) = malformed(&request, &state.redirect_uris) {
+    let console = request.console();
+    if let Some(field) = console.malformed(&state.redirect_uris) {
         tracing::warn!(field, "login: the request is malformed");
         return failure(StatusCode::BAD_REQUEST, "invalid_request");
     }
@@ -296,7 +269,7 @@ async fn login_handler(
         attributes: std::collections::HashMap::new(),
     };
 
-    let authorize_request = match build_authorize_request(&request) {
+    let authorize_request = match console.authorize_request() {
         Ok(authorize_request) => authorize_request,
         Err(error) => {
             tracing::error!(%error, "login: building the AuthorizeRequest failed");
@@ -334,19 +307,6 @@ async fn login_handler(
             tracing::warn!(%error, "login: handle_authorize refused the request directly");
             failure(StatusCode::BAD_REQUEST, "invalid_request")
         }
-    }
-}
-
-/// Whether `redirect` is the library's error redirect (`?error=...`) and not a
-/// code.
-fn redirect_carries_an_error(redirect: &str) -> bool {
-    match url::Url::parse(redirect) {
-        Ok(url) => {
-            let has = |name: &str| url.query_pairs().any(|(key, _)| key == name);
-            has("error") || !has("code")
-        }
-        // Not a URL at all is certainly not a code.
-        Err(_) => true,
     }
 }
 
@@ -395,20 +355,21 @@ mod tests {
         }
     }
 
-    /// The cheap, no-database half of the guard `build_authorize_request`'s doc
-    /// names: the four `Option<String>` fields of `AuthorizeRequest` a rename
-    /// would silently turn into `None` arrive `Some` for realistic input.
+    /// The OAuth half of the body is exactly `ConsoleAuthorize`: a field added to
+    /// one and not the other would reach `handle_authorize` as a default.
     #[test]
-    fn the_authorize_request_keeps_its_optional_fields() {
-        let authorize = build_authorize_request(&request()).expect("this JSON always deserializes");
-        assert_eq!(authorize.state.as_deref(), Some("state-abc123"));
-        assert_eq!(
-            authorize.code_challenge.as_deref(),
-            Some("challenge-abc123")
-        );
-        assert_eq!(authorize.code_challenge_method.as_deref(), Some("S256"));
-        assert_eq!(authorize.nonce.as_deref(), Some("nonce-abc123"));
-        assert_eq!(authorize.scope, "openid profile");
+    fn the_console_half_of_the_body_is_every_field_but_the_credentials() {
+        let mut body = serde_json::to_value(serde_json::json!({
+            "email": request().email,
+            "password": request().password,
+        }))
+        .unwrap();
+        let console = serde_json::to_value(request().console()).unwrap();
+        body.as_object_mut()
+            .unwrap()
+            .extend(console.as_object().unwrap().clone());
+        let parsed: LoginRequest = serde_json::from_value(body).expect("the same eight fields");
+        assert_eq!(parsed.console(), request().console());
     }
 
     /// The wire shape is pinned: `snake_case` OAuth names, no unknown field.
@@ -446,19 +407,6 @@ mod tests {
             .unwrap(),
             serde_json::json!({ "error": "invalid_credentials" })
         );
-    }
-
-    #[test]
-    fn an_error_redirect_is_not_a_sign_in() {
-        assert!(redirect_carries_an_error(
-            "https://x/cb?error=invalid_request&error_description=nope&state=s"
-        ));
-        assert!(
-            redirect_carries_an_error("https://x/cb?state=s"),
-            "no code is no sign-in"
-        );
-        assert!(!redirect_carries_an_error("https://x/cb?code=abc&state=s"));
-        assert!(redirect_carries_an_error("not a url"));
     }
 
     #[test]
@@ -547,90 +495,5 @@ mod tests {
             matches!(limiter.admit("other-2@x.test").await, Admission::Allowed),
             "fifty refusals of one address must not have drained the aggregate"
         );
-    }
-
-    fn registered() -> Vec<String> {
-        vec!["https://admin.example/api/auth/callback".to_owned()]
-    }
-
-    /// A request that is well formed for the three cheap checks.
-    fn well_formed() -> LoginRequest {
-        LoginRequest {
-            code_challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM".to_owned(),
-            redirect_uri: registered()[0].clone(),
-            ..request()
-        }
-    }
-
-    #[test]
-    fn a_well_formed_request_passes_the_cheap_checks() {
-        assert_eq!(malformed(&well_formed(), &registered()), None);
-    }
-
-    #[test]
-    fn a_challenge_method_other_than_s256_is_malformed() {
-        for method in ["plain", "s256", "", "S256 ", "S512"] {
-            let request = LoginRequest {
-                code_challenge_method: method.to_owned(),
-                ..well_formed()
-            };
-            assert_eq!(
-                malformed(&request, &registered()),
-                Some("code_challenge_method"),
-                "{method:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_challenge_must_be_43_to_128_base64url_characters() {
-        let with = |challenge: String| LoginRequest {
-            code_challenge: challenge,
-            ..well_formed()
-        };
-        for bad in [
-            String::new(),
-            "a".repeat(42),
-            "a".repeat(129),
-            format!("{}=", "a".repeat(43)),
-            format!("{}+", "a".repeat(43)),
-            format!("{}/", "a".repeat(43)),
-            format!("{} ", "a".repeat(43)),
-            format!("{}é", "a".repeat(42)),
-        ] {
-            assert_eq!(
-                malformed(&with(bad.clone()), &registered()),
-                Some("code_challenge"),
-                "{bad:?}"
-            );
-        }
-        for good in ["a".repeat(43), "A-_9".repeat(32)] {
-            assert_eq!(
-                malformed(&with(good.clone()), &registered()),
-                None,
-                "{good}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_redirect_uri_that_is_not_registered_is_malformed_whatever_it_resembles() {
-        for uri in [
-            "https://admin.example/api/auth/callback/",
-            "https://admin.example/api/auth/callback?x=1",
-            "HTTPS://admin.example/api/auth/callback",
-            "https://evil.example/api/auth/callback",
-            "",
-        ] {
-            let request = LoginRequest {
-                redirect_uri: uri.to_owned(),
-                ..well_formed()
-            };
-            assert_eq!(
-                malformed(&request, &registered()),
-                Some("redirect_uri"),
-                "{uri:?}"
-            );
-        }
     }
 }

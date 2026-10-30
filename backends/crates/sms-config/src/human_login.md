@@ -23,6 +23,29 @@ It is `29f93c4^`'s flags moved into the document the way VSC-1 moved the others:
 the console is a **public** client protected by PKCE, and a person's password is
 typed at sign-in and kept as an Argon2id hash in `user_credentials`.
 
+```yaml
+human_login:
+  # console_client and login_rate_limit as above
+  sso:
+    issuer: https://auth.example.org/realms/staff
+    client_id: vsms-gateway
+    client_secret: ${SMS_SSO_CLIENT_SECRET}
+    scopes: [openid, email, profile]
+    required_group: vsms-staff
+    groups_claim: groups
+    accepted_amr: [otp]
+    accepted_acr: []
+    jit_role: support
+    jwks_min_refresh_secs: 30
+    rate_limit: { burst: 30, refill_per_second: 1.0 }
+```
+
+`sso:` (VSA-4c) is the deleted `serve` flags `SMS_SSO_*` back as a block, nested
+under `human_login:` because a person signs in to the same console either way:
+it cannot exist without the block it sits in, and every rule about
+`human_login` (`auth.md`) holds for it by construction. It is optional - absent
+means the password is the only way in. See "Rules of `sso`" below.
+
 # Permitted is not served
 
 `human_login` is **served** when `auth.methods` permits it, this block is
@@ -80,3 +103,48 @@ refuses to start when the `OauthClient` row the provider reads differs
 the file is never silently ignored by an old row.
 
 <!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->
+
+# The callback is derived
+
+There is no `redirect_uri` key: writing one is an unknown-field error. The
+callback registered at the identity provider is `op.issuer` followed by
+`/login/sso/callback`, and `serve` logs it at boot, so there is no second
+statement of the gateway's own origin to disagree with the first. The old
+`SMS_SSO_REDIRECT_URI` had to "end in exactly `/login/sso/callback`" and nothing
+else about it could be checked against the `op:` issuer; deriving it removes the
+way to get it wrong.
+
+# Rules of `sso`
+
+- `issuer` is a URL with a host and no query, fragment or credentials. It is
+  `https` in every mode, except plain `http` to a loopback host (a developer's
+  Keycloak, the test suite's fake), because the client secret and the authorization
+  code travel over it. Under `livemode` it also passes the real-host rule of every
+  other URL (`https`, no stub host). It is kept **verbatim**: the discovery
+  document's `issuer` and every `id_token`'s `iss` are compared to it byte for
+  byte, so no trailing slash is added or trimmed.
+- `client_id` is not blank and has no whitespace.
+- `client_secret` is a secret like the pepper: under `livemode` a literal is
+  `ConfigError::LiteralSecret`, any mode refuses a YAML number or boolean and a
+  blank value, and `Debug` prints `<redacted>`. **Only the gateway is handed it**:
+  the loader drops `human_login.sso` for the worker and the one-shot commands
+  after the retired-variable and literal checks and before placeholders resolve,
+  so a worker starts without `SMS_SSO_CLIENT_SECRET` in its environment
+  ([`crate::Config::sso`] is `None` there).
+- `scopes` is non-empty, each entry one scope with no whitespace, none repeated,
+  and `openid` among them.
+- `required_group` and `groups_claim` are not blank. The group is an exact match
+  against the claim, and it is a **gate**: no claim ever sets a role.
+- `accepted_amr` and `accepted_acr` are each a list of trimmed, non-blank,
+  distinct values (either may be `[]`), and **not both empty**: an empty rule
+  would read as no rule.
+- `jit_role` is a `Role.key` (3 to 32 of `a-z0-9_`, starting with a letter) and not
+  one of [`REFUSED_JIT_ROLES`]: `system` and `app` (reserved, no human holds them)
+  and `owner` and `admin` (they act only from a paired console key, so an account
+  created by an unsupervised sign-in must not carry either). The role row's
+  existence is checked at boot by `serve`, which this crate cannot see.
+- `jwks_min_refresh_secs` is 1 to 3600.
+- `rate_limit` is a bucket like the others. It is one **global** bucket per
+  route (`/login/sso/start` and `/login/sso/callback`), not one per source: the
+  gateway sees one peer for everybody, as `login_rate_limit` explains. The edge
+  bounds a single source (`deploy/Caddyfile`, `sso_per_source`).

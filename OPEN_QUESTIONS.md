@@ -151,7 +151,7 @@ dependency rule. The owner decided (2026-10-19) to build it, and the three
 reasons no longer hold (`auth.verif.fyi`'s `vaam-staff` realm exists;
 `backends/crates/sms-fake-oidc` is the fake; a real Keycloak container was
 driven end to end). The decisions, each recorded with its reasoning in
-`docs/architecture.md` §4.3 and operated per the SSO runbook (deleted in VS-4):
+`docs/architecture.md` §4.3 and operated per the SSO runbook (deleted in VS-4, back with VSA-4c as `docs/runbooks/sso.adoc`, configured as `human_login.sso`):
 
 - **The gateway stays the console's OP.** Only "who is this human?" is
   federated; every API token is still vsms's own, so `GatewayAuth` and every

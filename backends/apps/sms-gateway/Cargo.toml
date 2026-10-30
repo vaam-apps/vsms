@@ -27,7 +27,8 @@ form_urlencoded.workspace = true
 # token_rate_limit.rs keys an authorization-code request on the SHA-256 of its
 # code, so the credential is never a store key. (The live suites use it too.)
 sha2.workspace = true
-# login.rs tells a code redirect from an error redirect by its query.
+# console_authorize.rs tells a code redirect from an error redirect by its query, and
+# sso.rs builds the console's error redirect.
 url.workspace = true
 # dlr.rs's real dependency: the SmsProvider trait (#34), and the concrete
 # adapters that exist to construct it from — two as of #61's MTN wiring.
@@ -75,6 +76,8 @@ default = []
 fake-aws = ["dep:sms-fake-aws"]
 
 [dev-dependencies]
+# sso_flow_live_postgres.rs signs in against a scripted fake identity provider.
+sms-fake-oidc.workspace = true
 # The acceptance gates spawn the real `sms-gateway` binary
 # (`CARGO_BIN_EXE_sms-gateway`, only available to an integration test inside
 # this same package) and drive it over real HTTP with sealed requests.

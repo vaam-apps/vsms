@@ -115,6 +115,15 @@ admin origin belongs in that change, with the paths it adds.
   slowed, not prevented, and when it happens the sign-in answers `429` while the
   paired-key door and the machine doors, which do no Argon2 work, are untouched.
 
+# What it shares with single sign-on
+
+`GET /login/sso/start` makes the same cheap checks on the same eight OAuth parameters
+and ends in the same `handle_authorize` with the same `Identity`. Those parts live in
+`console_authorize.rs` (`ConsoleAuthorize`, its `malformed`, `authorize_request` and
+`redirect_carries_an_error`) and the `PROVIDER_ID` constant here, so the two routes cannot
+disagree about what the console may ask for. What stays here is what is the password's:
+the buckets, Argon2, and the JSON answer.
+
 # Wire shape
 
 Request (JSON, `snake_case`, unknown fields refused): `email`, `password`,

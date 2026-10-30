@@ -143,6 +143,13 @@ services:
       # AWS_SMS_TPS_CEILING:
       # AWS_SMS_COST_PER_SEGMENT_XAF:
       # AWS_SMS_EVENTS_TOPIC_ARN:
+      # VSA-4c: single sign-on. Uncomment this line when the overlay's
+      # `human_login.sso.client_secret` is `${SMS_SSO_CLIENT_SECRET}`. It stays a
+      # bare key, never `SMS_SSO_CLIENT_SECRET:` with a value and never an empty
+      # `${...:-}`: a variable that is present and not read by the overlay (even
+      # an empty one) is refused at boot, as the old flag is retired. Only
+      # sms-gateway gets it; the worker drops `human_login.sso` and is not given it.
+      # SMS_SSO_CLIENT_SECRET:
       # #134/#140: the server-held pepper behind Message.msisdnHash/bodyHash
       # (HMAC-SHA256, sms_api::pepper) - real secret material, minimum 32
       # bytes, validated at startup (`sms-gateway serve` refuses to bind on
@@ -159,7 +166,7 @@ services:
       # once and keep them out of git (docs/runbooks/deployment.adoc).
       SMS_ENVELOPE_SIGNING_KEY_FILE: /run/envelope/current.pem
       SMS_ENVELOPE_NEXT_SIGNING_KEY_FILE: /run/envelope/next.pem
-      RUST_LOG: ${SMS_GATEWAY_LOG:-sms_gateway=info,sms_api=info,sms_provider_aws_sms=info,cratestack=info}
+      RUST_LOG: ${SMS_GATEWAY_LOG:-sms_gateway=info,sms_api=info,sms_auth=info,sms_provider_aws_sms=info,cratestack=info}
     depends_on:
       postgres:
         condition: service_healthy

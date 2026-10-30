@@ -1,4 +1,5 @@
-Flags and environment variables VSC-1 retired, and the refusal that names the
+Flags and environment variables VSC-1 retired (and, for the eleven `SMS_SSO_*`,
+VSA-4c), and the refusal that names the
 YAML key which replaced each.
 
 [`RETIRED`] is the single list. It is read by:
@@ -22,6 +23,13 @@ assert_eq!(
     }
 );
 ```
+
+`SMS_SSO_CLIENT_SECRET` is retired as a flag and kept as a secret's source, the
+way the pepper is: `human_login.sso.client_secret: ${SMS_SSO_CLIENT_SECRET}` makes
+it fine, and a gateway that sets it without referencing it is refused. So is one
+that sets any of the other ten, which is the cutover VSA-4c is breaking on
+purpose. `SMS_SSO_REDIRECT_URI` points at `op.issuer`, because the callback is
+derived from it and no longer written.
 
 A variable that is set to the empty string counts as set: Docker Compose passes
 `FOO=` through, and an old `.env` full of blanks is exactly the leftover this

@@ -515,6 +515,14 @@ invalid_credentials` and throttles per email and per source address; the gateway
 logs `human_login is served` at start. Authorization codes live in the gateway's
 memory for sixty seconds, so run one gateway replica (the chart does).
 
+*Single sign-on* (VSA-4c) is the same sign-in answered by an identity provider (Keycloak)
+instead of a password: add a `sso:` block inside `human_login:` and the secret as
+`SMS_SSO_CLIENT_SECRET` (the chart's `existingSecrets.sso`, the gateway only). It is
+off without the block, the callback to register at the provider is `op.issuer` plus
+`/login/sso/callback` (the gateway logs it at start), and a gateway whose environment
+still sets one of the old `SMS_SSO_*` variables without the YAML reading it is refused
+at boot. The whole of it, Keycloak's side included, is `docs/runbooks/sso.adoc`.
+
 === Before deploying: the `webhook_attempts` index of migration 0011
 
 Migration `0011_webhook_endpoint_due_idx` builds an index on `webhook_attempts`
@@ -614,8 +622,8 @@ the rows before the new release starts:
 |===
 
 *Only the first three are read, and only with `op:` written.* This release has a
-token endpoint behind `auth.methods` and `op:` (VSA-3a, below) and a `/login` behind
-`human_login:` (VSA-4a, below), but no SSO broker (VSA-4c), and no table is reachable
+token endpoint behind `auth.methods` and `op:` (VSA-3a, below), a `/login` behind
+`human_login:` (VSA-4a, below) and an SSO broker behind `human_login.sso` (VSA-4c, below), and no table is reachable
 by any route, so a deployment that never used them loses nothing it can see. A deployment that is *already past* `0009` has nothing to
 keep: 0009 deleted the rows when it ran, and `0012` only ever finds the tables
 missing.

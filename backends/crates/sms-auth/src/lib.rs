@@ -5,6 +5,7 @@ pub mod gate;
 pub mod login;
 pub mod op;
 pub mod provision;
+pub mod sso;
 
 use std::sync::Arc;
 

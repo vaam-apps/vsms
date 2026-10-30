@@ -1397,3 +1397,328 @@ fn the_pepper_is_refused_where_the_yaml_does_not_read_it() {
         }
     );
 }
+
+// --- human_login.sso (VSA-4c) ------------------------------------------------
+
+const SSO_KEY: &str = "human_login.sso";
+
+fn sso_invalid(profile: &str, key: &str) -> String {
+    invalid_reason(profile, &format!("{SSO_KEY}.{key}"))
+}
+
+#[test]
+fn a_complete_sso_block_loads_and_is_read_whole() {
+    let config = load("sso-valid").expect("every key written loads");
+    let sso = config.sso().expect("the gateway reads the block");
+    assert_eq!(sso.issuer, "https://auth.example.org/realms/staff");
+    assert_eq!(sso.client_id, "vsms-gateway");
+    assert!(
+        sso.client_secret.expose() == "SMS_SSO_CLIENT_SECRET-value",
+        "the secret reaches the broker from its placeholder, as written"
+    );
+    assert_eq!(sso.scopes, ["openid", "email", "profile"]);
+    assert_eq!(sso.required_group, "vsms-staff");
+    assert_eq!(sso.groups_claim, "groups");
+    assert_eq!(sso.accepted_amr, ["otp"]);
+    assert_eq!(sso.accepted_acr, Vec::<String>::new());
+    assert_eq!(sso.jit_role, "support");
+    assert_eq!(sso.jwks_min_refresh_secs, 30);
+    assert_eq!(sso.rate_limit.burst, 30);
+    // A `Debug` print of the whole configuration never carries the secret.
+    assert!(!format!("{config:?}").contains("SMS_SSO_CLIENT_SECRET-value"));
+}
+
+#[test]
+fn an_absent_sso_block_is_a_password_only_deployment() {
+    let config = load("human-login-default-methods").unwrap();
+    assert!(config.human_login.is_some() && config.sso().is_none());
+}
+
+#[test]
+fn an_sso_that_is_a_null_is_refused_not_read_as_absent() {
+    let message = shape_message("sso-null");
+    assert!(
+        message.contains("sso") || message.contains("struct Sso"),
+        "{message}"
+    );
+}
+
+#[test]
+fn an_sso_block_missing_a_key_or_with_an_unknown_one_is_refused_and_named() {
+    assert!(shape_message("sso-missing-key").contains("jit_role"));
+    // The redirect URI used to be a key. It is derived now, so writing it is an
+    // error and not a value that is silently never read.
+    assert!(shape_message("sso-unknown-redirect-uri").contains("redirect_uri"));
+}
+
+#[test]
+fn sso_is_a_key_of_human_login_and_nowhere_else() {
+    assert!(shape_message("sso-at-top-level").contains("sso"));
+}
+
+#[test]
+fn sso_follows_the_human_login_block_it_is_nested_in() {
+    // Without the method, human_login: is refused and so is what is inside it.
+    assert_eq!(
+        refused("sso-with-human-login-not-permitted"),
+        ConfigError::AuthMethodDisabled {
+            methods: vec![AuthMethod::HumanLogin],
+            key: "human_login".to_owned(),
+        }
+    );
+    // Without op:, the sign-in has no provider to ride.
+    assert_eq!(refused("sso-without-op"), not_configured_human("op"));
+}
+
+#[test]
+fn the_issuer_is_a_url_with_a_host_and_nothing_else_on_it() {
+    assert!(matches!(
+        refused("sso-issuer-not-a-url"),
+        ConfigError::InvalidValue { key, .. } if key == "human_login.sso.issuer"
+    ));
+    assert!(sso_invalid("sso-issuer-http-remote", "issuer").contains("https"));
+    assert!(sso_invalid("sso-issuer-query", "issuer").contains("query"));
+    assert!(sso_invalid("sso-issuer-fragment", "issuer").contains("fragment"));
+    assert!(sso_invalid("sso-issuer-userinfo", "issuer").contains("credentials"));
+}
+
+#[test]
+fn the_issuer_fits_the_column_it_is_stored_in() {
+    // 512 is FederatedLink.issuer's @length max: loads. One more is refused by the
+    // loader and not, later, by the first sign-in's validation.
+    let longest =
+        load("sso-issuer-longest").expect("512 characters is the longest the column holds");
+    assert_eq!(longest.sso().unwrap().issuer.chars().count(), 512);
+    assert!(sso_invalid("sso-issuer-too-long", "issuer").contains("at most 512"));
+}
+
+#[test]
+fn the_issuer_is_kept_byte_for_byte_and_plain_http_is_for_loopback_only() {
+    let config = load("sso-issuer-verbatim-trailing-slash").unwrap();
+    assert_eq!(
+        config.sso().unwrap().issuer,
+        "https://auth.example.org/realms/staff/",
+        "the trailing slash is part of the issuer the id_token must carry"
+    );
+    let config = load("sso-loopback-http-issuer").expect("a developer's Keycloak");
+    assert_eq!(
+        config.sso().unwrap().issuer,
+        "http://127.0.0.1:8180/realms/staff"
+    );
+}
+
+#[test]
+fn under_livemode_the_sso_issuer_is_https_and_not_a_stub() {
+    load("sso-valid-livemode").expect("a real https issuer is fine in livemode");
+    assert!(matches!(
+        refused("sso-livemode-stub-issuer"),
+        ConfigError::StubHostInLivemode { key, .. } if key == "human_login.sso.issuer"
+    ));
+    assert!(matches!(
+        refused("sso-livemode-http-loopback-issuer"),
+        ConfigError::InsecureHost { key, .. } if key == "human_login.sso.issuer"
+    ));
+}
+
+#[test]
+fn the_client_id_is_clean_text() {
+    assert_eq!(
+        refused("sso-client-id-blank"),
+        ConfigError::EmptyField {
+            key: "human_login.sso.client_id".to_owned()
+        }
+    );
+    assert!(sso_invalid("sso-client-id-whitespace", "client_id").contains("whitespace"));
+}
+
+#[test]
+fn the_client_secret_is_a_secret_in_every_way_a_secret_is() {
+    // Blank, and a number YAML would normalise, are refused naming the key.
+    assert_eq!(
+        refused("sso-client-secret-blank"),
+        ConfigError::EmptyField {
+            key: "human_login.sso.client_secret".to_owned()
+        }
+    );
+    let numeric = sso_invalid("sso-client-secret-numeric", "client_secret");
+    assert!(numeric.contains("quoted YAML string"), "{numeric}");
+    assert!(!numeric.contains("123456"), "the value is never echoed");
+    // Under livemode only a placeholder is a secret.
+    assert_eq!(
+        refused("sso-livemode-literal-client-secret"),
+        ConfigError::LiteralSecret {
+            key: "human_login.sso.client_secret".to_owned()
+        }
+    );
+    // A sandbox may write one.
+    let config = load("sso-literal-client-secret-sandbox").unwrap();
+    assert!(
+        config.sso().unwrap().client_secret.expose() == "a-sandbox-literal-secret",
+        "a sandbox's literal secret reaches the broker as written"
+    );
+}
+
+#[test]
+fn the_scopes_are_a_list_of_single_distinct_scopes_that_includes_openid() {
+    let key = |index: usize| format!("{SSO_KEY}.scopes[{index}]");
+    assert!(sso_invalid("sso-scopes-empty", "scopes").contains("at least one"));
+    assert!(sso_invalid("sso-scopes-without-openid", "scopes").contains("openid"));
+    assert!(invalid_reason("sso-scopes-blank-entry", &key(1)).contains("no whitespace"));
+    assert!(invalid_reason("sso-scopes-whitespace-entry", &key(1)).contains("no whitespace"));
+    assert!(invalid_reason("sso-scopes-duplicate", &key(2)).contains("twice"));
+}
+
+#[test]
+fn the_group_gate_names_a_group_and_a_claim() {
+    assert_eq!(
+        refused("sso-required-group-blank"),
+        ConfigError::EmptyField {
+            key: "human_login.sso.required_group".to_owned()
+        }
+    );
+    assert_eq!(
+        refused("sso-groups-claim-blank"),
+        ConfigError::EmptyField {
+            key: "human_login.sso.groups_claim".to_owned()
+        }
+    );
+}
+
+#[test]
+fn the_multi_factor_rule_is_never_empty_and_either_list_may_carry_it() {
+    // Both empty would read as no rule at all: refused.
+    assert!(sso_invalid("sso-no-mfa-rule", "accepted_amr").contains("multi-factor rule is empty"));
+    // One list is enough, whichever it is.
+    let acr_only = load("sso-acr-only").unwrap();
+    assert_eq!(acr_only.sso().unwrap().accepted_acr, ["mfa"]);
+    assert_eq!(acr_only.sso().unwrap().accepted_amr, Vec::<String>::new());
+    // And each entry is compared exactly, so it is written exactly.
+    assert!(
+        invalid_reason("sso-amr-blank-entry", "human_login.sso.accepted_amr[1]")
+            .contains("non-blank")
+    );
+    assert!(
+        invalid_reason("sso-amr-duplicate", "human_login.sso.accepted_amr[1]").contains("twice")
+    );
+    assert!(
+        invalid_reason("sso-acr-padded-entry", "human_login.sso.accepted_acr[0]")
+            .contains("whitespace")
+    );
+}
+
+#[test]
+fn a_just_in_time_role_is_a_role_key_and_never_one_that_acts_with_authority() {
+    for role in ["owner", "admin", "system", "app"] {
+        let reason = sso_invalid(&format!("sso-jit-role-{role}"), "jit_role");
+        assert!(
+            reason.contains("can never be a just-in-time role"),
+            "{role}: {reason}"
+        );
+    }
+    for profile in ["sso-jit-role-uppercase", "sso-jit-role-too-short"] {
+        assert!(
+            sso_invalid(profile, "jit_role").contains("Role.key"),
+            "{profile}"
+        );
+    }
+    // Any other key is the operator's to choose: the role row is checked at boot.
+    assert_eq!(
+        load("sso-jit-role-operator")
+            .unwrap()
+            .sso()
+            .unwrap()
+            .jit_role,
+        "operator"
+    );
+}
+
+#[test]
+fn the_refused_roles_are_the_four_a_sign_in_must_never_create() {
+    // The list is a copy of sms_api's RESERVED_ROLE_KEYS and DEVICE_ONLY_ROLES,
+    // which this crate cannot import. sms-auth pins the copy to them.
+    assert_eq!(
+        sms_config::REFUSED_JIT_ROLES,
+        ["system", "app", "owner", "admin"]
+    );
+}
+
+#[test]
+fn the_jwks_refresh_floor_and_the_rate_limit_are_range_checked() {
+    for profile in ["sso-jwks-refresh-zero", "sso-jwks-refresh-too-long"] {
+        assert!(
+            sso_invalid(profile, "jwks_min_refresh_secs").contains("1 to 3600"),
+            "{profile}"
+        );
+    }
+    for (profile, key) in [
+        ("sso-rate-limit-burst-zero", "rate_limit.burst"),
+        ("sso-rate-limit-refill-zero", "rate_limit.refill_per_second"),
+    ] {
+        sso_invalid(profile, key);
+    }
+}
+
+#[test]
+fn only_the_gateway_is_handed_the_identity_provider_secret() {
+    // The worker's environment has no SMS_SSO_CLIENT_SECRET, and the document
+    // still writes ${SMS_SSO_CLIENT_SECRET}: the worker drops the block before it
+    // resolves placeholders, so it starts, and is never given the secret.
+    let mut env = env_for("sso-valid");
+    assert!(env.remove("SMS_SSO_CLIENT_SECRET").is_some());
+    for binary in [Binary::Worker, Binary::ProviderTool, Binary::Operator] {
+        let loaded = load_for(binary, "sso-valid", &env)
+            .unwrap_or_else(|error| panic!("{binary:?} never reads human_login.sso: {error}"));
+        assert!(loaded.sso().is_none(), "{binary:?}");
+        assert!(
+            loaded.human_login.is_some_and(|block| block.sso.is_none()),
+            "{binary:?} keeps the rest of the block"
+        );
+    }
+    assert_eq!(
+        load_for(Binary::Gateway, "sso-valid", &env).unwrap_err(),
+        ConfigError::UnresolvedPlaceholder("SMS_SSO_CLIENT_SECRET".to_owned())
+    );
+}
+
+#[test]
+fn the_worker_still_refuses_a_literal_identity_provider_secret_under_livemode() {
+    // The literal check reads the file as written, before the worker drops the
+    // block: a leaked secret in a shared document is a leak whichever binary reads it.
+    let env = env_for("sso-livemode-literal-client-secret");
+    for binary in [Binary::Worker, Binary::ProviderTool, Binary::Operator] {
+        assert_eq!(
+            load_for(binary, "sso-livemode-literal-client-secret", &env).unwrap_err(),
+            ConfigError::LiteralSecret {
+                key: "human_login.sso.client_secret".to_owned()
+            },
+            "{binary:?}"
+        );
+    }
+}
+
+#[test]
+fn a_retired_sso_variable_the_yaml_reads_is_the_secrets_source_and_the_rest_are_refused() {
+    // SMS_SSO_CLIENT_SECRET is read as a placeholder by sso-valid, so it is the
+    // secret's source and not a leftover. Any other SMS_SSO_* variable is the old
+    // flag's and names the key that replaced it.
+    load("sso-valid").unwrap();
+    let env = env_with(
+        "sso-valid",
+        &[("SMS_SSO_REDIRECT_URI", "https://x.example/cb")],
+    );
+    assert_eq!(
+        load_in("sso-valid", &env).unwrap_err(),
+        ConfigError::RetiredEnv {
+            var: "SMS_SSO_REDIRECT_URI".to_owned(),
+            key: "op.issuer".to_owned(),
+        }
+    );
+    let env = env_with(
+        "sso-valid",
+        &[("SMS_SSO_ISSUER", "https://auth.example.org")],
+    );
+    assert!(matches!(
+        load_in("sso-valid", &env),
+        Err(ConfigError::RetiredEnv { ref key, .. }) if key == "human_login.sso.issuer"
+    ));
+}

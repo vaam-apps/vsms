@@ -15,7 +15,10 @@ pub use auth::{AuthConfig, AuthMethod, AuthMethods};
 pub use cli::{ConfigArgs, DEFAULT_PROFILE};
 pub use config::{Binary, Config};
 pub use error::ConfigError;
-pub use human_login::{CLIENT_ID_LENGTH, ConsoleClient, HumanLogin, LoginRateLimit};
+pub use human_login::{
+    CLIENT_ID_LENGTH, ConsoleClient, HumanLogin, JWKS_MIN_REFRESH_SECS, LoginRateLimit,
+    REFUSED_JIT_ROLES, Sso,
+};
 pub use model::{Api, Bucket, Database, Deployment, Security};
 pub use op::{ACCESS_TOKEN_TTL_SECS, Op, SigningKey};
 pub use provider::{

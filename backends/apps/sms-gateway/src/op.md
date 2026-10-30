@@ -48,8 +48,12 @@ every verifier can check; the other order had a window in which a token carried 
 # Restored by VSA-3a and VSA-4a, and mounted only when a method that rides it is served
 
 This module is `29f93c4^`'s, minus `/authorize` (never mounted again: the console
-reaches `handle_authorize` through `POST /login`) and the SSO discovery member
-`vsms_sso_login_endpoint` (VSA-4c). `serve` mounts [`router`] **only** when
+reaches `handle_authorize` through `POST /login`). The SSO discovery member
+`vsms_sso_login_endpoint` is back (VSA-4c): `discovery_document` adds it, the absolute
+`<op.issuer>/login/sso/start` URL, exactly when `human_login.sso` is served and
+`serve` handed the state the endpoint (`OpState::with_sso_login_endpoint`) - the console
+learns from the one authority that knows both *whether* to offer the button and *where*
+to send the browser. `serve` mounts [`router`] **only** when
 `AuthMethods::op_served` (`machine_tokens` served, or `human_login` served: the
 method permitted, its block present, and `op:` present); otherwise `/token`,
 `/jwks.json` and `/.well-known/openid-configuration` are simply not routes, and

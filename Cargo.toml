@@ -14,8 +14,7 @@ members = [
   "backends/crates/sms-api",
   # VSA-3a: the embedded OpenID Provider's stores, keys and client provisioning
   # (deleted in #446, restored for the `machine_tokens` method; VSA-4a adds the
-  # password login and the console client row). The SSO broker is VSA-4c and is not
-  # in the crate.
+  # password login and the console client row, VSA-4c adds the SSO broker).
   "backends/crates/sms-auth",
   "backends/crates/sms-worker",
   "backends/crates/sms-provider",
@@ -36,6 +35,9 @@ members = [
   # Dev/test-only fake of AWS End User Messaging SMS and its SNS receipt
   # topic, for sms-provider-aws-sms — same discipline as sms-fake-orange.
   "backends/crates/sms-fake-aws",
+  # Dev/test-only fake upstream OpenID Provider (Keycloak stand-in) for the
+  # SSO broker's tests (VSA-4c) - same discipline as sms-fake-orange above.
+  "backends/crates/sms-fake-oidc",
   "backends/crates/sms-test-support",
   "backends/apps/sms-gateway",
   "backends/apps/sms-worker",
@@ -153,6 +155,10 @@ sms-fake-orange = { path = "./backends/crates/sms-fake-orange" }
 # SNS topic its delivery events arrive through. Linked into sms-gateway only
 # behind its off-by-default `fake-aws` feature, which no release image builds.
 sms-fake-aws = { path = "./backends/crates/sms-fake-aws" }
+# Dev-only, same discipline: a fake upstream OpenID Provider (Keycloak stand-in)
+# that signs whatever id_token a test scripts, malformed ones included. No
+# production binary links against it.
+sms-fake-oidc = { path = "./backends/crates/sms-fake-oidc" }
 
 # The rename is mandatory: generated code emits absolute `::cratestack::*`
 # paths, so the facade has to be in scope under exactly that name. Pinned
@@ -244,6 +250,10 @@ axum = "0.8"
 # sms-provider-aws-sms and sms-fake-aws: RFC 3986 URL handling for the SNS
 # subscription and certificate endpoints.
 url = "2"
+# The SSO broker (sms-auth::sso, VSA-4c): constant-time comparison of the
+# single-use `state`. Already in Cargo.lock transitively (subtle 2.6), named
+# directly for the crate that calls it, no second copy.
+subtle = "2"
 
 # sms-gateway's token_rate_limit.rs (VSA-3a) parses `/token`'s form-urlencoded body
 # for `client_id`. Already in Cargo.lock through `url` and axum's `Form`; named
@@ -404,3 +414,17 @@ strip = true
 # ballooning further without losing backtrace line numbers.
 [profile.dev]
 debug = "line-tables-only"
+
+# RSA key generation (the OP's signing keys in sms-auth's tests, and the three
+# throwaway keys sms-fake-oidc generates per process) is big-integer arithmetic,
+# about ten seconds a key unoptimised. Optimising only the arithmetic crates
+# brings a 2048-bit key to well under a second without touching the debug
+# profile of anything we write.
+[profile.dev.package.num-bigint-dig]
+opt-level = 3
+[profile.dev.package.num-integer]
+opt-level = 3
+[profile.dev.package.num-traits]
+opt-level = 3
+[profile.dev.package.rsa]
+opt-level = 3

@@ -51,12 +51,13 @@ that can see this class of regression, since a hand-constructed
 The OP's stores and keys ([`op`]), a machine client's provisioning
 ([`provision`]), the console's client row ([`console_client`]: the boot check and
 the reconcile `seed-console-client` runs) and a person's password sign-in
-([`login`]: Argon2id, timing-equal for a missing account, stamping `lastLoginAt`).
-The two gates ([`gate`]) are the one question the operator commands ask before
+([`login`]: Argon2id, timing-equal for a missing account, stamping `lastLoginAt`) and,
+since VSA-4c, the single-sign-on broker ([`sso`]: the Keycloak relying party - discovery,
+the `id_token` checks, the group gate and MFA rule, just-in-time accounts - and its
+transaction table). The two gates ([`gate`]) are the one question the operator commands ask before
 they touch the database: is the method served?
 
-Not here, and VSA-4c's: `sso` (the Keycloak relying party) and its transaction
-table. Not here, and `sms_api`'s since VSA-4b: accepting a person's token at the API; this
+Not here, and `sms_api`'s since VSA-4b: accepting a person's token at the API; this
 crate issues a code and `sms-gateway` redeems it, and the API accepts what comes
 out, as that person, never as an `owner` or an `admin`.
 
