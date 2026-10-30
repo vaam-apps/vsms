@@ -237,8 +237,8 @@ fn serve_refuses_an_op_block_the_methods_do_not_permit() {
 #[test]
 fn serve_with_an_op_block_gets_past_the_loader() {
     // The control: the same document with the method permitted loads, and stops
-    // at the key files. (`[machine_tokens]` alone is refused until VSA-3b, so the
-    // control names `keypair` too.)
+    // at the key files. (It names `keypair` too, so the key files are the next
+    // thing it needs: `[machine_tokens]` alone, since VSA-3b, wants none.)
     let config = overlay_config(
         "op-ok",
         &format!(

@@ -20,6 +20,7 @@ use cratestack_codec_json::JsonCodec;
 use crate::auth::GatewayAuth;
 use crate::bearer::{ApiDoors, BearerDoorState, enforce_bearer_door};
 use crate::hmac_gate::{HmacWebhooks, enforce_hmac_gate};
+use crate::keypair_gate::{Keypair, enforce_keypair_gate};
 use crate::owner_grant::{OwnerGrantState, enforce_owner_grant_guard};
 use crate::pair_scope::enforce_pair_scope_guard;
 use crate::pepper::HashPepper;
@@ -27,6 +28,18 @@ use crate::procedures::Procedures;
 use crate::rbac::{RbacState, RoutePermission, enforce_route_permission};
 use crate::schema;
 use crate::signers::SignerDirectory;
+
+/// What `auth.methods` decided for [`router`]: the ways in that are open and
+/// whether `hmac_webhooks` is permitted. One argument and not two because the
+/// router already takes seven others, and `router(.., Permitted, keypair_only)`
+/// reads no better than a struct does.
+#[derive(Debug, Clone)]
+pub struct ApiAuth {
+    /// `auth.methods`' answer for `hmac_webhooks`.
+    pub hmac_webhooks: HmacWebhooks,
+    /// The signed envelope, a machine token, or both.
+    pub doors: ApiDoors,
+}
 
 /// The one transport (codec) the generated router is built with. Named so
 /// the request-body guard in [`crate::owner_grant`] decodes with the *same*
@@ -343,14 +356,11 @@ fn source_fingerprint(req: &Request) -> String {
 /// with are read from `ClientKey` and `ConsoleKey` on every request. Fails
 /// only if the envelope layer refuses its own configuration.
 ///
-/// `hmac_webhooks` is `auth.methods`' answer for `hmac_webhooks`
-/// ([`HmacWebhooks`]), read once by `sms-gateway serve`. It decides the generated
-/// `WebhookEndpoint` writes here and the procedures that mint a signing secret.
-///
-/// `doors` is which ways in `auth.methods` opened ([`ApiDoors`]): the signed
-/// envelope, a machine token, or both. `sms-gateway serve` builds it from
-/// `permits(keypair)` and `machine_tokens_served()`; a router with neither door
-/// cannot be built.
+/// `auth` is what `auth.methods` decided for this router ([`ApiAuth`]), read
+/// once by `sms-gateway serve`: which ways in are open (the signed envelope, a
+/// machine token, or both: [`ApiDoors`]) and whether `hmac_webhooks` is
+/// permitted ([`HmacWebhooks`]), which decides the generated `WebhookEndpoint`
+/// writes here and the procedures that mint a signing secret.
 ///
 /// `pepper` is real secret material (#134) — see `pepper.rs`'s module doc for
 /// the scheme and the rotation consequence. `sms-gateway serve`'s CLI
@@ -388,7 +398,9 @@ fn source_fingerprint(req: &Request) -> String {
 ///    puts both doors in **one** bucket and **one** idempotency namespace;
 /// 5. the Layer 2 guards: [`enforce_owner_grant_guard`] and the four
 ///    [`enforce_route_permission`] instances, which read the verified signer
-///    through [`GatewayAuth`], and, innermost of them, [`enforce_hmac_gate`]
+///    through [`GatewayAuth`], and, innermost of them, [`enforce_keypair_gate`]
+///    (VSA-3b: a key registration is a 422 when `keypair` is not permitted) and
+///    [`enforce_hmac_gate`]
 ///    (VSA-1), which refuses a webhook endpoint write that makes an `hmac`
 ///    endpoint when `auth.methods` does not permit `hmac_webhooks` and is a no-op
 ///    otherwise: placed under the RBAC layers so a caller who lacks
@@ -442,16 +454,20 @@ pub fn router(
     idempotency_ttl: Duration,
     rate_limit: RateLimitConfig,
     source_rate_limit: RateLimitConfig,
-    hmac_webhooks: HmacWebhooks,
-    doors: ApiDoors,
+    auth: ApiAuth,
 ) -> Result<Router, CratestackError> {
+    let ApiAuth {
+        hmac_webhooks,
+        doors,
+    } = auth;
     let directory = SignerDirectory::new(db.clone());
-    let auth = GatewayAuth::new(directory.clone());
+    let gateway_auth = GatewayAuth::new(directory.clone());
     let envelope = crate::envelope::layer(signer, &db, directory.clone(), &doors)?;
+    let keypair = Keypair::from_permitted(doors.keypair());
     let bearer_door_state = BearerDoorState { doors, directory };
 
     let rbac_state = RbacState {
-        auth: auth.clone(),
+        auth: gateway_auth.clone(),
         requirements: PROVIDER_WRITE_ROUTES,
     };
     // #56/#57: a second, independent `enforce_route_permission` instance
@@ -463,24 +479,26 @@ pub fn router(
     // layers with disjoint route sets compose exactly like one layer with
     // the union would).
     let job_rbac_state = RbacState {
-        auth: auth.clone(),
+        auth: gateway_auth.clone(),
         requirements: JOB_READ_ROUTES,
     };
     // #54: a third, independent instance; same reasoning.
     let provider_route_rbac_state = RbacState {
-        auth: auth.clone(),
+        auth: gateway_auth.clone(),
         requirements: PROVIDER_ROUTE_READ_ROUTES,
     };
     // #53/#55: a fourth, independent instance; same reasoning.
     let sender_and_webhook_rbac_state = RbacState {
-        auth: auth.clone(),
+        auth: gateway_auth.clone(),
         requirements: SENDER_AND_WEBHOOK_WRITE_ROUTES,
     };
     // Who may hand out `owner`: the write-path half of the guard whose
     // schema half is `User`'s `@@allow("create"/"update")` — see
     // `owner_grant.md`. Another independent layer, for the reason every
     // `RbacState` above is one.
-    let owner_grant_state = OwnerGrantState { auth: auth.clone() };
+    let owner_grant_state = OwnerGrantState {
+        auth: gateway_auth.clone(),
+    };
     let idempotency_store: Arc<dyn IdempotencyStore> =
         Arc::new(SqlxIdempotencyStore::new(db.pool().clone()));
     let rate_limit_store: Arc<dyn RateLimitStore> = Arc::new(InMemoryRateLimitStore::new());
@@ -498,10 +516,13 @@ pub fn router(
         Procedures::new(pepper, hmac_webhooks),
         (),
         ROUTER_CODEC,
-        auth,
+        gateway_auth,
         cratestack::DEFAULT_BODY_LIMIT_BYTES,
     )
-    // VSA-1: innermost, so every RBAC layer below has already spoken.
+    // VSA-3b: innermost, so every layer below has already spoken: a key
+    // registration is refused when `keypair` is not permitted.
+    .layer(from_fn_with_state(keypair, enforce_keypair_gate))
+    // VSA-1: next, still under every RBAC layer.
     .layer(from_fn_with_state(hmac_webhooks, enforce_hmac_gate))
     .layer(from_fn_with_state(rbac_state, enforce_route_permission))
     .layer(from_fn_with_state(job_rbac_state, enforce_route_permission))
@@ -591,8 +612,10 @@ mod tests {
             DEFAULT_IDEMPOTENCY_TTL,
             rate_limit,
             source_rate_limit,
-            HmacWebhooks::Permitted,
-            ApiDoors::keypair_only(),
+            ApiAuth {
+                hmac_webhooks: HmacWebhooks::Permitted,
+                doors: ApiDoors::keypair_only(),
+            },
         )
         .expect("the envelope layer accepts its own configuration")
     }

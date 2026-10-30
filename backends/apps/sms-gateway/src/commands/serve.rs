@@ -8,13 +8,14 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use cratestack::FilterExpr;
 use cratestack::sqlx::postgres::PgPoolOptions;
-use sms_api::HmacWebhooks;
 use sms_api::schema::{Cratestack, provider as provider_filter};
+use sms_api::{BearerVerifier, HmacWebhooks};
 use sms_config::{AuthMethod, Binary, Providers};
 use sms_provider::SmsProvider;
 use tracing::{info, warn};
 
 use crate::commands::server_keys;
+use crate::op_bearer::{DbKeys, OpBearerVerifier};
 use crate::{dlr, health, op, token_rate_limit};
 use sms_api::system_context;
 
@@ -311,7 +312,8 @@ pub(crate) async fn serve_command(args: ServeArgs) -> Result<()> {
     let health_router = health::router(db.clone());
     // VSA-3a: the `OpenID` Provider, mounted only when `machine_tokens` is served
     // (permitted and `op:` written). Built before `sms_api::router` takes `db`.
-    let op_router = build_op_router(&db, &config).await?;
+    // VSA-3b: the same provider's keys are what the API verifies a bearer with.
+    let (op_router, doors) = build_op_and_doors(&db, &config).await?;
 
     let ServeArgs {
         listen,
@@ -334,10 +336,10 @@ pub(crate) async fn serve_command(args: ServeArgs) -> Result<()> {
             api.source_rate_limit.burst,
             api.source_rate_limit.refill_per_second,
         ),
-        hmac_webhooks,
-        // VSA-3b, next commit: the bearer door's verifier is built from the
-        // provider's own keys.
-        sms_api::ApiDoors::keypair_only(),
+        sms_api::ApiAuth {
+            hmac_webhooks,
+            doors,
+        },
     )
     .context("assembling the signed-transport router")?
     // Everything merged from here on sits OUTSIDE the envelope layer, which
@@ -351,8 +353,9 @@ pub(crate) async fn serve_command(args: ServeArgs) -> Result<()> {
     .merge(health_router)
     .merge(auth_discovery);
     // `/token`, `/jwks.json` and the discovery document sit outside the envelope
-    // too: a caller of `/token` has no key to sign with, it is asking for a
-    // token. With `machine_tokens` off they are not routes at all (404).
+    // and the bearer door too: a caller of `/token` has no key to sign with and
+    // no token yet, it is asking for one. With `machine_tokens` off they are not
+    // routes at all (404).
     let app = match op_router {
         Some(op_router) => app.merge(op_router),
         None => app,
@@ -419,6 +422,22 @@ async fn spawn_metrics_server(
     }))
 }
 
+/// The provider's routes, when `machine_tokens` is served, and the doors the API
+/// opens: the signed envelope when `keypair` is permitted, a bearer token exactly
+/// when `machine_tokens` is served.
+async fn build_op_and_doors(
+    db: &Cratestack,
+    config: &sms_config::Config,
+) -> Result<(Option<axum::Router>, sms_api::ApiDoors)> {
+    let (op_router, bearer) = match build_op_router(db, config).await? {
+        Some((router, verifier)) => (Some(router), Some(verifier)),
+        None => (None, None),
+    };
+    let doors = sms_api::ApiDoors::new(config.auth_methods.permits(AuthMethod::Keypair), bearer)
+        .context("auth.methods opens no way into the API")?;
+    Ok((op_router, doors))
+}
+
 /// Loads the OP's signing keys, assembles its state and starts the background key
 /// refresh, **when `machine_tokens` is served**; `Ok(None)` mounts nothing.
 ///
@@ -430,7 +449,7 @@ async fn spawn_metrics_server(
 async fn build_op_router(
     db: &Cratestack,
     config: &sms_config::Config,
-) -> Result<Option<axum::Router>> {
+) -> Result<Option<(axum::Router, Arc<dyn BearerVerifier>)>> {
     if !config.auth_methods.machine_tokens_served() {
         return Ok(None);
     }
@@ -457,6 +476,15 @@ async fn build_op_router(
     );
     // Keeps a rotate-signing-key run against this already-running process
     // effective without a restart.
+    let verifier: Arc<dyn BearerVerifier> = Arc::new(OpBearerVerifier::new(
+        state.keyring(),
+        Arc::new(DbKeys {
+            db: db.clone(),
+            sys: sys.clone(),
+            issuer: op_config.issuer.clone(),
+        }),
+        &op_config.issuer,
+    ));
     op::spawn_key_refresh(
         state.clone(),
         db.clone(),
@@ -469,12 +497,11 @@ async fn build_op_router(
             op_config.token_rate_limit.burst,
             op_config.token_rate_limit.refill_per_second,
         ));
-    warn!(
+    info!(
         issuer = %op_config.issuer,
-        "machine_tokens is served: /token mints tokens, but the API does not accept a bearer \
-         token yet (VSA-3b), so a token is verifiable against /jwks.json and nothing else"
+        "machine_tokens is served: /token mints tokens and the API accepts them as a bearer"
     );
-    Ok(Some(op::router(state, limit)))
+    Ok(Some((op::router(state, limit), verifier)))
 }
 
 /// The boot line for `auth.methods` (VSA-1): which methods are permitted, which

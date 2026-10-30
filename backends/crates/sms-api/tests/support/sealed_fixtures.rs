@@ -74,8 +74,10 @@ pub fn api_router_doors(
         sms_api::DEFAULT_IDEMPOTENCY_TTL,
         sms_api::default_rate_limit_config(),
         sms_api::default_source_rate_limit_config(),
-        hmac,
-        doors,
+        sms_api::ApiAuth {
+            hmac_webhooks: hmac,
+            doors,
+        },
     )
     .expect("the envelope layer accepts its configuration")
 }

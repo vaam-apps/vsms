@@ -238,20 +238,20 @@ pub async fn enforce_bearer_door(
         return next.run(request).await;
     }
 
-    let Some(verifier) = state.doors.bearer.as_ref() else {
+    let Some(checker) = state.doors.bearer.as_ref() else {
         return unauthenticated();
     };
-    let verified = match authenticate_bearer(verifier.as_ref(), request.headers()).await {
-        Ok(verified) => verified,
+    let claims = match authenticate_bearer(checker.as_ref(), request.headers()).await {
+        Ok(claims) => claims,
         Err(refusal) => {
             tracing::debug!(%refusal, "a bearer token was refused");
             return unauthenticated();
         }
     };
-    let standing = match state.directory.bearer_standing(&verified).await {
+    let standing = match state.directory.bearer_standing(&claims).await {
         Ok(standing) => standing,
         Err(CratestackError::Unauthorized(_)) => {
-            tracing::debug!(client_id = %verified.client_id, "a verified token's client has no standing");
+            tracing::debug!(client_id = %claims.client_id, "a verified token's client has no standing");
             return unauthenticated();
         }
         Err(error) => return error_response(&error),
@@ -382,11 +382,11 @@ mod tests {
         (status, String::from_utf8_lossy(&body).into_owned())
     }
 
-    fn ok_claims() -> Result<VerifiedBearer, BearerRefusal> {
-        Ok(VerifiedBearer {
+    fn ok_claims() -> VerifiedBearer {
+        VerifiedBearer {
             client_id: "appc_demo".to_owned(),
             scope: None,
-        })
+        }
     }
 
     /// One caller, one credential: a signed request carrying `Authorization` is
@@ -394,7 +394,7 @@ mod tests {
     /// never reaches the handler.
     #[tokio::test]
     async fn a_signed_request_carrying_authorization_is_a_400() {
-        for bearer in [None, Some(ok_claims())] {
+        for bearer in [None, Some(Ok(ok_claims()))] {
             let (status, body) = call(app(bearer, true), Some("Bearer anything")).await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
             assert!(
@@ -406,7 +406,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_signed_request_without_authorization_passes_the_door() {
-        let (status, body) = call(app(Some(ok_claims()), true), None).await;
+        let (status, body) = call(app(Some(Ok(ok_claims())), true), None).await;
         assert_eq!(
             (status, body.as_str()),
             (StatusCode::OK, "reached the handler")
@@ -452,8 +452,8 @@ mod tests {
         for (bearer, authorization) in [
             (None, Some("Bearer tok")),
             (None, None),
-            (Some(ok_claims()), None),
-            (Some(ok_claims()), Some("Basic dXNlcjpwYXNz")),
+            (Some(Ok(ok_claims())), None),
+            (Some(Ok(ok_claims())), Some("Basic dXNlcjpwYXNz")),
         ] {
             let (status, body) = call(app(bearer.clone(), false), authorization).await;
             assert_eq!(

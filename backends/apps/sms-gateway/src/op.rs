@@ -1,5 +1,6 @@
 #![doc = include_str!("op.md")]
 
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -16,6 +17,7 @@ use axum::middleware::from_fn_with_state;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use cratestack::CratestackContext;
+use jsonwebtoken::DecodingKey;
 use sms_api::schema::Cratestack;
 use sms_auth::op::MachineOnlyOpStore;
 
@@ -26,13 +28,13 @@ use crate::token_rate_limit::{TokenRateLimitState, enforce_token_client_rate_lim
 /// [`Self::publish`] takes them in the one order that never lets a token carry a
 /// `kid` the JWKS does not advertise. Generic so a test can drive the order with
 /// plain values.
-struct Keyring<T, J> {
+pub(crate) struct Keyring<T, J> {
     tokens: RwLock<Arc<T>>,
     jwks: RwLock<Arc<J>>,
 }
 
 impl<T, J> Keyring<T, J> {
-    fn new(tokens: Arc<T>, jwks: J) -> Self {
+    pub(crate) fn new(tokens: Arc<T>, jwks: J) -> Self {
         Self {
             tokens: RwLock::new(tokens),
             jwks: RwLock::new(Arc::new(jwks)),
@@ -70,10 +72,65 @@ impl<T, J> Keyring<T, J> {
     }
 }
 
+/// The public half of the OP's signing keys, in the two forms something asks
+/// for: the JWKS `/jwks.json` publishes, and the same keys ready to verify with.
+///
+/// One value under the keyring's one lock, so the key a token is verified with
+/// and the key the JWKS advertises are the same key set, published at the same
+/// instant, and [`Keyring::publish`]'s order (key set first) holds for the
+/// bearer door exactly as it does for a remote verifier reading `/jwks.json`:
+/// no token can carry a `kid` the door has not got yet.
+pub(crate) struct PublishedKeys {
+    jwks: Vec<Jwk>,
+    verify: HashMap<String, Arc<DecodingKey>>,
+}
+
+impl PublishedKeys {
+    /// Builds the verification keys from `jwks`. A key with no `kid` or no RSA
+    /// components is published (the JWKS is what it was) but cannot verify,
+    /// which is what a token naming it deserves.
+    pub(crate) fn new(jwks: Vec<Jwk>) -> Self {
+        let verify = jwks
+            .iter()
+            .filter_map(|jwk| {
+                let kid = jwk.kid.clone()?;
+                let key = DecodingKey::from_rsa_components(jwk.n.as_deref()?, jwk.e.as_deref()?)
+                    .inspect_err(|error| {
+                        tracing::warn!(%kid, %error, "an OP signing key cannot verify tokens");
+                    })
+                    .ok()?;
+                Some((kid, Arc::new(key)))
+            })
+            .collect();
+        Self { jwks, verify }
+    }
+
+    /// The key a token whose header names `kid` is verified with.
+    pub(crate) fn decoding_key(&self, kid: &str) -> Option<Arc<DecodingKey>> {
+        self.verify.get(kid).cloned()
+    }
+}
+
+/// What a rotation changes, shared with the bearer door: see [`Keyring`].
+pub(crate) type OpKeyring = Keyring<TokenManager, PublishedKeys>;
+
+impl OpKeyring {
+    /// Swaps in a freshly loaded key set and signing key, the key set first
+    /// ([`Keyring::publish`]).
+    pub(crate) fn refresh(&self, tokens: Arc<TokenManager>, jwks: Vec<Jwk>) {
+        self.publish(tokens, PublishedKeys::new(jwks));
+    }
+
+    /// The key a token naming `kid` is verified with.
+    pub(crate) fn decoding_key(&self, kid: &str) -> Option<Arc<DecodingKey>> {
+        self.jwks().decoding_key(kid)
+    }
+}
+
 #[derive(Clone)]
 pub struct OpState {
     store: Arc<MachineOnlyOpStore>,
-    keys: Arc<Keyring<TokenManager, Vec<Jwk>>>,
+    keys: Arc<OpKeyring>,
     config: OpConfig,
 }
 
@@ -87,7 +144,7 @@ impl OpState {
     ) -> Self {
         Self {
             store: Arc::new(store),
-            keys: Arc::new(Keyring::new(tokens, jwks)),
+            keys: Arc::new(Keyring::new(tokens, PublishedKeys::new(jwks))),
             config,
         }
     }
@@ -96,7 +153,13 @@ impl OpState {
     /// ([`Keyring::publish`]) — see [`spawn_key_refresh`], the only caller. Two
     /// steps, not one atomic swap.
     fn refresh(&self, tokens: Arc<TokenManager>, jwks: Vec<Jwk>) {
-        self.keys.publish(tokens, jwks);
+        self.keys.refresh(tokens, jwks);
+    }
+
+    /// The keyring the bearer door verifies against: the very one `/jwks.json`
+    /// publishes from, so the two cannot disagree about which keys exist.
+    pub(crate) fn keyring(&self) -> Arc<OpKeyring> {
+        self.keys.clone()
     }
 }
 
@@ -130,8 +193,8 @@ impl FromRef<OpState> for OpConfig {
 }
 
 async fn jwks_handler(State(state): State<OpState>) -> Json<JwksResponse> {
-    let jwks = state.keys.jwks();
-    Json(JwksResponse::new((*jwks).clone()))
+    let published = state.keys.jwks();
+    Json(JwksResponse::new(published.jwks.clone()))
 }
 
 /// Builds the discovery document with `private_key_jwt` advertised in

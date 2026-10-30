@@ -59,8 +59,8 @@ deployment:
 # served (when `auth.methods` permits `machine_tokens`); absent means no tokens.
 # Not written here, on purpose: serving it needs an active signing key in the
 # database (`sms-gateway rotate-signing-key`, once), and `serve` refuses to start
-# without one. The tokens are minted by this release and not yet accepted by the
-# API (VSA-3b). Every key is required; there is no secret in this block (the
+# without one. The API accepts the tokens as a bearer beside the signed envelope
+# (VSA-3b). Every key is required; there is no secret in this block (the
 # signing keys are database rows). docs/architecture.md, section 4.2.
 #
 # op:

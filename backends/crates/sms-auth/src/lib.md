@@ -15,8 +15,10 @@ and `@@emit`, which is exactly what R1 exists to prevent.
 Neither type mounts a router or owns a connection pool — `sms-auth` links
 `sms-api` for the expanded schema and nothing else. Wiring these into
 `authkestra_op::CompositeOpStore` is [`op`], the OP router itself is
-`sms-gateway`'s `op.rs`; wiring
-their output into an `AuthProvider` is VSA-3b.
+`sms-gateway`'s `op.rs`; accepting
+their output as a bearer is VSA-3b: `sms-gateway`'s `op_bearer.rs` verifies the
+token against the keys `load_signing_keys` loads, and `sms_api::bearer` reads the
+caller from rows.
 
 # Why `record_jti` reads `db_sqlstate()` rather than pre-checking
 

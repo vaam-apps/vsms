@@ -245,13 +245,12 @@ pub enum ConfigError {
 
     /// `auth.methods` permits nothing that can authenticate a caller of the API,
     /// so the gateway would answer every request with the unsigned 401. That is a
-    /// list without `keypair`: vpay's rule is neither `keypair` nor
-    /// `machine_tokens`, and `machine_tokens` counts here once the API accepts a
-    /// bearer token (VSA-3b).
+    /// list with neither `keypair` nor `machine_tokens` (vpay's rule); the API
+    /// accepts a machine token since VSA-3b.
     #[error(
         "auth.methods permits nothing that can authenticate a caller: hmac_webhooks signs what \
-         vsms sends, human_login signs a person in to the console, and the API does not accept \
-         a machine_tokens bearer token yet (VSA-3b); none says who an API caller is. Add keypair"
+         vsms sends and human_login signs a person in to the console; neither says who an API \
+         caller is. Add keypair or machine_tokens"
     )]
     NoWayIn,
 

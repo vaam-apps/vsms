@@ -52,8 +52,9 @@ the `op:` block present); otherwise `/token`, `/jwks.json` and
 any other path (`tests/machine_tokens_live_postgres.rs`,
 `with_the_method_off_nothing_is_mounted_and_the_commands_refuse`). The routes sit **outside** the
 envelope layer, as before: a `/token` caller has no key to sign with yet, it is
-asking for a token. A token this module mints is not yet accepted by the API
-(VSA-3b adds the bearer realm); until then it is minted and verifiable against
-`/jwks.json` and nothing else.
+asking for a token. A token this module mints is accepted by the API as a bearer
+(VSA-3b): `op_bearer` verifies it against the keyring this module publishes
+`/jwks.json` from, and `sms_api::bearer` turns it into a caller. The routes
+stay outside both doors, because they are how a caller gets a token.
 
 <!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->

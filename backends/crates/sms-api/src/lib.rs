@@ -38,6 +38,7 @@ pub mod dlr;
 pub mod envelope;
 pub mod errors;
 pub mod hmac_gate;
+pub mod keypair_gate;
 pub mod metrics;
 pub mod owner_grant;
 pub mod pair_scope;
@@ -55,11 +56,12 @@ pub use auth::{GatewayAuth, Principal, PrincipalKind, system_context};
 pub use bearer::{ApiDoors, BearerRefusal, BearerVerifier, NoDoor, VerifiedBearer};
 pub use errors::{is_illegal_transition, map_database_error};
 pub use hmac_gate::{AUTH_METHOD_DISABLED, HmacBoot, HmacWebhooks};
+pub use keypair_gate::Keypair;
 pub use pepper::{HashPepper, PepperError, hmac_sha256_hex};
 pub use procedures::Procedures;
 pub use rbac::require_permission;
 pub use router::{
-    DEFAULT_IDEMPOTENCY_TTL, default_rate_limit_config, default_source_rate_limit_config,
+    ApiAuth, DEFAULT_IDEMPOTENCY_TTL, default_rate_limit_config, default_source_rate_limit_config,
     route_table, router,
 };
 pub use webhooks::register_subscribers;

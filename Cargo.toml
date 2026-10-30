@@ -203,8 +203,9 @@ authkestra-op = { version = "=0.8.0", default-features = false, features = ["rus
 authkestra-engine = { version = "=0.8.0", default-features = false, features = ["token", "rustls-no-provider"] }
 # Wraps authkestra-op's handler functions into axum routes for the OP
 # itself (#20). Only the `op` feature: this deployment never uses the
-# `session`/`resource` extractors this crate also offers (the bearer realm of
-# VSA-3b is hand-written against the JWKS, not an authkestra extractor). Same
+# `session`/`resource` extractors this crate also offers (the bearer door of
+# VSA-3b is hand-written against the OP's own keys, not an authkestra extractor,
+# and `authkestra-resource`'s HTTP `JwksCache` is not linked at all). Same
 # `rustls-no-provider` reasoning as authkestra-op above.
 authkestra-axum = { version = "=0.8.0", default-features = false, features = ["op", "rustls-no-provider"] }
 # sms-fake-aws: the RSA key behind its fake SNS signing identity. sms-auth
@@ -221,10 +222,12 @@ ring = "0.17"
 # client_keys.rs / console_keys.rs / envelope.rs: base64url public keys and
 # the PKCS#8 PEM body of the server's signing key.
 base64 = "0.22"
-# sms-gateway's machine_tokens_live_postgres.rs signs a client assertion and
-# verifies the access token the OP minted against its /jwks.json. The same
-# version authkestra-op itself requires (Cargo.lock resolves one copy, with
-# `rust_crypto`). Dev-only here; no production code of ours links it.
+# sms-gateway's op_bearer.rs (VSA-3b) verifies the access token the OP minted,
+# against the key set the OP itself signs with, and its machine_tokens_live_postgres.rs
+# signs a client assertion. The same version authkestra-op itself requires
+# (Cargo.lock resolves one copy, with `rust_crypto`). Production code of ours
+# links it in that one file; RUSTSEC-2023-0071 (deny.toml) covers this second
+# RS256 verify site as it covers the first.
 jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
 axum = "0.8"
 

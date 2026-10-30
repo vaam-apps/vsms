@@ -40,7 +40,13 @@ rust_decimal.workspace = true
 sms-core.workspace = true
 
 anyhow.workspace = true
+# op_bearer.rs: the BearerVerifier and KeyReload traits are async.
+async-trait.workspace = true
 clap.workspace = true
+# op_bearer.rs (VSA-3b) verifies a machine token's RS256 signature and claims
+# against the OP's own key set; machine_tokens_live_postgres.rs also signs a
+# client assertion with it.
+jsonwebtoken.workspace = true
 dotenvy.workspace = true
 # main.rs installs the process-wide default `CryptoProvider` before
 # constructing any HTTP client — see that call site's own comment.
@@ -67,14 +73,13 @@ fake-aws = ["dep:sms-fake-aws"]
 # The acceptance gates spawn the real `sms-gateway` binary
 # (`CARGO_BIN_EXE_sms-gateway`, only available to an integration test inside
 # this same package) and drive it over real HTTP with sealed requests.
-async-trait.workspace = true
 base64.workspace = true
-# machine_tokens_live_postgres.rs signs a client assertion and verifies the
-# minted access token against /jwks.json.
-jsonwebtoken.workspace = true
 # pair_console_key_cli_live_postgres.rs mints a P-256 public key to enrol.
 p256.workspace = true
 rand.workspace = true
+# op_bearer.rs's unit tests sign tokens with RSA keys they generate, so no
+# private key is committed.
+rsa.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
