@@ -295,7 +295,13 @@ Each of those endpoints stays, but is no longer sent to: no worker claims its
 attempts, so they stay *pending*, untouched, and are not counted against the
 endpoint's `max_attempts` or its circuit breaker. They keep accumulating, one per
 event, until you act, and the `waiting` column above is how many there are. Each
-`hooks` worker with the method off warns every five minutes with `held=<count>`.
+`hooks` worker with the method off warns every five minutes with `held=<count>`
+(the count stops at 10001 and reads `more than 10000` beyond it: the `waiting`
+column above is the exact figure).
+`replayWebhookAttempt` of one of those endpoints' attempts is refused too (`422`,
+`auth_method_disabled`): a replayed attempt would be reset to *pending* and held
+like the rest, so the call would answer `200` and send nothing. A `sealed`
+endpoint's attempts replay as ever.
 The way out for a receiver is `switchWebhookDeliveryMode` to `sealed` (an operator
 with `webhook:manage`; the receiver then needs an opener, see
 `docs/integrating.md`): the attempts that waited are then delivered *sealed*, since
@@ -304,6 +310,32 @@ can be deactivated (its attempts then wait for no worker and are no longer count
 in the warning) or deleted as before. To resume the deliveries as they were, permit
 `hmac_webhooks` again and restart the workers: the next claim delivers them, with
 no replay.
+
+*Releasing a held backlog.* When the method returns, or the endpoints are
+switched to `sealed`, the held attempts are delivered oldest first and ahead of
+the fresh ones, at about 20 a second for each `hooks` worker (a poll every second
+claims at most 20), so a deep backlog delays today's events for as long as it
+takes to drain. Each is delivered with `occurredAt` set to the _delivery_ time,
+because an attempt carries no creation time: a receiver sees an event from last
+month stamped now. If the oldest are no longer worth sending, delete them first,
+with the cutoff you choose (the count, then the delete):
+
+[,bash]
+----
+psql "$DATABASE_URL" -c "
+  SELECT count(*) FROM webhook_attempts a JOIN webhook_endpoints e ON e.id = a.endpoint_id
+   WHERE e.delivery_mode = 'hmac' AND a.state IN ('pending', 'failed')
+     AND a.next_attempt_at < now() - interval '7 days'"
+psql "$DATABASE_URL" -c "
+  DELETE FROM webhook_attempts a USING webhook_endpoints e
+   WHERE e.id = a.endpoint_id AND e.delivery_mode = 'hmac'
+     AND a.state IN ('pending', 'failed')
+     AND a.next_attempt_at < now() - interval '7 days'"
+----
+
+Add `AND e.id = '<endpoint id>'` to release one endpoint's backlog and keep the
+others. A deleted attempt is an event that endpoint never receives, and nothing
+re-creates it.
 
 A `hooks` worker with the method off and no `--envelope-signing-key-file` serves
 nothing, `hmac` or `sealed`, and says so at start. It still starts, because the
