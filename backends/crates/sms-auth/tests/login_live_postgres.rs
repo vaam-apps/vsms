@@ -528,10 +528,6 @@ async fn an_unknown_email_sends_the_same_statements_as_every_other_refusal() {
         .expect_err("refused");
 
     let unknown = statements_of_a_refusal(&db, "nobody-at-all@example.test", &wrong).await;
-    assert!(
-        unknown >= 2,
-        "the count must see the statements at all ({unknown}): is sqlx logging them?"
-    );
     for (name, email) in [
         ("a wrong password", &active.email),
         ("an inactive account", &inactive.email),
@@ -543,4 +539,8 @@ async fn an_unknown_email_sends_the_same_statements_as_every_other_refusal() {
             "{name} must send exactly the statements an unknown email does"
         );
     }
+    assert!(
+        unknown >= 2,
+        "the count must see the statements at all ({unknown}): is sqlx logging them?"
+    );
 }
