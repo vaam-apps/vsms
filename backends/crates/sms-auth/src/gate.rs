@@ -70,7 +70,7 @@ impl MachineTokens {
 #[error(
     "auth_method_disabled: this deployment mounts no OpenID Provider ({reason}), so it has no \
      signing key to rotate; the provider is mounted when machine_tokens or human_login is \
-     served"
+     served (a machine client can register a signing key with register-client instead)"
 )]
 pub struct ProviderNotServed {
     reason: &'static str,

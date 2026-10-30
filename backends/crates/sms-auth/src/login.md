@@ -28,11 +28,14 @@ path, it does not replace it).
   at `warn` and only a test that reads the column back can see it
   (`login_live_postgres`). The stamp is under the row's `@version`: a concurrent
   edit that moved it skips the stamp, never the login.
-- **A role a person must never hold ends the sign-in** ([`LoginError::ReservedRole`]):
-  the database refuses a `Role` keyed `system`/`app` (`roles_key_not_reserved_check`)
-  and `sms_api::signers` refuses one at the point of use; this is a third refusal
-  at the point a code would be issued, so a corrupted row does not mint a code.
-  The caller still hears the generic refusal.
+- **It does not look at what the role is.** A `Role` keyed `system` or `app` is
+  refused twice already, independently of this module: the database CHECK
+  (`roles_key_not_reserved_check`) will not create one, and `sms_api::signers`
+  refuses one at the point of use (`reserved_role_live_postgres` proves the second
+  with the first removed). A code issued to such a person opens nothing, because
+  the API re-resolves the role from rows on every request. A third refusal here
+  would be untestable without a thirteenth raw-SQL exception (R1), so there is
+  none.
 - **An outage is not a refusal** ([`LoginError::Unavailable`]): a database error is
   reported as one (the gateway answers 503), not as "invalid email or password".
   It reveals nothing about whether the account exists, because it does not depend

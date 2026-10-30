@@ -1,7 +1,6 @@
 #![doc = include_str!("login.md")]
 
 use cratestack::{CratestackContext, CratestackError, FilterExpr};
-use sms_api::auth::RESERVED_ROLE_KEYS;
 use sms_api::schema::{self, Cratestack, UpdateUserInput, role, user, user_credential};
 use sms_core::password::{hash_password, verify_password};
 use sms_core::unpack;
@@ -74,17 +73,6 @@ pub enum LoginError {
         /// The `Role.key` that named no row.
         role_key: String,
     },
-    /// The password was right and the account's role is one a person must never
-    /// hold (`system`, `app`: [`RESERVED_ROLE_KEYS`]). The database refuses to
-    /// create such a role; this is the second, independent refusal, at the point
-    /// a code would be issued. The caller still hears the generic refusal.
-    #[error("user {subject:?} holds the reserved role {role_key:?}")]
-    ReservedRole {
-        /// `User.id` of the account.
-        subject: String,
-        /// The reserved key.
-        role_key: String,
-    },
     /// The database could not answer. Not a refusal of the person: reported as an
     /// outage so a login that failed for infrastructure is not read as a wrong
     /// password. It reveals nothing about whether the account exists.
@@ -148,12 +136,6 @@ pub async fn authenticate_user(
             subject: user_row.id.clone(),
             role_key: user_row.roleKey.clone(),
         })?;
-    if RESERVED_ROLE_KEYS.contains(&role_row.key.as_str()) {
-        return Err(LoginError::ReservedRole {
-            subject: user_row.id,
-            role_key: role_row.key,
-        });
-    }
 
     stamp_last_login(db, &sys, &user_row).await;
 

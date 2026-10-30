@@ -176,7 +176,7 @@ fn failure(status: StatusCode, error: &'static str) -> Response {
 
 /// The one answer to every refusal of the person or the attempt: an unknown
 /// account, a wrong password, an inactive or deleted account, no password set, a
-/// broken or reserved role, **and a `client_id` that is not the console's**.
+/// broken role, **and a `client_id` that is not the console's**.
 fn refused() -> Response {
     failure(StatusCode::UNAUTHORIZED, "invalid_credentials")
 }
@@ -221,7 +221,7 @@ async fn login_handler(
     {
         Ok(authenticated) => authenticated,
         Err(LoginError::InvalidCredentials) => return refused(),
-        Err(error @ (LoginError::RoleNotFound { .. } | LoginError::ReservedRole { .. })) => {
+        Err(error @ LoginError::RoleNotFound { .. }) => {
             // An operator-visible data-integrity problem, not a credentials one:
             // logged with its detail, answered exactly as a wrong password.
             tracing::error!(%error, "login refused for a correct password");

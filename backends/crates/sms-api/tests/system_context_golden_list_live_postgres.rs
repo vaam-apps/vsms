@@ -214,10 +214,13 @@ static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
 ///   `sms-gateway:op` in `serve` and `rotate-signing-key`; `provision-client`
 ///   labels its own). `hasRole('system')` is the whole policy of each, so the
 ///   live half proves a system context sees its rows.
-/// - `UserCredential`, `SsoTransaction` — restored by VSA-2 and read by nothing
-///   yet: the login and SSO broker (VSA-4) will read and write them under `sys`.
-///   Same policy, same reason to prove it before a reader exists to find out the
-///   hard way.
+/// - `UserCredential` — restored by VSA-2 and read since VSA-4a by
+///   `sms_auth::login::authenticate_user` (actor `sms-gateway:login`), and read and
+///   written by `provision-user --password` (actor `sms-gateway:provision-user`).
+///   `hasRole('system')` is the whole policy.
+/// - `SsoTransaction` — restored by VSA-2 and read by nothing yet: the SSO broker
+///   (VSA-4c) will read and write it under `sys`. Same policy, same reason to
+///   prove it before a reader exists to find out the hard way.
 /// - `EnvelopeNonce` — the signed transport's replay cache (VS-3): the nonce
 ///   store records, takes over and the worker sweeps it, all under `sys`.
 /// - `SenderId`, `SenderIdRegistration` — `Procedures::resolve_sender_id`.
@@ -280,9 +283,9 @@ const SYSTEM_READABLE_MODELS: &[&str] = &[
     "App",
     "AppClient",
     // VSA-2: the five models of the OpenID Provider and the human-login plane,
-    // restored with `hasRole('system')` as the whole policy and no reader yet.
-    // Listed now, not when VSA-3/4 add the readers, so the live half proves on
-    // day one that the context those readers will use can see its own rows.
+    // restored with `hasRole('system')` as the whole policy. Listed when they
+    // were restored, before VSA-3/4 added the readers, so the live half proves
+    // the context those readers use can see its own rows.
     "OauthClient",
     "OauthSigningKey",
     "ClientAssertion",
@@ -1035,8 +1038,13 @@ async fn seed_and_verify_role(db: &Cratestack, suffix: &str) -> schema::Role {
 /// #194: `sms_api::signers::SignerDirectory`'s own `User`-by-id lookup runs
 /// under `sys` — the first internal system-context reader this model had,
 /// and the reason its `read` `@@allow` clause gained `hasRole('system')`
-/// (`update` had it too until VS-4 deleted the login that needed it). Neither reader writes `User` under `sys`
-/// (this seed only proves the read).
+/// (`update` had it too until VS-4 deleted the login that needed it, and VSA-4a
+/// restored it). The signer directory only reads `User`; the **write** under `sys`
+/// is `sms_auth::login::authenticate_user` stamping `lastLoginAt`, so this seed
+/// proves the update half too: a `system` context can write the row it can read,
+/// and the write lands (it is `UPDATE ... WHERE <policy>`, so a policy that did not
+/// admit `system` would affect zero rows and fail here by name, not by a silent
+/// no-op in the login).
 async fn seed_and_verify_user(db: &Cratestack, suffix: &str, role_key: &str) -> schema::User {
     let seeded = db
         .user()
@@ -1059,6 +1067,30 @@ async fn seed_and_verify_user(db: &Cratestack, suffix: &str, role_key: &str) -> 
         "User",
         "@@allow(\"read\", hasRole('owner') || hasRole('admin') || hasRole('auditor') \
          || hasRole('system'))"
+    );
+    // The update half (VSA-4a): the one write a system context makes to `User`.
+    let stamped_at = chrono::Utc::now();
+    let updated = db
+        .user()
+        .update(seeded.id.clone())
+        .set(schema::UpdateUserInput {
+            lastLoginAt: Some(Some(stamped_at)),
+            ..Default::default()
+        })
+        .if_match(seeded.version)
+        .run(&sys())
+        .await
+        .unwrap_or_else(|error| {
+            panic!(
+                "a system context writing User errored rather than succeeding: {error:?}. \
+                 User's current update policy is: @@allow(\"update\", hasRole('owner') || \
+                 (hasRole('admin') && roleKey != 'owner') || hasRole('system')); without the \
+                 system clause a login cannot stamp lastLoginAt"
+            )
+        });
+    assert!(
+        updated.lastLoginAt.is_some(),
+        "a system context's update of User.lastLoginAt must land"
     );
     seeded
 }

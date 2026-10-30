@@ -307,3 +307,147 @@ fn the_token_commands_refuse_before_the_database_when_the_method_is_off() {
         }
     }
 }
+
+/// The three commands that mint a console sign-in refuse, `auth_method_disabled`,
+/// **before** the database is touched, when `human_login` is not served - and they
+/// write nothing. `--database-url` names a port nothing listens on, so a refusal
+/// that came after connecting would be a different error (and, with the default
+/// pool timeout, a slow one). Needs no Postgres.
+#[test]
+fn the_password_commands_refuse_before_the_database_when_human_login_is_not_served() {
+    let dir = std::env::temp_dir().join(format!("sms-cutover-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::copy(base(), dir.join("application.yml")).unwrap();
+    // The keypair alone, the vaam shape: human_login is not permitted.
+    std::fs::write(
+        dir.join("application-test.yml"),
+        "auth:\n  methods: [keypair]\n",
+    )
+    .unwrap();
+    // The absent default permits it and writes no block: permitted is not served.
+    std::fs::write(dir.join("application-default-methods.yml"), "").unwrap();
+    let out = dir.join("never-written");
+    let out_str = out.display().to_string();
+    for profile in ["test", "default-methods"] {
+        for args in [
+            vec!["seed-console-client"],
+            vec![
+                "provision-user",
+                "--email",
+                "x@example.test",
+                "--display-name",
+                "X",
+                "--role-key",
+                "support",
+                "--password",
+                "--password-out",
+                out_str.as_str(),
+            ],
+            vec![
+                "bootstrap",
+                "--skip-seed-dispatch",
+                "--owner-email",
+                "x@example.test",
+                "--owner-display-name",
+                "X",
+                "--owner-password-out",
+                out_str.as_str(),
+            ],
+        ] {
+            let output = Command::new(env!("CARGO_BIN_EXE_sms-gateway"))
+                .args(&args)
+                .arg("--config")
+                .arg(dir.join("application.yml"))
+                .args(["--profile", profile])
+                .args([
+                    "--database-url",
+                    "postgres://nobody:nobody@127.0.0.1:1/none",
+                ])
+                .env_clear()
+                .env("SMS_HASH_PEPPER", PEPPER)
+                .output()
+                .expect("running sms-gateway");
+            let text = stderr(&output);
+            assert!(!output.status.success(), "{profile}: {args:?} must refuse");
+            assert!(
+                text.contains("auth_method_disabled"),
+                "{profile}: {args:?}: {text}"
+            );
+            assert!(
+                text.contains("pair-console-key"),
+                "{profile}: {args:?}: {text}"
+            );
+            assert!(
+                !text.contains("connecting to Postgres"),
+                "{profile}: {args:?} reached the database: {text}"
+            );
+            assert!(!out.exists(), "{profile}: {args:?} wrote a file");
+        }
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `provision-user` without `--password` reads no configuration at all, so the
+/// command that has always worked on a bare database keeps working with no
+/// `SMS_CONFIG`; the password flags are what pull the configuration in.
+#[test]
+fn provision_user_without_a_password_needs_no_configuration() {
+    let output = Command::new(env!("CARGO_BIN_EXE_sms-gateway"))
+        .args([
+            "provision-user",
+            "--email",
+            "x@example.test",
+            "--display-name",
+            "X",
+        ])
+        .args(["--role-key", "support"])
+        .args([
+            "--database-url",
+            "postgres://nobody:nobody@127.0.0.1:1/none",
+        ])
+        .env_clear()
+        .output()
+        .expect("running sms-gateway");
+    let text = stderr(&output);
+    assert!(!output.status.success());
+    assert!(
+        !text.contains("no config path given"),
+        "the plain command must not read the configuration: {text}"
+    );
+    assert!(text.contains("connecting to Postgres"), "{text}");
+}
+
+/// `--password` and `--password-out` come together, and `--reset` needs them.
+#[test]
+fn the_password_flags_are_all_or_nothing() {
+    for args in [
+        vec!["--password"],
+        vec!["--password-out", "/tmp/x"],
+        vec!["--reset"],
+        vec!["--reset", "--password-out", "/tmp/x"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_sms-gateway"))
+            .args([
+                "provision-user",
+                "--email",
+                "x@example.test",
+                "--display-name",
+                "X",
+            ])
+            .args(["--role-key", "support"])
+            .args([
+                "--database-url",
+                "postgres://nobody:nobody@127.0.0.1:1/none",
+            ])
+            .args(&args)
+            .env_clear()
+            .output()
+            .expect("running sms-gateway");
+        assert!(!output.status.success(), "{args:?}");
+        assert!(
+            stderr(&output).contains("required arguments"),
+            "{args:?}: {}",
+            stderr(&output)
+        );
+    }
+}

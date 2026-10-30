@@ -433,10 +433,15 @@ async fn with_the_method_off_nothing_is_mounted_and_the_commands_refuse() {
         gateway.kill();
 
         let key_out = deployment.config.args()[1].clone() + ".never-written.pem";
-        for (command, args) in [
-            ("rotate-signing-key", Vec::<&str>::new()),
+        for (command, wording, args) in [
+            (
+                "rotate-signing-key",
+                "mounts no OpenID Provider",
+                Vec::<&str>::new(),
+            ),
             (
                 "provision-client",
+                "issues no tokens",
                 vec![
                     "--app-id",
                     app.id.as_str(),
@@ -456,10 +461,7 @@ async fn with_the_method_off_nothing_is_mounted_and_the_commands_refuse() {
                 text.contains("auth_method_disabled"),
                 "{case}: {command}: {text}"
             );
-            assert!(
-                text.contains("issues no tokens"),
-                "{case}: {command}: {text}"
-            );
+            assert!(text.contains(wording), "{case}: {command}: {text}");
             assert!(
                 text.contains("register-client"),
                 "{case}: {command}: {text}"
@@ -812,14 +814,13 @@ async fn a_served_provider_mints_a_verifiable_token_with_no_refresh_and_follows_
         (400..500).contains(&refresh_status) && refresh_body.get("access_token").is_none(),
         "the refresh grant is refused: {refresh_status} {refresh_body}"
     );
-    // Refused because the CLIENT may not use the grant (authkestra-op 0.8.0's
-    // `default_handle_refresh_token` checks `allows_grant_type` first and answers
-    // `unauthorized_client`), not because the refresh token is unknown, which is
-    // `invalid_grant` and what `post_token`'s made-up token would earn from a
-    // client that was allowed the grant.
+    // Refused by the grant gate (VSA-4a) before the provider reads the client: the
+    // deployment serves `client_credentials` and nothing else, so the answer is
+    // `unsupported_grant_type`, not the handler's `unauthorized_client` it was
+    // before the gate existed. Either way no token is made.
     assert_eq!(
-        refresh_body["error"], "unauthorized_client",
-        "the grant is refused for the client, not for the token: {refresh_body}"
+        refresh_body["error"], "unsupported_grant_type",
+        "the refresh grant is not served: {refresh_body}"
     );
 
     // 7. A rotation reaches the running process within the refresh interval, the

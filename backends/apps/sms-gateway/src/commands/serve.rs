@@ -538,12 +538,18 @@ async fn build_op_router(
     }
     info!(
         issuer = %op_config.issuer,
-        machine_tokens = served.machine_tokens,
-        human_login = served.human_login,
         grants = %served.grant_types().join(","),
-        "the OpenID Provider is served: /token, /jwks.json and discovery are mounted{}",
-        if served.human_login { ", and POST /login" } else { "" }
+        "the OpenID Provider is served: /token, /jwks.json and discovery are mounted"
     );
+    if served.machine_tokens {
+        info!("machine_tokens is served: /token mints tokens and the API accepts them as a bearer");
+    }
+    if served.human_login {
+        info!(
+            "human_login is served: POST /login signs a person in and /token redeems the code; \
+             the API does not accept the person's token yet (VSA-4b)"
+        );
+    }
     Ok(Some((router, verifier)))
 }
 

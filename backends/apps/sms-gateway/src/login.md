@@ -43,7 +43,7 @@ parse body -> client_id is the console's -> rate limit -> Argon2 -> handle_autho
    and hashes nothing.
 4. **One generic `401 {"error": "invalid_credentials"}` for every refusal of the
    person**: an unknown account, a wrong password, an inactive or deleted account,
-   an account with no password, a role that does not exist or is reserved. An
+   an account with no password, a role that does not exist. An
    outage is `503 {"error": "unavailable"}`, not a 401, so a database that is down
    is not read as a wrong password.
 5. **`handle_authorize`'s answer is mapped, not forwarded.** The library answers a
