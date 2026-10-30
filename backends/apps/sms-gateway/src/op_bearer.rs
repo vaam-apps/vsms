@@ -578,7 +578,7 @@ mod tests {
         assert!(v.verify(&genuine).await.is_ok());
     }
 
-    /// A token bound to a key (RFC 7800 `cnf`, as DPoP or mTLS issue them) is
+    /// A token bound to a key (RFC 7800 `cnf`, as `DPoP` or mTLS issue them) is
     /// good only with the proof of that key, which this door never checks. It is
     /// refused however the confirmation is spelled, and a token without one
     /// still verifies.
