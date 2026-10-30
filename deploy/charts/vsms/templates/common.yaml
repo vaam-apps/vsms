@@ -73,15 +73,20 @@ and still cannot work, and each calls `fail`, which aborts `helm lint`,
 with `vsms chart guard "<name>":` so a test can assert which guard fired.
 
 retired-values: the structured `orange.*`, `mtn.*` and `awsSms.*` values were
-removed. They were the chart's copy of flags the binaries no longer have, and
+removed, and so was the `sso.*` block a release before VS-4 carried (single
+sign-on is `human_login.sso` in the overlay now, VSA-4c; only its secret stays
+here, as `existingSecrets.sso`). They were the chart's copy of flags the binaries no longer have, and
 silently ignoring a release that still sets them would deploy a gateway with no
 provider (or, worse, with the one an earlier release configured and nobody
 meant to keep). The same hard cutover the binaries make: refuse, and say where
 the value went. `config.createOverlayConfigMap` goes the same way: it could only
 ever be true, and a switch that cannot be turned off is dormant configuration.
 */}}
-{{- range $retired := list "orange" "mtn" "awsSms" }}
+{{- range $retired := list "orange" "mtn" "awsSms" "sso" }}
 {{- if hasKey $.Values $retired }}
+{{- if eq $retired "sso" }}
+{{- fail "vsms chart guard \"retired-values\": values.sso was removed. Single sign-on is configured in the YAML overlay (config.overlay) as `human_login.sso`, and only its client secret stays a chart value, as existingSecrets.sso, which the overlay reads as `${SMS_SSO_CLIENT_SECRET}` (docs/runbooks/sso.adoc). Delete values.sso." }}
+{{- end }}
 {{- fail (printf "vsms chart guard \"retired-values\": values.%s was removed. A provider is no longer a chart value: it is a `providers` entry in the YAML overlay (config.overlay), read by sms-gateway and sms-worker alike, and its secret stays in existingSecrets.%s as the `${...}` placeholder of the same name (docs/architecture.md, section 9.4; docs/runbooks/deployment.adoc, \"Kubernetes (Helm)\"). Delete values.%s." $retired $retired $retired) }}
 {{- end }}
 {{- end }}
@@ -180,6 +185,16 @@ values.yaml.
 {{- $_ := unset (index $.Values.controllers $controller "containers" "main" "env") (index $secret 1) }}
 {{- end }}
 {{- end }}
+{{- end }}
+
+{{/*
+The identity-provider secret is the gateway's alone and optional, so it is stripped
+from the gateway when unset (as above) and was never in the worker's `env`. A
+gateway given the variable without the overlay reading it is refused at boot, so
+"unset leaves no variable behind" is a requirement and not tidiness.
+*/}}
+{{- if not .Values.existingSecrets.sso.name }}
+{{- $_ := unset .Values.controllers.gateway.containers.main.env "SMS_SSO_CLIENT_SECRET" }}
 {{- end }}
 
 {{ include "bjw-s.common.loader.generate" . }}

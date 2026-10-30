@@ -32,10 +32,17 @@
 //!    map), and an edit to the overlay changes `checksum/configMaps` on the
 //!    gateway and the worker, which is what rolls their Pods.
 //! 4. Each chart guard fires when it should, with its own name in the message:
-//!    the retired `orange`, `mtn` and `awsSms` values, an empty or blank overlay,
+//!    the retired `orange`, `mtn`, `awsSms` and `sso` values, an empty or blank overlay,
 //!    an overlay holding a template action, a profile that is not a safe file
 //!    name, the removed `config.createOverlayConfigMap`, and an operator
 //!    `configMaps.overlay`.
+//!
+//! 5. The identity-provider secret of single sign-on (`existingSecrets.sso`) is
+//!    the gateway's alone: set, the gateway's Deployment gets
+//!    `SMS_SSO_CLIENT_SECRET` and the worker's does not; unset, neither does. A
+//!    gateway given the variable without the overlay reading it is refused at boot,
+//!    so an unset secret must leave no variable behind, and a worker given the
+//!    secret would hold a credential it never uses.
 //!
 //! Helm runs with its own config, cache and data directories under the target
 //! directory, so adding the dependency repository never touches the developer's
@@ -90,7 +97,7 @@ struct Refusal {
     guard: &'static str,
 }
 
-const REFUSALS: [Refusal; 12] = [
+const REFUSALS: [Refusal; 13] = [
     Refusal {
         what: "the retired `orange` values",
         values: "orange:\n  clientId: x\n",
@@ -109,6 +116,11 @@ const REFUSALS: [Refusal; 12] = [
     Refusal {
         what: "the retired `awsSms` values",
         values: "awsSms:\n  region: eu-west-1\n",
+        guard: "retired-values",
+    },
+    Refusal {
+        what: "the retired `sso` values",
+        values: "sso:\n  issuer: https://idp.example.org/realms/staff\n",
         guard: "retired-values",
     },
     Refusal {
@@ -241,6 +253,7 @@ fn render_everything(helm: &Helm, chart: &Path, scratch: &Path) -> Result<(), St
 
     check_operator_configmap(helm, chart, scratch, &values)?;
     check_overlay_edit_rolls_pods(helm, chart, scratch, &values)?;
+    check_sso_secret(helm, chart, scratch, &values)?;
 
     for (index, refusal) in REFUSALS.iter().enumerate() {
         let extra = write(scratch, &format!("refusal-{index}.yaml"), refusal.values)?;
@@ -270,11 +283,83 @@ fn render_everything(helm: &Helm, chart: &Path, scratch: &Path) -> Result<(), St
     }
 
     println!(
-        "chart-render OK (helm lint --strict; {} releases rendered, the overlay ConfigMap is the one mounted; an operator ConfigMap survives beside it; an overlay edit changes checksum/configMaps; {} refusals fire)",
+        "chart-render OK (helm lint --strict; {} releases rendered, the overlay ConfigMap is the one mounted; an operator ConfigMap survives beside it; an overlay edit changes checksum/configMaps; the SSO secret reaches the gateway only, and only when set; {} refusals fire)",
         RELEASES.len(),
         REFUSALS.len()
     );
     Ok(())
+}
+
+/// The identity-provider secret reaches the gateway and only the gateway, and only
+/// when `existingSecrets.sso.name` is set.
+fn check_sso_secret(
+    helm: &Helm,
+    chart: &Path,
+    scratch: &Path,
+    values: &Path,
+) -> Result<(), String> {
+    let release = RELEASES[0];
+    let render = |extra: Option<&Path>| -> Result<String, String> {
+        let mut args = vec!["template", release, path(chart)?, "-f", path(values)?];
+        if let Some(extra) = extra {
+            args.extend(["-f", path(extra)?]);
+        }
+        let rendered = helm.run(&args)?;
+        require_success("helm template (sso secret)", &rendered)?;
+        Ok(String::from_utf8_lossy(&rendered.stdout).into_owned())
+    };
+
+    let unset = render(None)?;
+    let holders = workloads_with_env(&unset, SSO_SECRET_ENV);
+    if !holders.is_empty() {
+        return Err(format!(
+            "chart-render: existingSecrets.sso.name is empty, and {holders:?} still carry {SSO_SECRET_ENV} \
+             (an empty secretKeyRef is rejected by the API server, and a variable the overlay does not read \
+             is refused by the gateway)"
+        ));
+    }
+
+    let extra = write(
+        scratch,
+        "sso-secret.yaml",
+        "existingSecrets:\n  sso:\n    name: render-check-sso\n",
+    )?;
+    let set = render(Some(&extra))?;
+    let holders = workloads_with_env(&set, SSO_SECRET_ENV);
+    let gateway = format!("{release}-gateway");
+    if holders != [gateway.clone()] {
+        return Err(format!(
+            "chart-render: with existingSecrets.sso.name set, {SSO_SECRET_ENV} must reach {gateway:?} and \
+             nothing else (the worker drops human_login.sso and is never given the secret); it reached {holders:?}"
+        ));
+    }
+    Ok(())
+}
+
+/// The variable the overlay's `human_login.sso.client_secret` reads.
+const SSO_SECRET_ENV: &str = "SMS_SSO_CLIENT_SECRET";
+
+/// The names of the rendered workloads (`Deployment`, `StatefulSet`, `Job`...)
+/// whose containers list `env_name` among their environment variables.
+fn workloads_with_env(manifest: &str, env_name: &str) -> Vec<String> {
+    let entry = format!("- name: {env_name}");
+    let mut found = Vec::new();
+    for document in manifest.split("\n---\n") {
+        let is_workload = document
+            .lines()
+            .any(|line| matches!(line, "kind: Deployment" | "kind: StatefulSet" | "kind: Job"));
+        if !is_workload || !document.lines().any(|line| line.trim() == entry) {
+            continue;
+        }
+        if let Some(name) = document
+            .lines()
+            .skip_while(|line| *line != "metadata:")
+            .find_map(|line| line.strip_prefix("  name: "))
+        {
+            found.push(name.trim().to_owned());
+        }
+    }
+    found
 }
 
 /// Helm is using the directories `Helm::isolated` gave it, not the developer's.
@@ -697,6 +782,51 @@ spec:
         let sums = pod_checksums(manifest).unwrap();
         assert_eq!(sums.get("gateway").map(String::as_str), Some("aaa"));
         assert_eq!(sums.get("worker").map(String::as_str), Some("bbb"));
+    }
+
+    fn workload(kind: &str, name: &str, env: &[&str]) -> String {
+        let mut vars = String::new();
+        for var in env {
+            vars.push_str("            - name: ");
+            vars.push_str(var);
+            vars.push_str("\n              value: x\n");
+        }
+        format!(
+            "apiVersion: apps/v1\nkind: {kind}\nmetadata:\n  name: {name}\n  labels:\n    a: b\nspec:\n  template:\n    spec:\n      containers:\n        - name: main\n          env:\n{vars}"
+        )
+    }
+
+    #[test]
+    fn the_workloads_carrying_a_variable_are_found_by_name() {
+        let manifest = [
+            workload("Deployment", "r-gateway", &["SMS_PROFILE", SSO_SECRET_ENV]),
+            workload("Deployment", "r-worker", &["SMS_PROFILE"]),
+            "kind: ConfigMap\nmetadata:\n  name: r-config\ndata:\n  x: '- name: SMS_SSO_CLIENT_SECRET'\n"
+                .to_owned(),
+        ]
+        .join("\n---\n");
+        assert_eq!(
+            workloads_with_env(&manifest, SSO_SECRET_ENV),
+            ["r-gateway"],
+            "only a workload's own env counts, not a ConfigMap that mentions it"
+        );
+        assert_eq!(
+            workloads_with_env(&manifest, "SMS_HASH_PEPPER"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_secret_given_to_the_worker_too_is_seen() {
+        let manifest = [
+            workload("Deployment", "r-gateway", &[SSO_SECRET_ENV]),
+            workload("Deployment", "r-worker", &[SSO_SECRET_ENV]),
+        ]
+        .join("\n---\n");
+        assert_eq!(
+            workloads_with_env(&manifest, SSO_SECRET_ENV),
+            ["r-gateway", "r-worker"]
+        );
     }
 
     #[test]

@@ -190,6 +190,26 @@
 			ipv6_prefix 64
 		}
 
+		# Single sign-on (VSA-4c): `/login/sso/start` and `/login/sso/callback`. A
+		# zone of its own, not `auth_per_source`: that one matches `/login` and
+		# `/token` exactly, and a person signing in through the identity provider
+		# makes a start and a callback, so it is sized wider. Per source for the
+		# reason the application cannot be: its `human_login.sso.rate_limit` is one
+		# global bucket per route, so without this a single source could empty it for
+		# every operator. Password sign-in does not pass through here. The compose
+		# service forwards only the three variables the edge was first built with,
+		# so retuning this means adding the two below to its `environment`; the
+		# defaults hold without them.
+		zone sso_per_source {
+			match {
+				path /login/sso/*
+			}
+			key {http.request.remote.host}
+			events {$RATE_LIMIT_SSO_PER_SOURCE_EVENTS:30}
+			window {$RATE_LIMIT_SSO_PER_SOURCE_WINDOW:1m}
+			ipv6_prefix 64
+		}
+
 		log_key
 	}
 

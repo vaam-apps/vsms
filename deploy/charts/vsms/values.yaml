@@ -144,6 +144,18 @@ existingSecrets:
   awsSms:
     name: ""
     key: AWS_SMS_SECRET_ACCESS_KEY
+  # The identity-provider client secret of single sign-on (VSA-4c): the
+  # overlay's `human_login.sso.client_secret: ${SMS_SSO_CLIENT_SECRET}`. Optional:
+  # leave `name` empty for a deployment without single sign-on, and no variable is
+  # rendered at all. Only sms-gateway gets it - sms-worker drops `human_login.sso`
+  # before it resolves placeholders and is never given the secret - and a gateway
+  # whose environment holds the variable without the overlay reading it is
+  # refused (the variable is retired as a flag). The rest of the block (issuer,
+  # client id, group, MFA rule, JIT role) is not secret and is written in the
+  # overlay. docs/runbooks/sso.adoc.
+  sso:
+    name: ""
+    key: SMS_SSO_CLIENT_SECRET
   # The gateway's two Ed25519 envelope signing keys (PKCS#8 PEM,
   # `openssl genpkey -algorithm ed25519`), under the keys `envelope-current.pem`
   # and `envelope-next.pem`. REQUIRED: the gateway refuses to start without
@@ -481,6 +493,14 @@ controllers:
               secretKeyRef:
                 name: '{{ .Values.existingSecrets.awsSms.name }}'
                 key: '{{ .Values.existingSecrets.awsSms.key }}'
+          # VSA-4c: the identity-provider secret of `human_login.sso`. The
+          # gateway's alone, and stripped by templates/common.yaml when its
+          # existingSecrets name is empty.
+          SMS_SSO_CLIENT_SECRET:
+            valueFrom:
+              secretKeyRef:
+                name: '{{ .Values.existingSecrets.sso.name }}'
+                key: '{{ .Values.existingSecrets.sso.key }}'
           # VS-3: the signed transport's two keys, mounted from
           # existingSecrets.envelopeKeys (persistence.envelope-keys below).
           SMS_ENVELOPE_SIGNING_KEY_FILE:
@@ -488,7 +508,7 @@ controllers:
           SMS_ENVELOPE_NEXT_SIGNING_KEY_FILE:
             value: /run/envelope/envelope-next.pem
           RUST_LOG:
-            value: 'sms_gateway=info,sms_api=info,sms_provider_aws_sms=info,cratestack=info'
+            value: 'sms_gateway=info,sms_api=info,sms_auth=info,sms_provider_aws_sms=info,cratestack=info'
         probes:
           # #157: /healthz stays liveness-only by design
           # (backends/apps/sms-gateway/src/health.rs's own doc: "It does not touch the
