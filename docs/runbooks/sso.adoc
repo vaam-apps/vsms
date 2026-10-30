@@ -1,0 +1,347 @@
+= Single sign-on -- the staff Keycloak realm
+:idprefix:
+:idseparator: -
+
+Staff sign in to the admin console with their identity-provider account
+(Keycloak) instead of a vsms password. The gateway is a _broker_: it stays
+the console's OpenID Provider, and only the one step "who is this human?" is
+handed to Keycloak. This is the operator's half -- configuring Keycloak, the
+gateway, and what to do when it misbehaves. The design and its reasoning are
+in link:../architecture.md#single-sign-on-vsa-4c[the "Single sign-on" section
+of the design doc's §4.10].
+
+[NOTE]
+====
+Single sign-on came back in VSA-4c as `human_login.sso` in the YAML
+configuration. The eleven `SMS_SSO_*` flags and variables it used to have
+(VS-4 deleted them) are *retired*: a gateway whose environment still sets one
+of them that the YAML does not read is refused at start-up, naming the key
+that replaced it. `SMS_SSO_CLIENT_SECRET` is the one that is still used -- as
+the *source* of the secret, which the YAML reads as `${SMS_SSO_CLIENT_SECRET}`.
+====
+
+[NOTE]
+====
+Password sign-in is **unchanged** and stays as the break-glass path
+(`sms-gateway provision-user --password`, or the owner `bootstrap` creates). A
+broken Keycloak, a misconfigured realm, or an expired client secret must never
+lock the operators out of the system that sends their OTPs.
+====
+
+[WARNING]
+====
+**A person who signs in through SSO is a person with a role, and the role limits
+what they can do, not what they can read.** `Message`'s list and detail
+policies admit any signed-in person (`auth().kind == "user"`, no role test), so
+anyone whose token the API accepts -- including a `support` account created by
+a first sign-in -- can list every app's messages through the generated routes,
+the phone numbers and bodies included. Nothing about SSO adds this (a paired
+console key of any role reads the same), but it means *membership of the
+required group is the access decision*. Put in `required_group` only people
+you would give the console to.
+====
+
+== What you get
+
+* A "Sign in with ..." button on the console's login page -- shown only when
+  the gateway's discovery document carries `vsms_sso_login_endpoint`. (The
+  console has no such screen until VSA-5. The routes are served now, and you
+  can drive them by hand, see _Verification_ below.)
+* **Just-in-time provisioning, gated by group.** The first successful
+  sign-in of a user in the required Keycloak group creates the vsms `User`.
+  The account is linked by `(issuer, sub)` -- **never by email**. Email and
+  name are display data, written once when the account is created and never
+  used to find or merge an account. A Keycloak user whose email already
+  belongs to a local account is refused, not merged.
+* **A confirmed address is needed to create an account.** The `id_token` must
+  say `email_verified: true` (Keycloak does with the `email` scope, for a user
+  whose address is verified), and the address must not end in `.invalid`.
+* **Roles stay local.** No token claim -- `role`, `roles`, `realm_access`, a
+  group name, anything -- ever sets or changes a vsms role. A new user gets
+  the one configured role (`support` unless you set another); you promote
+  people in the console or with the CLI, as you do today. `owner`, `admin`,
+  `system` and `app` are refused as the configured role.
+* **An `owner` or an `admin` never acts from a sign-in.** If you promote a
+  person created by SSO to `admin`, their token is refused at the API with
+  `403` and the text "this account's role acts only from a paired console
+  key": they sign in, and need a paired key to act, exactly as a password user.
+* **A second factor is required.** An `id_token` is accepted only if its
+  `acr` is in an accepted list **or** its `amr` shares a member with an
+  accepted list. Both lists empty is a configuration error.
+* **One issuer per deployment.** SSO is served exactly when `human_login.sso`
+  is written. There is no feature flag.
+
+== Configuration
+
+It is the `sso:` block inside `human_login:` in the deployment's YAML
+overlay (`config/application-<profile>.yml`, or the chart's
+`config.overlay`). `human_login:` and `op:` must both be written, and
+`auth.methods` must permit `human_login` (the default does). The base file
+carries the block as a commented example.
+
+[,yaml]
+----
+human_login:
+  # console_client and login_rate_limit as for the password sign-in
+  sso:
+    issuer: https://auth.example.org/realms/staff
+    client_id: vsms-gateway
+    client_secret: ${SMS_SSO_CLIENT_SECRET}
+    scopes: [openid, email, profile]
+    required_group: vsms-staff
+    groups_claim: groups
+    accepted_amr: [otp]
+    accepted_acr: []
+    jit_role: support
+    jwks_min_refresh_secs: 30
+    rate_limit:
+      burst: 30
+      refill_per_second: 1.0
+----
+
+Every key is required; there are no Rust-side defaults, and an unknown key
+(including the `redirect_uri` the flags had) is refused.
+
+|===
+| Key | Meaning
+
+| `issuer`
+| The realm's issuer, byte for byte as Keycloak publishes it, for example `https://auth.example.org/realms/staff`. Compared exactly with the discovery document's `issuer` and every token's `iss` -- no trailing-slash tolerance. `https`, except plain `http` to a loopback host; under `livemode` also a real, non-stub host.
+
+| `client_id`
+| The gateway's confidential client in that realm.
+
+| `client_secret`
+| Its secret (`client_secret_basic`). Under `livemode` it must be a `${VAR}` placeholder, never a literal. Only the gateway is given it: the worker and the one-shot commands drop this block before they resolve placeholders and start without it.
+
+| `scopes`
+| Requested upstream. Must include `openid`.
+
+| `required_group`
+| Exact group name a user must be in.
+
+| `groups_claim`
+| The `id_token` claim holding the group list (a top-level claim; nested paths are not supported).
+
+| `accepted_amr`, `accepted_acr`
+| Values that satisfy the second-factor rule; any one suffices. Usually `accepted_amr: [otp]`. **At least one of the two lists must be non-empty**; either may be `[]` if the other is not.
+
+| `jit_role`
+| The `Role.key` a just-in-time user is created with. The row must exist (`serve` checks at start-up); `owner`, `admin`, `system` and `app` are refused.
+
+| `jwks_min_refresh_secs`
+| 1 to 3600. Floor on the gap between two fetches of Keycloak's signing keys. An unknown `kid` triggers one refetch, never more often than this.
+
+| `rate_limit`
+| One bucket for `/login/sso/start` and one for `/login/sso/callback`, each global to the gateway (`burst`, `refill_per_second`). See _Limits_.
+|===
+
+*The callback is derived, not written.* The redirect URI to register at
+Keycloak is `op.issuer` followed by `/login/sso/callback`; `serve` logs it at
+start-up (`single sign-on is served: register this redirect URI ...`).
+
+*In Kubernetes (Helm)* put the block in `config.overlay`, and the secret in a
+Kubernetes Secret named by `existingSecrets.sso.name` (key
+`SMS_SSO_CLIENT_SECRET`): the chart delivers it to the gateway only, and
+renders nothing at all when `name` is empty. The old chart's `sso:` values
+are gone and `helm template` refuses a release that still sets them.
+
+*In compose* put the block in the `prod` overlay and uncomment the bare
+`SMS_SSO_CLIENT_SECRET:` line in `deploy/docker-compose.yml`'s `sms-gateway`
+service, with the value in `.env`. Leave it commented on a stack that does not
+serve SSO: a variable that is present and not read by the overlay -- even an
+empty one -- is refused at start-up.
+
+== Keycloak setup
+
+Everything below is the minimum; nothing is vsms-specific except the client's
+redirect URI.
+
+=== 1. The group
+
+Create a group (for example `vsms-staff`) and put the people who may use the
+console in it. Membership is the *only* gate -- there are no per-role groups,
+because roles are not read from tokens.
+
+=== 2. The client
+
+Create an `OpenID Connect` client:
+
+* **Client authentication**: on (confidential). **Standard flow** only -- turn
+  off implicit, direct access grants, and service accounts.
+* **Valid redirect URIs**: exactly the gateway callback (`<op.issuer>/login/sso/callback`).
+  No wildcards.
+* **Advanced -> Proof Key for Code Exchange Code Challenge Method**: `S256`.
+* Copy the client secret into the gateway's `SMS_SSO_CLIENT_SECRET`.
+
+=== 3. The groups mapper
+
+On the client's dedicated scope, add a *Group Membership* mapper: claim name
+`groups`, **Full group path: off**, **Add to ID token: on**. With the full
+path on, the claim holds `/vsms-staff` and the exact-match gate never
+matches.
+
+=== 4. The second-factor claim -- read this, it is not obvious
+
+Do **not** rely on `acr`. Measured against `quay.io/keycloak/keycloak:26.6.1`
+(2026-10-19): a password + OTP sign-in is issued `acr "1"`, and a repeat
+sign-in completed from Keycloak's SSO cookie is issued `acr "0"` -- neither
+says anything about a second factor. And with the stock browser flow, `amr`
+is **empty** even when the user did use an OTP, even with the *Authentication
+Method Reference* (`oidc-amr-mapper`) mapper on the client.
+
+`amr` is only populated once the browser flow's executions are given an
+authenticator configuration with a reference value. Add the *Authentication
+Method Reference* mapper to the client (**Add to ID token: on**), then give
+the two executions their values:
+
+[,bash]
+----
+kcadm.sh get authentication/flows/browser/executions -r vaam-staff
+# note the ids of  auth-username-password-form  and  auth-otp-form
+kcadm.sh create authentication/executions/<password-form-id>/config -r vaam-staff \
+  -s alias=amr-pwd -s 'config."default.reference.value"=pwd'
+kcadm.sh create authentication/executions/<otp-form-id>/config -r vaam-staff \
+  -s alias=amr-otp -s 'config."default.reference.value"=otp'
+----
+
+Then set `accepted_amr: [otp]` and leave `accepted_acr: []`. (Do not add `1`
+or `0` to the `acr` list -- that would accept a password-only sign-in.)
+
+=== 5. The email
+
+Give the client the `email` scope (it is in the default `scopes`) and make
+sure users' addresses are *verified* in the realm: a first sign-in is refused
+(`email_unverified`) when the token does not say `email_verified: true`.
+
+=== 6. First sign-in of a user who has no OTP yet
+
+Keycloak enrols a new user's OTP through a *required action*
+(`CONFIGURE_TOTP`), not through the OTP login form, so that first token has
+`amr ["pwd"]` only -- and every later sign-in completed from the same Keycloak
+SSO session is `amr ["pwd"]` too. A new user would be refused until their
+Keycloak session ended.
+
+The gateway handles this once: **when the only reason for refusal is the
+second-factor claim** (signature, `iss`, `aud`, `nonce`, `exp`, `state`, and
+the group all valid) **and this transaction was not itself a retry**, it does
+not refuse. It starts a fresh upstream sign-in with `prompt=login` -- new
+`state`, `nonce` and PKCE -- carrying the same console request. Keycloak
+re-runs the forms (password, then OTP), the new token has `amr` containing
+`otp`, and the user is signed in. A retry whose token still lacks the claim is
+refused; there is never a second retry. Any other failure is refused at once,
+with no retry.
+
+== Operating it
+
+=== Who is who
+
+* *Promote, demote, deactivate* a user in the console's Users screen (or the
+  CLI) -- exactly as for password users. Deactivation takes effect within the
+  60-second principal cache.
+* A just-in-time user has **no password** (`UserCredential` row). Nothing
+  about SSO weakens the break-glass accounts; and an SSO user cannot be
+  signed in by guessing a password that does not exist. To give one a
+  password for the break-glass path, `sms-gateway provision-user --password`.
+* Changing someone's Keycloak email or name changes nothing in vsms. If they
+  must change in vsms, edit the `User`.
+
+=== When Keycloak is down
+
+The gateway starts and serves normally without reaching Keycloak (discovery is
+lazy, cached for an hour, and a stale copy is used if a refresh fails). A
+sign-in that needs it returns the browser to the console with
+`error=temporarily_unavailable`. Password sign-in is unaffected.
+
+=== Rotating the client secret
+
+Update the secret in Keycloak and in the Secret that `SMS_SSO_CLIENT_SECRET`
+comes from, restart the gateway. Until you do, sign-ins fail with
+`error=temporarily_unavailable` and the log says the IdP's token endpoint
+answered with a failure status.
+
+=== Signing-key rotation at Keycloak
+
+Handled: a token signed by a key the gateway has not seen triggers one JWKS
+refetch (at most every `jwks_min_refresh_secs`), after which the key is
+known. A key withdrawn at Keycloak stops verifying within an hour.
+
+=== Limits
+
+`human_login.sso.rate_limit` is one bucket for `/login/sso/start` and one for
+`/login/sso/callback`, each global to the gateway process: it sees one peer
+(the proxy) for everybody, so it cannot tell sources apart. That means **one
+source can empty a bucket for everyone** until it refills. The edge bounds a
+single source first: Caddy's `sso_per_source` zone over `/login/sso/*`, 30 a
+minute by default (`RATE_LIMIT_SSO_PER_SOURCE_EVENTS` and `_WINDOW`; the
+compose Caddy service forwards only the three variables it was first built with, so
+retuning this there means adding these two to its `environment`). Password
+sign-in is a different route with different buckets and is not affected.
+
+=== Reading the log
+
+A refusal is one `WARN` line from `sms_gateway::sso` with a fixed `reason`; it
+never contains a token, a code, a secret, or a claim value. (The gateway's
+default log filter names `sms_auth` again; with a custom `RUST_LOG`, keep
+`sms_auth=info` or the sign-in's errors are not logged.) The browser is told
+only `access_denied` (or `temporarily_unavailable`), so a user cannot learn from
+the page why they were refused -- you can, here:
+
+|===
+| `reason` | Meaning
+
+| `not_in_required_group` | The user is not in `required_group` (or the groups claim is missing -- check the mapper and "Full group path").
+| `mfa_not_satisfied` | The retry's token still did not satisfy the second-factor rule. Check the `amr` execution configs (step 4).
+| `nonce_mismatch`, `audience_mismatch`, `issuer_mismatch`, `expired`, `issued_in_future`, `authorized_party_mismatch`, `missing_claim` | The `id_token` is wrong. `issuer_mismatch` usually means `issuer` differs from Keycloak's frontend URL by a trailing slash or hostname.
+| `unknown_key_id`, `missing_key_id`, `signature_invalid`, `key_unsuitable`, `algorithm_not_allowed` | Signature problems. `algorithm_not_allowed` is `none`, `HS*` or `EdDSA` -- only RSA and ECDSA are accepted.
+| `user_inactive` | The linked account is deactivated or deleted.
+| `email_missing` | First sign-in, but the token has no usable email (add the `email` scope / mapper).
+| `email_unverified` | First sign-in, but the token does not say `email_verified: true`. Verify the user's address in the realm.
+| `email_reserved` | First sign-in, but the address ends in `.invalid`, the domain console pairing gives its accounts.
+| `email_in_use` | First sign-in, but a local account already has that email. Resolve it by hand -- vsms will not merge by email.
+| `upstream_denied` | Keycloak rejected the code, or the user cancelled.
+| `no_code` | Keycloak redirected back with neither a `code` nor an `error`.
+| `no_such_transaction` | A callback with an unknown, replayed, or expired `state` (five-minute lifetime).
+|===
+
+Operational failures (`SSO sign-in could not be evaluated`, at `ERROR`) mean
+Keycloak or the database could not be used: discovery failed, the discovery
+`issuer` did not match, the client secret was rejected, the configured
+`jit_role` is not allowed, or Postgres errored. The gateway also refuses to
+*start* when `jit_role` names no `Role` row.
+
+== Verification
+
+*In CI*, `backends/apps/sms-gateway/tests/sso_flow_live_postgres.rs` runs a
+real `sms-gateway serve` with a `human_login.sso` block against
+`sms-fake-oidc`, a scripted fake of a Keycloak realm that can sign a malformed
+token on purpose (every malformed-token case, the second-factor retry, the
+group gate, inactive and deleted users, the owner/admin cap on the token, the
+reaper, the bucket), and `cargo test -p sms-auth --test sso_provider` needs no
+database. It cannot reproduce Keycloak's own behaviour.
+
+*Not in CI*: nothing runs against a real Keycloak, and the console has no
+sign-in screen until VSA-5. The 2026-10-19 hand run (Keycloak 26.6.1, a
+scripted browser, the real console) was made against the pre-VS-4 flags, and
+VSA-4c did **not** repeat it. Before relying on a deployment, drive it by
+hand: register the logged redirect URI, open
+`<op.issuer>/login/sso/start?client_id=<console client>&redirect_uri=<a
+registered console URI>&response_type=code&scope=openid%20profile&state=...&nonce=...&code_challenge=...&code_challenge_method=S256`
+in a browser (PKCE values from `openssl`), sign in with a user who has an OTP,
+and read the `code` off the redirect; then exchange it at `/token` with the
+verifier. Repeat with a user outside the group, and with a user who has no
+second factor.
+
+== Not covered
+
+* **Back-channel logout / session revocation from Keycloak.** Signing a user
+  out of Keycloak does not end a vsms session; deactivating the `User` does
+  (within a minute).
+* **Re-authentication on a schedule.** Only the one forced `prompt=login`
+  retry above; there is no `max_age`/`auth_time` check.
+* **Unlinking / re-linking a user to another Keycloak identity.** There is no
+  operator action for it; it is a database operation (`FederatedLink` has no
+  update or delete policy on purpose).
+* **More than one issuer** per deployment.
+* **Mapping groups to roles.** A group is a gate; the role is `jit_role` and
+  then whatever you set.
