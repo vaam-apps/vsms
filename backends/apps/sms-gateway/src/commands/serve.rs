@@ -311,7 +311,7 @@ pub(crate) async fn serve_command(args: ServeArgs) -> Result<()> {
     let health_router = health::router(db.clone());
     // VSA-3a: the `OpenID` Provider, mounted only when `machine_tokens` is served
     // (permitted and `op:` written). Built before `sms_api::router` takes `db`.
-    let op_router = build_op_router(&db, &sys, &config).await?;
+    let op_router = build_op_router(&db, &config).await?;
 
     let ServeArgs {
         listen,
@@ -426,17 +426,20 @@ async fn spawn_metrics_server(
 /// never `exec`).
 async fn build_op_router(
     db: &Cratestack,
-    sys: &cratestack::CratestackContext,
     config: &sms_config::Config,
 ) -> Result<Option<axum::Router>> {
     if !config.auth_methods.machine_tokens_served() {
         return Ok(None);
     }
+    // The provider's own actor label, as in `29f93c4^`: it lands verbatim in
+    // `cratestack_audit.actor.sub` on every signing-key and assertion write, so
+    // those rows name the OP and not the whole `serve` process.
+    let sys = system_context("sms-gateway:op");
     let op_config = config
         .op
         .as_ref()
         .context("op: is missing although machine_tokens is served")?;
-    let (signing, jwks) = sms_auth::op::load_signing_keys(db, sys, &op_config.issuer)
+    let (signing, jwks) = sms_auth::op::load_signing_keys(db, &sys, &op_config.issuer)
         .await
         .context(
             "loading the OP signing keys — run `sms-gateway rotate-signing-key` if this is a \

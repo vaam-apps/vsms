@@ -208,12 +208,16 @@ static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
 ///
 /// - `App`, `AppClient` — `Procedures::resolve_app` (`backends/crates/sms-api/src/procedures.rs`)
 ///   and `SignerDirectory`'s own `AppClient` lookup (`backends/crates/sms-api/src/auth.rs`).
-/// - `OauthClient`, `OauthSigningKey`, `ClientAssertion`, `UserCredential`,
-///   `SsoTransaction` — restored by VSA-2 (`0012_restore_openid_provider`) and
-///   read by nothing yet: the OP's stores (VSA-3) and the login and SSO broker
-///   (VSA-4) will read and write them under `sys`. `hasRole('system')` is the
-///   whole policy of each, so the live half proves a system context sees its
-///   rows before any reader exists to find out the hard way.
+/// - `OauthClient`, `OauthSigningKey`, `ClientAssertion` — restored by VSA-2
+///   (`0012_restore_openid_provider`) and read and written under `sys` by the
+///   OP's stores and signing-key loader since VSA-3a (the actor label is
+///   `sms-gateway:op` in `serve` and `rotate-signing-key`; `provision-client`
+///   labels its own). `hasRole('system')` is the whole policy of each, so the
+///   live half proves a system context sees its rows.
+/// - `UserCredential`, `SsoTransaction` — restored by VSA-2 and read by nothing
+///   yet: the login and SSO broker (VSA-4) will read and write them under `sys`.
+///   Same policy, same reason to prove it before a reader exists to find out the
+///   hard way.
 /// - `EnvelopeNonce` — the signed transport's replay cache (VS-3): the nonce
 ///   store records, takes over and the worker sweeps it, all under `sys`.
 /// - `SenderId`, `SenderIdRegistration` — `Procedures::resolve_sender_id`.
