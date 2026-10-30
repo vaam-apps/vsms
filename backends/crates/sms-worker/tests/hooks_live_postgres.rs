@@ -3159,7 +3159,7 @@ async fn with_hmac_off_a_crash_abandoned_hmac_attempt_is_not_reclaimed_until_the
     assert_eq!(still.state, AttemptState::delivering);
     assert_eq!(still.leaseOwner.as_deref(), Some("crashed-worker"));
     assert_eq!(still.attempts, 1);
-    assert!(requested_paths(&server).await.is_empty());
+    assert_eq!(requested_paths(&server).await, Vec::<String>::new());
 
     let on = with_hmac(worker_context(db.clone()), sms_api::HmacWebhooks::Permitted);
     hooks::tick(&on, &sys(), "test-worker", &http_client())
@@ -3286,7 +3286,10 @@ async fn a_claim_with_hmac_off_over_sealed_endpoints_only_is_the_time_ordered_qu
     bulk_due(&s1.id, "s1", 5, 30).await;
     bulk_due(&s2.id, "s2", 3, 20).await;
 
-    assert!(claimed_by(&db, ServedModes::Neither).await.is_empty());
+    assert_eq!(
+        claimed_by(&db, ServedModes::Neither).await,
+        Vec::<String>::new()
+    );
     assert_eq!(
         claimed_by(&db, ServedModes::HmacOnly).await,
         Vec::<String>::new()
