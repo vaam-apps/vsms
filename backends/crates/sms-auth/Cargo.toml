@@ -1,6 +1,6 @@
 [package]
 name = "sms-auth"
-description = "The embedded OpenID Provider's stores over the CrateStack delegates (R1): oauth_clients and client_assertions, signing-key management, provisioning a machine client (VSA-3a), the console client and the Argon2id password login (VSA-4a)"
+description = "The embedded OpenID Provider's stores over the CrateStack delegates (R1): oauth_clients and client_assertions, signing-key management, provisioning a machine client (VSA-3a), the console client, the Argon2id password login (VSA-4a) and the single-sign-on broker (VSA-4c)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -29,9 +29,26 @@ serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 # login.rs runs the Argon2 verification on the blocking pool.
-tokio.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }
+# The SSO broker (src/sso/*, VSA-4c): vsms as an OIDC relying party toward the
+# staff IdP. `reqwest` for discovery/JWKS/the code exchange, `jsonwebtoken` for
+# the id_token signature, `sha2`/`hex` for the hashed single-use `state`,
+# `subtle` for its constant-time comparison, `url` for the endpoint/redirect
+# checks. All already in Cargo.lock (the gateway links reqwest for its adapters,
+# jsonwebtoken for the OP).
+reqwest.workspace = true
+jsonwebtoken.workspace = true
+base64.workspace = true
+sha2.workspace = true
+hex.workspace = true
+subtle.workspace = true
+url.workspace = true
+serde.workspace = true
 
 [dev-dependencies]
+# The SSO broker's tests run it against a scripted fake upstream IdP.
+sms-fake-oidc.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 # The live suite gets its DATABASE_URL from this instead of the environment.
 sms-test-support.workspace = true
 # login_live_postgres.rs counts the statements a refused sign-in sends (sqlx emits

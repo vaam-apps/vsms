@@ -2,12 +2,14 @@
 
 mod auth_discovery;
 mod commands;
+mod console_authorize;
 mod dlr;
 mod grant_gate;
 mod health;
 mod login;
 mod op;
 mod op_bearer;
+mod sso;
 mod token_rate_limit;
 
 use anyhow::Result;
@@ -352,7 +354,7 @@ async fn main() -> Result<()> {
                 // subscription-confirmation command (with its token) and the
                 // SignatureVersion-1 / unsubscribe errors are logged there.
                 .unwrap_or_else(|_| {
-                    "sms_gateway=info,sms_api=info,sms_provider_aws_sms=info,cratestack=info".into()
+                    "sms_gateway=info,sms_api=info,sms_auth=info,sms_provider_aws_sms=info,cratestack=info".into()
                 }),
         )
         .init();

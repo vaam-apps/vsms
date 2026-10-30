@@ -142,7 +142,11 @@ a little longer than it had to be, and the caller asks again.
   taken from the token. The role is the `User` row's.
 - `provider_id` is not checked: the cap and the standing are keyed on the
   credential and the account, so a later sign-in through another provider that
-  maps onto a `User.id` is held to the same rules.
+  maps onto a `User.id` is held to the same rules. That is no longer hypothetical
+  (VSA-4c): a single-sign-on sign-in issues its code with the same
+  `provider_id` (`sms-console`) and the `User.id` as `external_id` as a password
+  sign-in, and the token is held to the same person realm and the same owner and
+  admin cap, with no code of its own here.
 - Sender-constrained tokens. The provider mints none today, but a `cnf` claim
   (RFC 7800) means the token is only good with a proof of possession, and a
   door that checks none must not wave it through as a bearer: it is

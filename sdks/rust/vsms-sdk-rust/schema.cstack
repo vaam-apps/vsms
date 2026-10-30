@@ -203,7 +203,7 @@ enum ConsentChannel {
 // `ClientAssertion` are read and written by the OpenID Provider since VSA-3a
 // (`sms-auth`, under the internal `system` context); `UserCredential` is read
 // and written by the password login and `provision-user --password` since VSA-4a,
-// and `SsoTransaction` is PERSISTENCE ONLY until VSA-4c (single sign-on). Every model
+// and `SsoTransaction` since VSA-4c (single sign-on, `human_login.sso`). Every model
 // carries `@@internal("all")`, so the generated REST routes, RPC arms and client
 // stubs for it do not exist, on top of the `hasRole('system')` policies restored
 // unchanged. The in-process delegates (`db.oauth_client()`) are not routes and
@@ -1496,9 +1496,9 @@ model FederatedLink {
 // (one row per sign-in attempt, no value in an audit row about a row that
 // lives five minutes). `consoleRequest` is the console's own authorize
 // request as JSON, replayed into the unmodified `handle_authorize` after the
-// upstream sign-in succeeds. Expired rows were deleted by a background task in
-// `sms-gateway serve` (`sso.rs::spawn_transaction_reaper`), which VSA-4c
-// restores; until then nothing writes a row, so nothing expires.
+// upstream sign-in succeeds. Expired rows are deleted by a background task in
+// `sms-gateway serve` (`sso.rs::spawn_transaction_reaper`), spawned only when
+// single sign-on is served.
 //
 // No `update` action: a transaction is created and then consumed, never
 // edited. No `@use(Timestamps)`: nothing updates a row, so there is no

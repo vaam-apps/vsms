@@ -37,6 +37,14 @@ allow = [
 # `/jwks.json`) already exercises, with a public key and no decrypt call, so the
 # analysis holds; `cargo tree -i rsa` finds the same copies as before.
 #
+# VSA-4c adds a third RS256/PS256 *verify* site: `sms-auth`'s single-sign-on broker
+# (`sso::id_token`) checks the upstream identity provider's `id_token` through
+# `jsonwebtoken` 11.1.0's `decode`, against the PUBLIC components of the key the
+# provider publishes. Again a public-key verification with no decrypt call, so the
+# analysis holds. `sms-fake-oidc` (a dev-dependency, `publish = false`) also
+# *generates* RSA keys with `RsaPrivateKey::new` and signs with them, for tests only;
+# it is in no release image.
+#
 # Reachability analysis (#174, originally; re-run against the vendored 0.8.0 source
 # directly, not re-stated from memory):
 #
@@ -176,7 +184,10 @@ allow = [
 # assertions RS256 too (keypair clients sign Ed25519 COSE envelopes instead and
 # never reach this code). The P-256/P-384 code in jsonwebtoken could only VERIFY
 # ES256/ES384 signatures against PUBLIC keys (the OP's `private_key_jwt` check of
-# a client assertion), and it is not reached at all for the RSA JWKs we register:
+# a client assertion, and, since VSA-4c, the SSO broker's check of the upstream
+# identity provider's own ES256/ES384 id_tokens against that provider's published
+# JWKS: sms-auth's `sso::id_token`, which allows RS/PS/ES and nothing else), and it
+# is not reached at all for the RSA JWKs we register:
 # authkestra-op 0.8.0 derives the allowed algorithms from the registered JWK's
 # `kty` (`assertion_algorithms` in authkestra-op-0.8.0/src/client_assertion.rs),
 # never from the assertion's header, so an RSA key allows RS*/PS* and nothing
@@ -186,8 +197,8 @@ allow = [
 # jsonwebtoken reach elliptic-curve 0.14, or when cargo-deny reports the entry as
 # no longer matching.
 ignore = [
-  { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5.5 via jsonwebtoken 11 <- authkestra 0.8; no release clears it (jsonwebtoken 11.1.0 still needs p256 0.13). P-256/P-384 only verify signatures against public keys here; vsms signs RS256 with RSA. See the comment above." },
-  { id = "RUSTSEC-2023-0071", reason = "Marvin Attack (timing sidechannel) only affects RSA PKCS#1v1.5 *decryption*. This graph's `rsa` usage (the OP's RS256 signing, client keypair generation, jsonwebtoken's RS256 backend, which sms-gateway's bearer door (VSA-3b) now verifies with, authkestra-engine's JWK derivation, and sms-fake-aws) is signing/verification and PEM parsing, no decrypt call exists anywhere in the reachable code. Re-verified 2026-10-30 against authkestra 0.8.0. See the comment above for the full analysis and revisit date." },
+  { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5.5 via jsonwebtoken 11 <- authkestra 0.8; no release clears it (jsonwebtoken 11.1.0 still needs p256 0.13). P-256/P-384 only verify signatures against public keys here (a client assertion, and since VSA-4c the upstream IdP's ES256/ES384 id_tokens against its PUBLIC keys); EC signing exists only in sms-fake-oidc, a dev-dependency that generates throwaway test keys. vsms signs RS256 with RSA. See the comment above." },
+  { id = "RUSTSEC-2023-0071", reason = "Marvin Attack (timing sidechannel) only affects RSA PKCS#1v1.5 *decryption*. This graph's `rsa` usage (the OP's RS256 signing, client keypair generation, jsonwebtoken's RS256 backend, which sms-gateway's bearer door (VSA-3b) and the SSO broker's id_token check (VSA-4c) now verify with, authkestra-engine's JWK derivation, sms-fake-aws and sms-fake-oidc) is signing/verification and PEM parsing, no decrypt call exists anywhere in the reachable code. Re-verified 2026-10-30 against authkestra 0.8.0. See the comment above for the full analysis and revisit date." },
   { id = "RUSTSEC-2023-0089", reason = "`atomic-polyfill` is unmaintained with no patched release. It enters only via phonenumber -> postcard -> heapless 0.7, and heapless gates it to AVR/RISC-V/thumbv6m/Xtensa targets — none of which this workspace builds (x86_64 and aarch64 Linux only). `cargo tree -i atomic-polyfill` finds nothing for the host target; only `--target all` reaches it. See the comment above for the full analysis and revisit date." },
   { id = "RUSTSEC-2024-0449", reason = "`unsafe-libyaml` is unmaintained (archived 2024-03-25), an unmaintained notice and not a vulnerability. It enters only through serde_yaml (figment) and serde_yaml_ng, which sms-config uses to read the operator-written deployment configuration; nothing a caller controls is parsed by it. No drop-in replacement exists short of changing the YAML parser, which vpay has deferred for the same reason. See the comment above for the full analysis and revisit date." },
 ]

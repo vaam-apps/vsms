@@ -5,8 +5,9 @@ stamp `lastLoginAt`.
 This system stores password hashes, which the signed transport did not: new
 security surface, not a footnote. Local Argon2id rather than federation, because
 federation needs a second security-sensitive `OpenID` client and an identity
-provider nobody has chosen (VSA-4c brings the Keycloak broker back beside this
-path, it does not replace it).
+provider nobody had chosen. VSA-4c brings the Keycloak broker back beside this
+path (`sso`, behind `human_login.sso`): it does not replace it, and the password
+stays the break-glass way in when the identity provider is down.
 
 # What `authenticate_user` guarantees
 
