@@ -15,7 +15,8 @@ is `machine_tokens` served, the person realm is `human_login` served, addressed 
 `human_login.console_client.client_id`. The realm of a token is its own
 `identity` claim: a person's token carries one and a `client_credentials` token
 never does. A token of a realm not served is refused for that, as
-`HumanToken` or `MachineToken`, before anything else about it is read.
+`HumanToken` or `MachineToken`, after the signature, issuer, expiry and `cnf`
+have been checked and before anything else about it is read.
 
 # What it checks
 

@@ -76,9 +76,13 @@ read about the person, never fed to Layer 2). With one cap, applied by
 [`refuse_device_only_role`]: a person whose role is in [`DEVICE_ONLY_ROLES`]
 (`owner`, `admin`) is refused with a 403 ([`DEVICE_REQUIRED`]) behind a token,
 and acts only from a paired console key. The function runs twice, deliberately:
-in `SignerDirectory::bearer_standing`, where the standing is built, and in
-[`GatewayAuth::authenticate`] on the standing the door recorded, so a standing
-that reached the provider any other way still cannot carry the role.
+in `SignerDirectory::bearer_standing`, where the standing is built, **after** the
+cache read and on the value just read (the cache is shared with the signed door,
+where an `admin` is legitimate, so that is what covers the cache), and in
+[`GatewayAuth::authenticate`] on the standing the door recorded. The second is a
+safety net, not the cache's cover: it catches the case where the first is ever
+moved into the cache loader, and a standing that reached the provider any other
+way. Keep both, and keep the first after the cache read.
 
 A key's own revocation and expiry are read on every request, never cached. The
 standing of its owner (`AppClient`, `User` and `Role`) is cached for 60

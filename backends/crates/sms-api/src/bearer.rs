@@ -143,11 +143,14 @@ pub struct ApiDoors {
     bearer: Option<Arc<dyn BearerVerifier>>,
 }
 
-/// Neither door open: `auth.methods` permits no way to say who a caller is (a
-/// person's token is a way in only beside the keypair or `machine_tokens`: it
-/// is not one on its own, `ConfigError::NoWayIn`). The configuration refuses it
-/// first; this is the same refusal at the place that would otherwise build a
-/// gateway nobody can call.
+/// Neither door open: `auth.methods` permits no way to say who a caller is. A
+/// person's token is a way in only beside the keypair or `machine_tokens`, never
+/// on its own (`ConfigError::NoWayIn`). The configuration refuses it first;
+/// this is the same refusal at the place that would otherwise build a gateway
+/// nobody can call. [`ApiDoors::new`] sees only whether a verifier exists, not
+/// which realms it holds, so the person-realm-alone case is refused one layer up,
+/// where the gateway builds the doors (`sms-gateway`'s `commands::serve::doors`),
+/// with this error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("no way in: neither the signed envelope nor a machine token is accepted")]
 pub struct NoDoor;

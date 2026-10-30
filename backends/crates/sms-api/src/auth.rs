@@ -235,10 +235,15 @@ impl AuthProvider for GatewayAuth {
                 }
                 (Some(signer), None) => directory.standing(&signer, chrono::Utc::now()).await?,
                 // Resolved by the bearer door from rows, not from the token.
-                // A person's token never carries a device-only role; the door
-                // and `SignerDirectory::bearer_standing` already refused it, and
-                // this is the same function a second time, so that a standing
-                // recorded by anything but the door still cannot act as one.
+                // A person's token never carries a device-only role. Guard 1
+                // (`SignerDirectory::person_standing`) already runs on the value
+                // read from the standing cache, which the signed door shares and
+                // where an admin is legitimate, so it covers that cache. This is
+                // guard 2, the same function again, a safety net: if guard 1 were
+                // ever "simplified" into the cache loader, a standing a key just
+                // cached would be served to a token from the cache and only this
+                // would catch it (proven by moving guard 1 into the loader). Keep
+                // both, and keep guard 1 after the cache read.
                 (None, Some(caller)) => {
                     if let Standing::User(person) = &caller.0 {
                         refuse_device_only_role(person)?;
@@ -327,8 +332,7 @@ pub const RESERVED_ROLE_KEYS: &[&str] = &["system", "app"];
 /// person's role or nothing. A password proves one factor and a token outlives
 /// the page that holds it; `owner` and `admin` provision clients, pair keys and
 /// promote people, so those roles ask for the device that holds a key the
-/// server has seen (`Device.adminTrusted`'s counterpart in vsms is a
-/// `ConsoleKey`). Every other role a person's token carries as its row says.
+/// server has seen: a paired `ConsoleKey`. Every other role a person's token carries as its row says.
 pub const DEVICE_ONLY_ROLES: &[&str] = &["owner", "admin"];
 
 /// The 403 body's text for a person whose role acts only from a paired console

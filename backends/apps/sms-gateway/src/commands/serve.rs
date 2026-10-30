@@ -436,9 +436,35 @@ async fn build_op_and_doors(
         Some((router, verifier)) => (Some(router), verifier),
         None => (None, None),
     };
-    let doors = sms_api::ApiDoors::new(config.auth_methods.permits(AuthMethod::Keypair), bearer)
-        .context("auth.methods opens no way into the API")?;
+    let doors = doors(
+        config.auth_methods.permits(AuthMethod::Keypair),
+        ServedGrants::from_methods(&config.auth_methods),
+        bearer,
+    )
+    .context("auth.methods opens no way into the API")?;
     Ok((op_router, doors))
+}
+
+/// The doors the API opens, with the one rule `ApiDoors::new` cannot know: a
+/// person's token is **not a way in on its own**. `ApiDoors::new` sees only a
+/// verifier, and a verifier holding the person realm alone would build a gateway
+/// reachable by people and nobody else (`Off`, no signed door). The
+/// configuration refuses that first (`ConfigError::NoWayIn`,
+/// `can_authenticate_a_caller`); this backs it up where the doors are built, so
+/// a future caller of `serve` that builds the sets some other way still cannot.
+///
+/// # Errors
+///
+/// [`sms_api::NoDoor`] when neither the keypair nor `machine_tokens` is open.
+fn doors(
+    keypair: bool,
+    served: ServedGrants,
+    bearer: Option<Arc<dyn BearerVerifier>>,
+) -> Result<sms_api::ApiDoors, sms_api::NoDoor> {
+    if !keypair && !served.machine_tokens {
+        return Err(sms_api::NoDoor);
+    }
+    sms_api::ApiDoors::new(keypair, bearer)
 }
 
 /// Loads the OP's signing keys, assembles its state, checks the console client
@@ -694,10 +720,11 @@ mod tests {
         );
     }
 
-    /// The six served sets the plan names, through to the doors: a keypair beside
-    /// a person realm opens the bearer door (so the envelope is `Optional`, not
-    /// `Required` as it was before VSA-4b), and `human_login` with nothing else
-    /// is the config's `NoWayIn` (`ConfigError`), refused before this is reached.
+    /// The served sets through to the doors: a keypair beside a person realm
+    /// opens the bearer door (so the envelope is `Optional`, not `Required` as it
+    /// was before VSA-4b), and a person realm with neither the keypair nor
+    /// `machine_tokens` is refused here even though the config refuses it first
+    /// (`ConfigError::NoWayIn`): the doors layer backs it up.
     #[test]
     fn the_doors_follow_the_realms() {
         let block = human("console_client_1");
@@ -720,7 +747,7 @@ mod tests {
                 }
                 Arc::new(Never) as Arc<dyn BearerVerifier>
             });
-            sms_api::ApiDoors::new(keypair, bearer).map(|doors| (doors.keypair(), doors.bearer()))
+            doors(keypair, served, bearer).map(|doors| (doors.keypair(), doors.bearer()))
         };
         // K, K+M, K+H, K+M+H, M, M+H
         assert_eq!(door(true, false, false), Ok((true, false)));
@@ -729,6 +756,10 @@ mod tests {
         assert_eq!(door(true, true, true), Ok((true, true)));
         assert_eq!(door(false, true, false), Ok((false, true)));
         assert_eq!(door(false, true, true), Ok((false, true)));
+        // H alone: a person's token is not a way in by itself.
+        assert_eq!(door(false, false, true), Err(sms_api::NoDoor));
+        // Nothing served, nothing permitted.
+        assert_eq!(door(false, false, false), Err(sms_api::NoDoor));
     }
 
     /// Not a test of a function in this file: the old defaults of the flags

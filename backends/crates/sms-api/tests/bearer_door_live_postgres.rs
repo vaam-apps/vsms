@@ -1221,15 +1221,27 @@ async fn a_persons_token_and_console_key_spend_one_bucket_and_one_idempotency_na
             .header("content-type", "application/json")
             .header("idempotency-key", idempotency_key)
             .body(serde_json::to_vec(&serde_json::json!({"args": {"body": body}})).unwrap());
-        async move { request.send().await.expect("sending").status().as_u16() }
+        async move {
+            let response = request.send().await.expect("sending");
+            let status = response.status().as_u16();
+            (status, response.text().await.unwrap_or_default())
+        }
     };
-    let reused = other_body("a different body", &idempotency_key).await;
-    assert_ne!(
-        reused, 200,
-        "the person's token shares the console key's idempotency namespace"
+    // The layer's exact answer for a key reused with another body: a 422 with the
+    // framework's `VALIDATION_ERROR` envelope and `idempotency_key_conflict`. Any
+    // other refusal (a 401 from a broken standing, a 429, a 5xx) is not it.
+    let (status, text) = other_body("a different body", &idempotency_key).await;
+    assert_eq!(
+        status, 422,
+        "the person's token shares the key's namespace: {text}"
     );
-    let fresh = other_body("a different body", &format!("fresh-{}", suffix())).await;
-    assert_eq!(fresh, 200, "control: another key is a fresh request");
+    assert!(text.contains(r#""code":"VALIDATION_ERROR""#), "{text}");
+    assert!(text.contains("idempotency_key_conflict"), "{text}");
+    let (fresh, text) = other_body("a different body", &format!("fresh-{}", suffix())).await;
+    assert_eq!(
+        fresh, 200,
+        "control: another key is a fresh request: {text}"
+    );
 }
 
 /// An `owner` or an `admin` behind a person's token is a 403 with the device

@@ -2423,6 +2423,8 @@ async fn an_owner_or_admin_signed_in_with_a_password_is_refused_until_a_key_is_p
         ],
     );
     let owner_password = std::fs::read_to_string(&out).expect("the owner's password file");
+    // Read once, and not left lying in the scratch directory.
+    std::fs::remove_file(&out).expect("removing the owner's password file");
     // An admin, seeded the way provision-user leaves one.
     let admin_password = test_password();
     let (admin_id, admin_email) = seed_account_in(

@@ -157,6 +157,25 @@ impl ReservedRoleFixture {
     }
 }
 
+/// Runs `body` as a task of its own, then [`ReservedRoleFixture::cleanup`], and
+/// only then lets a failed assertion in `body` surface.
+///
+/// The fixture drops a table-wide `CHECK` and keeps it dropped until `cleanup`;
+/// an assertion that panicked before reaching `cleanup` left the constraint down
+/// in the per-binary database, and every other test in the file then failed on
+/// the missing constraint instead of on its own assertion. Found when a
+/// sabotage of the person-token path did exactly that.
+async fn cleanup_after<F>(fixture: ReservedRoleFixture, db: &Cratestack, body: F)
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    let outcome = tokio::spawn(body).await;
+    fixture.cleanup(db).await;
+    if let Err(error) = outcome {
+        std::panic::resume_unwind(error.into_panic());
+    }
+}
+
 /// Seeds a `User` pointed at a `Role` keyed `"system"` —
 /// a row `roles_key_not_reserved_check` (§2.10) makes unreachable through
 /// any normal path, so this function briefly drops that constraint and
@@ -264,36 +283,32 @@ async fn a_role_keyed_system_never_authenticates_even_past_the_database_check() 
     let suffix = unique_suffix();
 
     let fixture = seed_reserved_role_account(&db_url, &db, &suffix).await;
-    let base = sealed_fixtures::serve(sealed_fixtures::api_router(&db, TEST_PEPPER)).await;
+    let user_id = fixture.user_id.clone();
+    let body_db = db.clone();
+    // Cleanup runs even when an assertion below fails: see `cleanup_after`.
+    cleanup_after(fixture, &db, async move {
+        let db = body_db;
+        let base = sealed_fixtures::serve(sealed_fixtures::api_router(&db, TEST_PEPPER)).await;
 
-    // A console key paired to this account must be refused on every real
-    // route, because `sms_api::signers` rejects a role_key of "system" - the
-    // guard this test exists to prove.
-    let key = TestKey::console();
-    sealed_fixtures::pair_console_key(&db, &fixture.user_id, &key, chrono::Duration::days(30))
-        .await;
-    let roles = sealed_fixtures::client(&base, &key)
-        .request("GET", "/roles")
-        .send()
-        .await;
-    assert_eq!(
-        roles.status,
-        401,
-        "a console key whose person's role is the reserved key \"system\" must never \
-         authenticate against any real route: {}",
-        roles.text()
-    );
-    assert!(!roles.sealed, "the refusal is the coarse unsigned 401");
-
-    // Deletes the fixture's rows and restores roles_key_not_reserved_check
-    // — see ReservedRoleFixture::cleanup's own doc for why the delete has
-    // to happen before the restore, and why this is safe to run even
-    // after the assertion above (a panic on that assertion would skip
-    // this and leave the constraint down for the rest of this binary's
-    // run, but TEST_MUTEX is held for the whole test, so no other test
-    // observes the gap — only a genuine failure here would need a
-    // follow-up `just test-live-clean`).
-    fixture.cleanup(&db).await;
+        // A console key paired to this account must be refused on every real
+        // route, because `sms_api::signers` rejects a role_key of "system" - the
+        // guard this test exists to prove.
+        let key = TestKey::console();
+        sealed_fixtures::pair_console_key(&db, &user_id, &key, chrono::Duration::days(30)).await;
+        let roles = sealed_fixtures::client(&base, &key)
+            .request("GET", "/roles")
+            .send()
+            .await;
+        assert_eq!(
+            roles.status,
+            401,
+            "a console key whose person's role is the reserved key \"system\" must never \
+             authenticate against any real route: {}",
+            roles.text()
+        );
+        assert!(!roles.sealed, "the refusal is the coarse unsigned 401");
+    })
+    .await;
 }
 
 /// Answers every token with one fixed person of the console: the verifier is not
@@ -361,50 +376,55 @@ async fn a_persons_token_for_a_role_keyed_system_never_authenticates() {
         .await
         .expect("seeding an ordinary person");
 
-    let preview = |base: String| async move {
-        reqwest::Client::new()
-            .post(format!("{base}/$procs/previewMessage"))
-            .bearer_auth(format!("tok-{}", unique_suffix()))
-            .header("accept", "application/json")
-            .header("content-type", "application/json")
-            .body(r#"{"args":{"body":"hello"}}"#)
-            .send()
-            .await
-            .expect("sending")
-            .status()
-            .as_u16()
-    };
-    let router_for = |user_id: String| {
-        sealed_fixtures::api_router_doors(
-            &db,
-            TEST_PEPPER,
-            sms_api::HmacWebhooks::Permitted,
-            sms_api::ApiDoors::new(
-                true,
-                Some(std::sync::Arc::new(OnePerson {
-                    user_id,
-                    client_id: console_id.clone(),
-                })),
+    let reserved_user = fixture.user_id.clone();
+    let ordinary_user = ordinary.id.clone();
+    let body_db = db.clone();
+    // Cleanup runs even when an assertion below fails: see `cleanup_after`.
+    cleanup_after(fixture, &db, async move {
+        let db = body_db;
+        let preview = |base: String| async move {
+            reqwest::Client::new()
+                .post(format!("{base}/$procs/previewMessage"))
+                .bearer_auth(format!("tok-{}", unique_suffix()))
+                .header("accept", "application/json")
+                .header("content-type", "application/json")
+                .body(r#"{"args":{"body":"hello"}}"#)
+                .send()
+                .await
+                .expect("sending")
+                .status()
+                .as_u16()
+        };
+        let router_for = |user_id: String| {
+            sealed_fixtures::api_router_doors(
+                &db,
+                TEST_PEPPER,
+                sms_api::HmacWebhooks::Permitted,
+                sms_api::ApiDoors::new(
+                    true,
+                    Some(std::sync::Arc::new(OnePerson {
+                        user_id,
+                        client_id: console_id.clone(),
+                    })),
+                )
+                .expect("a door is open"),
             )
-            .expect("a door is open"),
-        )
-    };
+        };
 
-    let control = sealed_fixtures::serve(router_for(ordinary.id.clone())).await;
-    assert_eq!(
-        preview(control).await,
-        200,
-        "an ordinary person's token acts"
-    );
-    let reserved = sealed_fixtures::serve(router_for(fixture.user_id.clone())).await;
-    assert_eq!(
-        preview(reserved).await,
-        401,
-        "a token for a person whose role is the reserved key \"system\" must never authenticate"
-    );
-
-    // The ordinary person sits on the landing role the cleanup reassigns to.
-    fixture.cleanup(&db).await;
+        let control = sealed_fixtures::serve(router_for(ordinary_user.clone())).await;
+        assert_eq!(
+            preview(control).await,
+            200,
+            "an ordinary person's token acts"
+        );
+        let reserved = sealed_fixtures::serve(router_for(reserved_user.clone())).await;
+        assert_eq!(
+            preview(reserved).await,
+            401,
+            "a token for a person whose role is the reserved key \"system\" must never authenticate"
+        );
+    })
+    .await;
 }
 
 /// **The first of two independent guards against a `Role` keyed `"system"` —
