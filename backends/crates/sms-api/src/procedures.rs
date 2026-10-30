@@ -11,6 +11,7 @@ use crate::audit_log;
 use crate::auth::PrincipalKind;
 use crate::cache::TtlCache;
 use crate::errors::map_database_error;
+use crate::hmac_gate::HmacWebhooks;
 use crate::pepper::{HashPepper, hmac_sha256_hex};
 use crate::rbac::require_permission;
 use crate::route_simulator;
@@ -149,6 +150,13 @@ pub struct Procedures {
     /// that two browser tabs open on the same dashboard don't double the
     /// ~26-query cost `dashboard_snapshot`'s own doc explains.
     dashboard_cache: std::sync::Arc<TtlCache<String, schema::DashboardSummary>>,
+    /// VSA-1: whether `auth.methods` permits `hmac_webhooks`. `rotateWebhookSecret`,
+    /// a `switchWebhookDeliveryMode` to `hmac` and a `replayWebhookAttempt` of an
+    /// `hmac` endpoint's attempt refuse (422, `auth_method_disabled`) when it does
+    /// not. A constructor argument with no default: a default of `Permitted` would
+    /// fail open for a caller that forgot to say, so every construction site states
+    /// it (the router passes the deployment's).
+    hmac_webhooks: HmacWebhooks,
 }
 
 // No `Default` impl on purpose (#134): a default would have to invent a
@@ -160,13 +168,19 @@ impl Procedures {
     /// `pepper` is real secret material — see `pepper.rs`'s module doc.
     /// There is no default: every caller (the router, every live-Postgres
     /// test, `examples/send_test_message.rs`) must supply one explicitly.
+    ///
+    /// `hmac_webhooks` is `auth.methods`' answer for `hmac_webhooks` (VSA-1), and
+    /// has no default for the same reason: `Permitted` is the answer a deployment
+    /// that never wrote the key gets, and a caller that simply omitted the argument
+    /// would have turned the method on, silently, in a deployment that turned it off.
     #[must_use]
-    pub fn new(pepper: HashPepper) -> Self {
+    pub fn new(pepper: HashPepper, hmac_webhooks: HmacWebhooks) -> Self {
         Self {
             app_cache: std::sync::Arc::new(TtlCache::new(std::time::Duration::from_mins(1))),
             operator_cache: std::sync::Arc::new(TtlCache::new(std::time::Duration::from_mins(5))),
             pepper,
             dashboard_cache: std::sync::Arc::new(TtlCache::new(std::time::Duration::from_secs(15))),
+            hmac_webhooks,
         }
     }
 
@@ -1010,6 +1024,10 @@ impl Procedures {
         args: schema::EndpointInput,
     ) -> Result<schema::WebhookEndpoint, CratestackError> {
         require_permission(ctx, "webhook:manage")?;
+        // VSA-1: before anything is read, so the answer does not depend on
+        // whether the endpoint exists or which mode it is in.
+        self.hmac_webhooks
+            .require("a signing secret cannot be rotated (rotateWebhookSecret)")?;
 
         let sys = Self::sys();
         let endpoint_id = args.endpointId;
@@ -1105,6 +1123,12 @@ impl Procedures {
             mode,
             audience,
         } = args;
+        // VSA-1: a switch to `sealed` is the way out of `hmac` and is always
+        // allowed; a switch to `hmac` mints a secret and is not.
+        if mode == schema::WebhookDeliveryMode::hmac {
+            self.hmac_webhooks
+                .require("an endpoint cannot be switched to hmac (switchWebhookDeliveryMode)")?;
+        }
 
         db.transaction(async |tx| {
             let sys = &sys;
@@ -1176,6 +1200,11 @@ impl Procedures {
     /// endpoint (e.g. after a 410 Gone) is a separate, more consequential
     /// decision than retrying one delivery, left to the existing
     /// `PATCH /webhook_endpoints/{id}` route.
+    ///
+    /// VSA-1: refused (422 `auth_method_disabled`) for an `hmac` endpoint's
+    /// attempt while `auth.methods` does not permit `hmac_webhooks`, after the
+    /// attempt is found and before anything is written: no worker would claim it.
+    /// A `sealed` endpoint's attempt replays as ever.
     async fn replay_attempt(
         &self,
         db: &schema::IsolatedCratestack,
@@ -1216,6 +1245,33 @@ impl Procedures {
             }
 
             let endpoint_id = attempt.endpointId.clone();
+
+            // VSA-1: with the method off no worker claims an `hmac` endpoint's
+            // attempts, so a replay would answer 200 and leave the attempt
+            // `pending` and held back. Refused instead, the way a rotation is.
+            // The endpoint is read only when the method is off: a deployment that
+            // permits it asks nothing new.
+            if !self.hmac_webhooks.is_permitted() {
+                let hmac_endpoint = db
+                    .webhook_endpoint()
+                    .find_many()
+                    .where_expr(FilterExpr::from(
+                        webhook_endpoint::id().eq(endpoint_id.clone()),
+                    ))
+                    .limit(1)
+                    .run_in_tx(tx, sys)
+                    .await?
+                    .into_iter()
+                    .next()
+                    .is_some_and(|endpoint| {
+                        endpoint.deliveryMode == schema::WebhookDeliveryMode::hmac
+                    });
+                if hmac_endpoint {
+                    self.hmac_webhooks.require(
+                        "an hmac endpoint's attempt cannot be replayed (replayWebhookAttempt)",
+                    )?;
+                }
+            }
 
             let updated = db
                 .webhook_attempt()
@@ -2699,8 +2755,8 @@ mod tests {
     fn keyed_hash_hex_uses_this_procedures_own_pepper() {
         let pepper_a = HashPepper::new("a".repeat(crate::pepper::MIN_PEPPER_BYTES)).unwrap();
         let pepper_b = HashPepper::new("b".repeat(crate::pepper::MIN_PEPPER_BYTES)).unwrap();
-        let procedures_a = Procedures::new(pepper_a.clone());
-        let procedures_b = Procedures::new(pepper_b);
+        let procedures_a = Procedures::new(pepper_a.clone(), HmacWebhooks::Permitted);
+        let procedures_b = Procedures::new(pepper_b, HmacWebhooks::Permitted);
 
         let hash = procedures_a.keyed_hash_hex("+237677123456");
         assert!(hash.starts_with("hmac-sha256-v1:"));

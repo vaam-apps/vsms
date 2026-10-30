@@ -185,7 +185,7 @@ The events a delivery carries, in either mode (`type` in the envelope):
 
 ### Choosing a delivery mode
 
-An endpoint is delivered to in one of two modes, chosen when it is created. Both are always available.
+An endpoint is delivered to in one of two modes, chosen when it is created. Both are available unless the deployment has switched `hmac` off (below).
 
 |                                 | `sealed` (recommended)                                                                      | `hmac` (legacy)                                                               |
 | ------------------------------- | ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
@@ -195,12 +195,27 @@ An endpoint is delivered to in one of two modes, chosen when it is created. Both
 | Rotation                        | None of your own: the gateway key's rotation is the one every receiver already follows      | `rotateWebhookSecret`; the old secret keeps verifying until the next rotation |
 | Existing endpoints              | New ones                                                                                    | **Every endpoint that existed before the sealed mode is `hmac`, unchanged**   |
 
-**Use `sealed` for anything new**, and for any receiver that can run an opener: you hold nothing secret, so a leaked database or backup cannot forge a delivery to you. Keep `hmac` for a receiver that already verifies `X-Sms-Signature` and has not moved yet; `hmac` is a legacy mode that a deployment will later be able to switch off, so plan the move. Moving an endpoint is the `switchWebhookDeliveryMode` procedure, called by an operator (`owner`, `admin` or `developer`, with `webhook:manage`): `POST /$procs/switchWebhookDeliveryMode` with `{"args": {"endpointId": "<id>", "mode": "sealed" | "hmac", "audience": "<your audience>"}}`. It validates first, answers `422` with the reason where a raw `PATCH` would be refused by the database (as a `500`), and does the bookkeeping:
+**Use `sealed` for anything new**, and for any receiver that can run an opener: you hold nothing secret, so a leaked database or backup cannot forge a delivery to you. Keep `hmac` for a receiver that already verifies `X-Sms-Signature` and has not moved yet; `hmac` is a legacy mode that a deployment can switch off (below), so plan the move. Moving an endpoint is the `switchWebhookDeliveryMode` procedure, called by an operator (`owner`, `admin` or `developer`, with `webhook:manage`): `POST /$procs/switchWebhookDeliveryMode` with `{"args": {"endpointId": "<id>", "mode": "sealed" | "hmac", "audience": "<your audience>"}}`. It validates first, answers `422` with the reason where a raw `PATCH` would be refused by the database (as a `500`), and does the bookkeeping:
 
 - to `sealed`: `audience` is required (and must be free: a taken one is `409`), the endpoint's URL must be one a delivery can be sealed for (an `hmac` endpoint registered with a query string cannot move until its URL changes), and the secret, previous secret and rotation stamp are cleared.
 - to `hmac`: send no `audience` (it is refused and the endpoint's own is released); a new secret is minted server-side and returned in the answer, and your receiver must be given it, because a sealed endpoint held none to reuse.
 
 Switching to the mode the endpoint is already in is refused. Creating an endpoint takes the same fields: `deliveryMode` is required, a `sealed` one names its `audience` and an `hmac` one carries its `secret` (at least 32 characters; the console generates `whsec_` and 64 random hex characters, and so should a client; `rotateWebhookSecret` and `switchWebhookDeliveryMode` mint every later one). An `hmac` endpoint's secret is returned to the operator roles that can write the endpoint, and is redacted from the audit history. (A raw `PATCH` of `deliveryMode` is still accepted by the generated route for an operator who moves every column in step, with the endpoint's `If-Match`; one that does not breaks a CHECK of the database and is answered `500`, not `422`. Use the procedure.)
+
+### When the deployment has switched `hmac` off
+
+Which ways of authenticating a deployment accepts is its operator's choice (`auth.methods`, [`architecture.md`](architecture.md) section 4.9), and **a deployment that serves one application, vaam, permits only `keypair`**. Ask the gateway, with no credential:
+
+```bash
+curl -s https://<gateway>/.well-known/vsms-auth     # {"methods":["keypair","hmac_webhooks"]}
+```
+
+The list is what the deployment offers: `hmac_webhooks` is in it when `hmac` endpoints are allowed. When it is not:
+
+- creating an endpoint with `deliveryMode: hmac`, updating one to `hmac` or giving it a `secret` or `previous secret`, `switchWebhookDeliveryMode` to `hmac`, `rotateWebhookSecret` and `replayWebhookAttempt` of an `hmac` endpoint's attempt all answer **`422`**. The envelope's `code` is `VALIDATION_ERROR` (every `422` has it); **match the message, which starts with `auth_method_disabled:`**. Nothing is written (a replay would only reset the attempt to `pending`, where nothing claims it). A `sealed` endpoint is created, updated, switched to, replayed and deleted as ever, and so is any change to an `hmac` endpoint that touches neither its mode nor a secret (deactivating it, say).
+- **nothing is sent to an `hmac` endpoint that already exists.** Its attempts stay `pending`: no worker claims them while the method is off, so nothing is written to them. They are not counted toward the endpoint's `maxAttempts` and do not open its circuit breaker, because no request was made, and once the deployment permits `hmac` again they are delivered, with every try they had. The way out is to move the endpoint to `sealed` (above): the attempts that waited are then delivered sealed, and its receiver gets deliveries it can open.
+
+Absent from the list, `machine_tokens` and `human_login` are not served in this release: a deployment can permit them, none can use them yet.
 
 ### Sealed mode
 

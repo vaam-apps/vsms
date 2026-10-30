@@ -47,8 +47,15 @@ pub fn write_server_key_files(dir: &std::path::Path) -> (std::path::PathBuf, std
 }
 
 /// `sms_api::router` over `db`, sealing with the test server key and the
-/// production budgets.
+/// production budgets, with every authentication method permitted (an absent
+/// `auth.methods`).
 pub fn api_router(db: &Cratestack, pepper: &str) -> Router {
+    api_router_with(db, pepper, sms_api::HmacWebhooks::Permitted)
+}
+
+/// [`api_router`] for a deployment whose `auth.methods` says whether
+/// `hmac_webhooks` is permitted (VSA-1).
+pub fn api_router_with(db: &Cratestack, pepper: &str, hmac: sms_api::HmacWebhooks) -> Router {
     sms_api::router(
         db.clone(),
         server_keys().into_signer(),
@@ -56,6 +63,7 @@ pub fn api_router(db: &Cratestack, pepper: &str) -> Router {
         sms_api::DEFAULT_IDEMPOTENCY_TTL,
         sms_api::default_rate_limit_config(),
         sms_api::default_source_rate_limit_config(),
+        hmac,
     )
     .expect("the envelope layer accepts its configuration")
 }

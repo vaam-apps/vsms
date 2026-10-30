@@ -7,8 +7,8 @@
 // # Two delivery modes (VS-8, VS-8R)
 //
 // An endpoint's `deliveryMode` says how its deliveries are authenticated, and
-// the console offers both (a deployment will later be able to switch `hmac`
-// off, VSA-1):
+// the console offers both (a deployment can switch `hmac` off, VSA-1, and
+// the API then answers 422 `auth_method_disabled` for an hmac write):
 //
 // - `sealed` (recommended): a request signed with the gateway's own envelope
 //   key. The endpoint carries an `audience`, the name the receiver's envelope

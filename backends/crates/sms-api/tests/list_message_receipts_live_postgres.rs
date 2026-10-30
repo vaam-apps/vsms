@@ -293,7 +293,7 @@ async fn returns_every_receipt_for_the_message_oldest_first() {
     // now requires an `Authorized` witness, obtainable only through
     // `invoke_with_db` — the "sanctioned way to invoke a procedure from
     // non-HTTP code" per that function's own doc comment.
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let ctx = app_caller_with_sms_read(&app_id);
     let args = list_message_receipts::Args {
         args: schema::MessageReceiptsInput {
@@ -387,7 +387,7 @@ async fn a_message_with_no_receipts_returns_an_empty_list_not_an_error() {
 
     // cratestack 0.7.13 (cratestack#512): see the identical comment on the
     // test above.
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let ctx = app_caller_with_sms_read(&app_id);
     let args = list_message_receipts::Args {
         args: schema::MessageReceiptsInput {
@@ -449,7 +449,7 @@ async fn denies_a_caller_with_no_sms_read_scope() {
     // checks first — `auth().kind == "app"` and `appId == auth().appId`
     // both admit this caller (`schema.cstack`'s `listMessageReceipts`
     // `@allow`, `Message.detail`'s own `@@allow`), so this reaches Layer 2.
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let ctx = app_caller_without_sms_read(&app_id);
     let args = list_message_receipts::Args {
         args: schema::MessageReceiptsInput {

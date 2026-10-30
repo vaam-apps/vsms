@@ -9,6 +9,16 @@ drift further).
 and is refused, VS-8R), `switchWebhookDeliveryMode` (VS-8R: a validated move
 between `sealed` and `hmac`), (#43) `replayWebhookAttempt`, (#56) `requeueJob`,
 (#57) `workerLocks`, and (#50) `listMessageReceipts` are implemented.
+
+**With `auth.methods` not permitting `hmac_webhooks` (VSA-1)**, `rotateWebhookSecret`
+and a `switchWebhookDeliveryMode` to `hmac` answer 422 (`auth_method_disabled`)
+before they read anything; a switch to `sealed` is the way out and is unaffected.
+`replayWebhookAttempt` answers the same for an `hmac` endpoint's attempt, once it
+has found the attempt and read the endpoint's mode (a replay would reset the
+attempt to `pending`, where no worker claims it); a `sealed` endpoint's replays as ever.
+`Procedures::new` takes it as an argument, with no default (`Permitted`, an absent
+key's meaning, would fail open for a caller that forgot to say); `hmac_gate.md` has the whole
+switch, including the generated `POST` and `PATCH` it cannot reach from here.
 `cancelMessage` and `enqueueJob` touch the job queue or a mutation this
 milestone doesn't build yet; each returns a clearly-labelled error
 naming the milestone that will build it, rather than a plausible-

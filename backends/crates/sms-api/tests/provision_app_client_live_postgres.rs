@@ -124,7 +124,10 @@ async fn provision(
     db: &Cratestack,
     args: provision_app_client::Args,
 ) -> Result<schema::ProvisionClientResult, CratestackError> {
-    let procedures = Procedures::new(HashPepper::new(PEPPER).expect("pepper meets the minimum"));
+    let procedures = Procedures::new(
+        HashPepper::new(PEPPER).expect("pepper meets the minimum"),
+        sms_api::HmacWebhooks::Permitted,
+    );
     let ctx = owner();
     provision_app_client::invoke_with_db(db, &args, &ctx, |db, authorized| {
         let (p, c, a) = (procedures.clone(), ctx.clone(), args.clone());

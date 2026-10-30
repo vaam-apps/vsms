@@ -36,7 +36,8 @@ export type EventType = (typeof EVENT_TYPES)[number];
 
 // How an endpoint's deliveries are authenticated (`WebhookEndpoint.deliveryMode`,
 // VS-8R). `sealed` is the recommended one; `hmac` is the legacy scheme a
-// deployment will later be able to switch off (VSA-1).
+// deployment can switch off (`auth.methods`, VSA-1: creating, switching to or
+// rotating one then answers 422 `auth_method_disabled`).
 export const DELIVERY_MODES = ["sealed", "hmac"] as const;
 export type DeliveryMode = (typeof DELIVERY_MODES)[number];
 

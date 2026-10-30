@@ -253,7 +253,7 @@ async fn replaying_a_dead_attempt_resets_it_to_pending_with_a_fresh_counter() {
     // now requires an `Authorized` witness, obtainable only through
     // `invoke_with_db` — the "sanctioned way to invoke a procedure from
     // non-HTTP code" per that function's own doc comment.
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let ctx = developer_with_webhook_manage();
     let args = replay_webhook_attempt::Args {
         args: schema::ReplayWebhookAttemptInput {
@@ -312,7 +312,7 @@ async fn replaying_a_failed_attempt_resets_it_to_pending() {
 
     // cratestack 0.7.13 (cratestack#512): see the identical comment on the
     // test above.
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let ctx = developer_with_webhook_manage();
     let args = replay_webhook_attempt::Args {
         args: schema::ReplayWebhookAttemptInput {
@@ -367,7 +367,7 @@ async fn replay_also_clears_the_endpoints_open_circuit_breaker() {
     .await;
 
     // cratestack 0.7.13 (cratestack#512): see the identical comment above.
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let ctx = developer_with_webhook_manage();
     let args = replay_webhook_attempt::Args {
         args: schema::ReplayWebhookAttemptInput {
@@ -418,7 +418,7 @@ async fn replaying_a_non_replayable_attempt_is_a_conflict_not_a_crash() {
     let suffix = unique_suffix();
     let app_id = seed_app(&db, &suffix).await;
     let endpoint = seed_endpoint(&db, &suffix, &app_id).await;
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
 
     for (label, state) in [
         ("pending", AttemptState::pending),
@@ -493,7 +493,7 @@ async fn replaying_an_unknown_attempt_id_is_refused() {
     // `Forbidden` expectation (see the doc comment above) the real,
     // production-accurate outcome rather than an artifact of the direct
     // call.
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let ctx = developer_with_webhook_manage();
     let args = replay_webhook_attempt::Args {
         args: schema::ReplayWebhookAttemptInput {
@@ -563,7 +563,7 @@ async fn replay_denies_a_caller_with_no_webhook_manage_permission() {
     // (`schema.cstack`'s `replayWebhookAttempt` `@allow` and
     // `WebhookAttempt.detail`'s own `@@allow`, per the doc comment above),
     // so this reaches Layer 2.
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let ctx = developer_without_permission();
     let args = replay_webhook_attempt::Args {
         args: schema::ReplayWebhookAttemptInput {

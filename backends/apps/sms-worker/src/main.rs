@@ -310,6 +310,11 @@ async fn main() -> Result<()> {
         db: sms_api::schema::Cratestack::builder(pool).build(),
         providers: Arc::new(providers),
         webhook_sealer,
+        hmac_webhooks: sms_api::HmacWebhooks::from_permitted(
+            config
+                .auth_methods
+                .permits(sms_config::AuthMethod::HmacWebhooks),
+        ),
     };
 
     // Unconditional — not gated on `drain` being one of `--roles`. Every

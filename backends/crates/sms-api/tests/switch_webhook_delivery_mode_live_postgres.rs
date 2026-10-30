@@ -69,6 +69,7 @@ fn procedures() -> Procedures {
     Procedures::new(
         HashPepper::new("switch-delivery-mode-live-postgres-test-pepper-well-over-minimum")
             .expect("test pepper meets HashPepper::new's minimum length"),
+        sms_api::HmacWebhooks::Permitted,
     )
 }
 

@@ -299,7 +299,7 @@ fn args_with_class(
 async fn a_well_formed_send_is_accepted_and_classified() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let (client_id, _app) = seed_app_and_client(&db, 1000, None).await;
     let sender = seed_approved_sender(&db).await;
 
@@ -330,7 +330,7 @@ async fn a_well_formed_send_is_accepted_and_classified() {
 async fn an_unknown_client_id_is_unauthorized() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
 
     // cratestack 0.7.13 (cratestack#512): see the identical comment on the
     // test above.
@@ -354,7 +354,7 @@ async fn an_unknown_client_id_is_unauthorized() {
 async fn a_human_caller_is_rejected_with_a_clear_reason_not_a_guess() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     // #24: give this caller the `sms:send` scope it would need to clear
     // `require_permission` (Layer 2), so the error asserted below is the
     // one this test actually means to exercise — `caller_client_id`'s
@@ -403,7 +403,7 @@ async fn a_human_caller_is_rejected_with_a_clear_reason_not_a_guess() {
 async fn an_opted_out_recipient_is_refused_before_persistence() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let (client_id, _app) = seed_app_and_client(&db, 1000, None).await;
     let sender = seed_approved_sender(&db).await;
 
@@ -469,7 +469,7 @@ fn sha_of(input: &str) -> String {
 async fn a_full_monthly_quota_is_refused() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     // Quota of 0: any send at all should already be "at" quota.
     let (client_id, _app) = seed_app_and_client(&db, 0, None).await;
     let sender = seed_approved_sender(&db).await;
@@ -494,7 +494,7 @@ async fn a_full_monthly_quota_is_refused() {
 async fn no_sender_id_and_no_default_is_refused() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let (client_id, _app) = seed_app_and_client(&db, 1000, None).await;
 
     // cratestack 0.7.13 (cratestack#512): calling the trait method directly
@@ -517,7 +517,7 @@ async fn no_sender_id_and_no_default_is_refused() {
 async fn an_unregistered_sender_id_is_refused() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let (client_id, _app) = seed_app_and_client(&db, 1000, None).await;
 
     // cratestack 0.7.13 (cratestack#512): calling the trait method directly
@@ -540,7 +540,7 @@ async fn an_unregistered_sender_id_is_refused() {
 async fn an_app_default_sender_is_used_when_none_is_given() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let sender = seed_approved_sender(&db).await;
     let sender_row = db
         .sender_id()
@@ -577,7 +577,7 @@ async fn an_app_default_sender_is_used_when_none_is_given() {
 async fn an_unrecognised_prefix_classifies_as_unknown_not_a_guess() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let (client_id, _app) = seed_app_and_client(&db, 1000, None).await;
     let sender = seed_approved_sender(&db).await;
 
@@ -653,7 +653,7 @@ async fn the_stored_hash_is_keyed_by_pepper_not_just_the_msisdn() {
     // the closure's own body while the returned future still borrows `&self`
     // from it (E0515), the same trap `&owner()` called inline hits elsewhere
     // in this workspace's live suites.
-    let procedures_a = Procedures::new(test_pepper());
+    let procedures_a = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let sent_a = send_message::invoke_with_db(&db, &args_a, &ctx_a, |db, authorized| {
         let (p, c, a) = (procedures_a.clone(), ctx_a.clone(), args_a.clone());
         async move { p.send_message(&db, &c, a, authorized).await }
@@ -665,7 +665,7 @@ async fn the_stored_hash_is_keyed_by_pepper_not_just_the_msisdn() {
     let (client_b, _app_b) = seed_app_and_client(&db, 1000, None).await;
     let ctx_b = app_caller(&client_b);
     let args_b = args(to, "hi", Some(&sender));
-    let procedures_b = Procedures::new(other_pepper);
+    let procedures_b = Procedures::new(other_pepper, sms_api::HmacWebhooks::Permitted);
     let sent_b = send_message::invoke_with_db(&db, &args_b, &ctx_b, |db, authorized| {
         let (p, c, a) = (procedures_b.clone(), ctx_b.clone(), args_b.clone());
         async move { p.send_message(&db, &c, a, authorized).await }
@@ -682,7 +682,7 @@ async fn the_stored_hash_is_keyed_by_pepper_not_just_the_msisdn() {
     let (client_c, _app_c) = seed_app_and_client(&db, 1000, None).await;
     let ctx_c = app_caller(&client_c);
     let args_c = args(to, "hi", Some(&sender));
-    let procedures_c = Procedures::new(test_pepper());
+    let procedures_c = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let sent_c = send_message::invoke_with_db(&db, &args_c, &ctx_c, |db, authorized| {
         let (p, c, a) = (procedures_c.clone(), ctx_c.clone(), args_c.clone());
         async move { p.send_message(&db, &c, a, authorized).await }
@@ -742,7 +742,7 @@ async fn seed_consent(
 async fn a_marketing_send_is_refused_but_a_transactional_send_to_the_same_recipient_is_not() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let (client_id, _app) = seed_app_and_client(&db, 1000, None).await;
     let sender = seed_approved_sender(&db).await;
     let to = unique_mtn_msisdn();
@@ -798,7 +798,7 @@ async fn a_marketing_send_is_refused_but_a_transactional_send_to_the_same_recipi
 async fn a_notification_send_with_no_consent_record_is_refused() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let (client_id, _app) = seed_app_and_client(&db, 1000, None).await;
     let sender = seed_approved_sender(&db).await;
     let to = unique_mtn_msisdn();
@@ -838,7 +838,7 @@ async fn a_notification_send_with_no_consent_record_is_refused() {
 async fn a_notification_send_with_a_matching_consent_record_succeeds() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let (client_id, app) = seed_app_and_client(&db, 1000, None).await;
     let sender = seed_approved_sender(&db).await;
     let to = unique_mtn_msisdn();
@@ -869,7 +869,7 @@ async fn a_notification_send_with_a_matching_consent_record_succeeds() {
 async fn a_consent_record_scoped_to_a_different_class_does_not_authorise_this_one() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let (client_id, app) = seed_app_and_client(&db, 1000, None).await;
     let sender = seed_approved_sender(&db).await;
     let to = unique_mtn_msisdn();
@@ -904,7 +904,7 @@ async fn a_consent_record_scoped_to_a_different_class_does_not_authorise_this_on
 async fn an_opted_out_recipient_still_receives_an_otp_or_transactional_message() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let (client_id, _app) = seed_app_and_client(&db, 1000, None).await;
     let sender = seed_approved_sender(&db).await;
     let to = unique_mtn_msisdn();
@@ -977,7 +977,7 @@ async fn an_opted_out_recipient_still_receives_an_otp_or_transactional_message()
 async fn a_marketing_send_scheduled_into_quiet_hours_is_refused_however_it_is_accepted() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let (client_id, app) = seed_app_and_client(&db, 1000, None).await;
     let sender = seed_approved_sender(&db).await;
     let to = unique_mtn_msisdn();
@@ -1040,7 +1040,7 @@ async fn a_marketing_send_scheduled_into_quiet_hours_is_refused_however_it_is_ac
 async fn a_marketing_send_matches_the_real_clocks_current_quiet_hours_state() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let (client_id, app) = seed_app_and_client(&db, 1000, None).await;
     let sender = seed_approved_sender(&db).await;
     let to = unique_mtn_msisdn();

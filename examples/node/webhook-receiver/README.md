@@ -14,7 +14,7 @@ receiver serves exactly one, named by `WEBHOOK_RECEIVER_MODE`:
   is configured. Most of this file describes it.
 - **`hmac`**: the original `X-Sms-Signature` scheme, signed with a secret shared
   with the endpoint, for a receiver that has not moved to the seal yet. It is a
-  legacy mode that a deployment will later be able to switch off. `src/signature.ts`
+  legacy mode that a deployment can switch off (`auth.methods`, VSA-1). `src/signature.ts`
   verifies it, `src/hmac-opener.ts` fits it to the same handler, and
   [its section below](#hmac-mode) says how to configure it.
 

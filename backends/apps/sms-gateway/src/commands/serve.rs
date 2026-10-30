@@ -8,10 +8,11 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use cratestack::FilterExpr;
 use cratestack::sqlx::postgres::PgPoolOptions;
+use sms_api::HmacWebhooks;
 use sms_api::schema::{Cratestack, provider as provider_filter};
-use sms_config::{Binary, Providers};
+use sms_config::{AuthMethod, Binary, Providers};
 use sms_provider::SmsProvider;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::commands::server_keys;
 use crate::{dlr, health};
@@ -239,6 +240,13 @@ pub(crate) async fn serve_command(args: ServeArgs) -> Result<()> {
         "configuration loaded"
     );
 
+    // VSA-1: which ways of authenticating this deployment permits. Absent is
+    // all four; the line is where an operator who believes they narrowed the list
+    // sees that they did not.
+    let hmac_webhooks =
+        HmacWebhooks::from_permitted(config.auth_methods.permits(AuthMethod::HmacWebhooks));
+    log_auth_methods(&config.auth_methods);
+
     // #134: validated before anything else in this branch runs — failing
     // loudly on a missing/too-short pepper at startup, not at the first
     // `sendMessage` call. The loader refuses a missing or unset value; this is
@@ -273,6 +281,29 @@ pub(crate) async fn serve_command(args: ServeArgs) -> Result<()> {
     // own module doc for the full mechanism.
     sms_api::webhooks::register_subscribers(&db);
 
+    // VSA-1: how many `hmac` endpoints exist and what this process does about
+    // them. After the registration above and before anything is served; a failed
+    // count is logged, never fatal.
+    match sms_api::HmacBoot::read(&db, &sys, hmac_webhooks).await {
+        Ok(boot) if boot.is_warning() => {
+            warn!(
+                hmac_endpoints = boot.count,
+                hmac_webhooks = false,
+                "{}",
+                boot.message()
+            );
+        }
+        Ok(boot) => {
+            info!(
+                hmac_endpoints = boot.count,
+                hmac_webhooks = boot.hmac.is_permitted(),
+                "{}",
+                boot.message()
+            );
+        }
+        Err(error) => warn!(%error, "counting hmac webhook endpoints at boot failed"),
+    }
+
     let dlr_router = build_dlr_router(&db, &sys, &config.providers, &args.config.profile).await?;
     // #157: /readyz needs the same pooled handle every other router
     // shares — cloned here, before `sms_api::router` takes `db` by value as
@@ -285,6 +316,7 @@ pub(crate) async fn serve_command(args: ServeArgs) -> Result<()> {
         ..
     } = args;
     let api = config.api;
+    let auth_discovery = crate::auth_discovery::router(&config.auth_methods);
 
     let app = sms_api::router(
         db,
@@ -299,15 +331,19 @@ pub(crate) async fn serve_command(args: ServeArgs) -> Result<()> {
             api.source_rate_limit.burst,
             api.source_rate_limit.refill_per_second,
         ),
+        hmac_webhooks,
     )
     .context("assembling the signed-transport router")?
     // Everything merged from here on sits OUTSIDE the envelope layer, which
     // `sms_api::router` applied to its own routes only: the provider
     // callbacks (a provider cannot sign) and the probes. See
-    // `sms_api::router::router`'s doc. There is nothing else: no token
-    // endpoint, no discovery document, no login.
+    // `sms_api::router::router`'s doc. There is no token endpoint, no OpenID
+    // discovery document and no login; the one document is the list of
+    // authentication methods (`/.well-known/vsms-auth`, VSA-1), which a client
+    // must be able to read before it can sign.
     .merge(dlr_router)
-    .merge(health_router);
+    .merge(health_router)
+    .merge(auth_discovery);
 
     let listener = tokio::net::TcpListener::bind(&listen)
         .await
@@ -368,6 +404,21 @@ async fn spawn_metrics_server(
         .with_graceful_shutdown(shutdown_signal())
         .await
     }))
+}
+
+/// The boot line for `auth.methods` (VSA-1): which methods are permitted, which
+/// of them this release serves, and whether the key was written at all. Method
+/// names only, never a key.
+fn log_auth_methods(methods: &sms_config::AuthMethods) {
+    let names = |iter: &mut dyn Iterator<Item = AuthMethod>| {
+        iter.map(AuthMethod::as_str).collect::<Vec<_>>().join(",")
+    };
+    info!(
+        permitted = %names(&mut methods.permitted()),
+        served = %names(&mut methods.served()),
+        explicit = methods.is_explicit(),
+        "authentication methods (auth.methods; an absent key permits every method)"
+    );
 }
 
 /// Resolve on SIGINT *or* SIGTERM so in-flight requests finish.

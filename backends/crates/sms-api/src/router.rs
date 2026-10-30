@@ -18,6 +18,7 @@ use cratestack::ratelimit::{
 use cratestack_codec_json::JsonCodec;
 
 use crate::auth::SignedAuth;
+use crate::hmac_gate::{HmacWebhooks, enforce_hmac_gate};
 use crate::owner_grant::{OwnerGrantState, enforce_owner_grant_guard};
 use crate::pair_scope::enforce_pair_scope_guard;
 use crate::pepper::HashPepper;
@@ -341,6 +342,10 @@ fn source_fingerprint(req: &Request) -> String {
 /// with are read from `ClientKey` and `ConsoleKey` on every request. Fails
 /// only if the envelope layer refuses its own configuration.
 ///
+/// `hmac_webhooks` is `auth.methods`' answer for `hmac_webhooks`
+/// ([`HmacWebhooks`]), read once by `sms-gateway serve`. It decides the generated
+/// `WebhookEndpoint` writes here and the procedures that mint a signing secret.
+///
 /// `pepper` is real secret material (#134) — see `pepper.rs`'s module doc for
 /// the scheme and the rotation consequence. `sms-gateway serve`'s CLI
 /// parsing rejects a missing or too-short pepper before this is ever
@@ -369,7 +374,11 @@ fn source_fingerprint(req: &Request) -> String {
 ///    the principal can no longer be forged by a header;
 /// 4. the Layer 2 guards: [`enforce_owner_grant_guard`] and the four
 ///    [`enforce_route_permission`] instances, which read the verified signer
-///    through [`SignedAuth`];
+///    through [`SignedAuth`], and, innermost of them, [`enforce_hmac_gate`]
+///    (VSA-1), which refuses a webhook endpoint write that makes an `hmac`
+///    endpoint when `auth.methods` does not permit `hmac_webhooks` and is a no-op
+///    otherwise: placed under the RBAC layers so a caller who lacks
+///    `webhook:manage` hears that first;
 /// 5. the generated router, whose own extractors run [`SignedAuth`] a last
 ///    time.
 ///
@@ -419,6 +428,7 @@ pub fn router(
     idempotency_ttl: Duration,
     rate_limit: RateLimitConfig,
     source_rate_limit: RateLimitConfig,
+    hmac_webhooks: HmacWebhooks,
 ) -> Result<Router, CratestackError> {
     let directory = SignerDirectory::new(db.clone());
     let auth = SignedAuth::new(directory.clone());
@@ -469,12 +479,14 @@ pub fn router(
     // no `@computed` field.
     Ok(schema::axum::router(
         db,
-        Procedures::new(pepper),
+        Procedures::new(pepper, hmac_webhooks),
         (),
         ROUTER_CODEC,
         auth,
         cratestack::DEFAULT_BODY_LIMIT_BYTES,
     )
+    // VSA-1: innermost, so every RBAC layer below has already spoken.
+    .layer(from_fn_with_state(hmac_webhooks, enforce_hmac_gate))
     .layer(from_fn_with_state(rbac_state, enforce_route_permission))
     .layer(from_fn_with_state(job_rbac_state, enforce_route_permission))
     .layer(from_fn_with_state(
@@ -559,6 +571,7 @@ mod tests {
             DEFAULT_IDEMPOTENCY_TTL,
             rate_limit,
             source_rate_limit,
+            HmacWebhooks::Permitted,
         )
         .expect("the envelope layer accepts its own configuration")
     }

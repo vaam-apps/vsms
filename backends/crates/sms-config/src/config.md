@@ -45,8 +45,11 @@ The steps, in order, and why they are in this order:
    reported by YAML key and the offending `${...}` fragment, capped. Both name a
    provider the one way, `providers[code=orange_cm]`.
 7. The document is deserialised with every block refusing unknown keys.
-8. The cross-field rules run: livemode's `https` and stub-host rules, the
-   numeric ranges, each provider's required keys.
+8. The cross-field rules run, `auth.methods` first ([`AuthConfig::resolve`]:
+   which ways of authenticating are permitted is a property of the whole
+   deployment, so a list that permits none is named before whichever later rule
+   would have tripped), then livemode's `https` and stub-host rules, the numeric
+   ranges, each provider's required keys.
 
 What an error message may repeat is a rule of this crate: a URL, a key, a
 variable name, a capped placeholder fragment. Never a secret's text. serde's

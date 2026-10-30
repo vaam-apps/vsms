@@ -1,0 +1,2 @@
+auth:
+  methods: [keypair, carrier_pigeon]

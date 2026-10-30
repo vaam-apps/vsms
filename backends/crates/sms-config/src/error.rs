@@ -1,5 +1,7 @@
 //! Every reason a configuration is refused, one variant per rule.
 
+use crate::auth::AuthMethod;
+
 /// Why a configuration, a retired environment variable or a retired flag was
 /// refused. Each variant is one rule with one fixture (`tests/fixtures`), and
 /// each message names the YAML key the operator has to edit.
@@ -177,6 +179,49 @@ pub enum ConfigError {
          SNS certificate authority and is refused under livemode"
     )]
     FakeSnsCertBaseInLivemode,
+
+    /// `auth.methods` is present and an empty list or a null (VSA-1). A
+    /// deployment that permits no way of authenticating is a misconfiguration;
+    /// absent is legal and permits every method. A null is how `methods:` reads
+    /// once every item under it is commented out, and is refused rather than
+    /// read as absent: the operator was narrowing the list, and all four is the
+    /// opposite of what they meant.
+    #[error(
+        "auth.methods is present and empty (or null: `methods:` with every item commented \
+         out); a deployment that permits no way of authenticating is a misconfiguration. Name \
+         one or more of: keypair, hmac_webhooks (or delete the key to permit every method)"
+    )]
+    NoAuthMethods,
+
+    /// `auth.methods` names something that is not a method.
+    #[error(
+        "auth.methods contains an unknown value {0:?}; the legal set is: keypair, \
+         machine_tokens, hmac_webhooks, human_login"
+    )]
+    UnknownAuthMethod(String),
+
+    /// `auth.methods` names one method twice. Refused rather than merged: a list
+    /// that repeats itself was edited by someone who meant to change it.
+    #[error("auth.methods names {0} more than once; each method is listed at most once")]
+    DuplicateAuthMethod(AuthMethod),
+
+    /// `auth.methods` names a method this release has no code for
+    /// (`machine_tokens`, restored by VSA-3; `human_login`, VSA-4). Listing it
+    /// would promise a door that is not there. Delete it from the list.
+    #[error(
+        "auth.methods names {0}, which is not available in this release; delete it from the \
+         list (an absent auth.methods permits it without serving it)"
+    )]
+    AuthMethodUnavailable(AuthMethod),
+
+    /// `auth.methods` permits nothing that can authenticate a caller of the API,
+    /// so the gateway would answer every request with the unsigned 401. Today
+    /// that is every list without `keypair`.
+    #[error(
+        "auth.methods permits nothing that can authenticate a caller: hmac_webhooks signs what \
+         vsms sends, not who is asking. Add keypair"
+    )]
+    NoWayIn,
 
     /// An environment variable that used to configure the process is set and
     /// the YAML does not read it through a `${VAR}` placeholder. clap ignores an

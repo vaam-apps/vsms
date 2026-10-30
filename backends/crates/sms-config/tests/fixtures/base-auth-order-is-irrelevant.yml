@@ -1,0 +1,2 @@
+auth:
+  methods: [hmac_webhooks, keypair]

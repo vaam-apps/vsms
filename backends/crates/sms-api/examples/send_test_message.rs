@@ -420,7 +420,7 @@ async fn main() -> anyhow::Result<()> {
     let sender_value = ensure_approved_sender(&db, &cli.sender_id, &provider_id).await?;
     ensure_app_and_client(&db).await?;
 
-    let procedures = Procedures::new(pepper);
+    let procedures = Procedures::new(pepper, sms_api::HmacWebhooks::Permitted);
     // cratestack 0.7.13 (cratestack#512): calling the trait method directly
     // now requires an `Authorized` witness, obtainable only through
     // `invoke_with_db` — the "sanctioned way to invoke a procedure from

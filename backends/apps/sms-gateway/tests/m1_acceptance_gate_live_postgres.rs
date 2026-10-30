@@ -285,6 +285,14 @@ impl GatewayProcess {
     /// constructed but never asked to reach the network) and waits for it
     /// to actually start serving before returning.
     async fn spawn(db_url: &str, port: u16) -> Self {
+        Self::spawn_with(db_url, port, "", false).await
+    }
+
+    /// [`Self::spawn`] with `extra` YAML appended to the profile overlay (the
+    /// `auth:` block a case wants to try), and, with `capture`, the process's
+    /// stdout (where `tracing` writes) piped instead of inherited so [`Self::kill_and_read_log`] can read
+    /// what it logged at boot.
+    async fn spawn_with(db_url: &str, port: u16, extra: &str, capture: bool) -> Self {
         let base_url = format!("http://127.0.0.1:{port}");
         // The same key files for both processes: a restart that changed the
         // server key would make every pinned client fail to verify.
@@ -296,7 +304,7 @@ impl GatewayProcess {
         let config = TestConfig::write(
             Path::new(env!("CARGO_TARGET_TMPDIR")),
             &format!("m1-gate-{port}"),
-            &config::orange_overlay("http://127.0.0.1:9"),
+            &format!("{}\n{extra}", config::orange_overlay("http://127.0.0.1:9")),
         );
         let mut command = Command::new(env!("CARGO_BIN_EXE_sms-gateway"));
         command
@@ -311,8 +319,13 @@ impl GatewayProcess {
             .arg(&current_key)
             .arg("--envelope-next-signing-key-file")
             .arg(&next_key)
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit());
+            .env("NO_COLOR", "1")
+            .stderr(Stdio::inherit())
+            .stdout(if capture {
+                Stdio::piped()
+            } else {
+                Stdio::inherit()
+            });
 
         let mut child = command.spawn().expect("spawning sms-gateway serve");
         println!(
@@ -347,6 +360,27 @@ impl GatewayProcess {
         })
         .await
         .expect("joining the blocking kill/wait task");
+    }
+}
+
+impl GatewayProcess {
+    /// [`Self::kill_and_wait`], returning what the process logged to stdout. Only
+    /// meaningful for a process spawned with `capture`.
+    async fn kill_and_read_log(mut self) -> String {
+        tokio::task::spawn_blocking(move || {
+            self.child
+                .kill()
+                .expect("sending SIGKILL to sms-gateway serve");
+            let mut log = String::new();
+            if let Some(mut stdout) = self.child.stdout.take() {
+                std::io::Read::read_to_string(&mut stdout, &mut log)
+                    .expect("reading the gateway's log");
+            }
+            self.child.wait().expect("reaping sms-gateway serve");
+            log
+        })
+        .await
+        .expect("joining the blocking kill/read task")
     }
 }
 
@@ -597,4 +631,117 @@ async fn the_deleted_openid_provider_routes_are_not_served() {
     }
 
     process.kill_and_wait().await;
+}
+
+/// VSA-1's discovery document, from a real `sms-gateway serve`: mounted, outside
+/// the envelope (a plain unsigned `GET` answers it), and listing what `auth.methods`
+/// says, for the key absent, `[keypair]` (vaam) and `[keypair, hmac_webhooks]`.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn a_real_serve_lists_the_auth_methods_it_serves_without_a_signature() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db_url = sms_test_support::database_url().await;
+    let db = db().await;
+    ensure_orange_cm_provider(&db).await;
+    let http = reqwest::Client::new();
+    let app_id = db
+        .app()
+        .create(schema::CreateAppInput {
+            name: "auth discovery test app".to_owned(),
+            slug: format!(
+                "auth-discovery-{}",
+                &cratestack::uuid::Uuid::new_v4().simple().to_string()[..12]
+            ),
+            description: None,
+            defaultSenderIdId: None,
+            monthlyQuota: 1000,
+            ipAllowlist: " ".to_owned(),
+            transliterateToGsm7: false,
+            deletedAt: None,
+        })
+        .run(&owner())
+        .await
+        .expect("seeding the app")
+        .id;
+
+    for (written, expected, boot, hmac_create_status) in [
+        (
+            "",
+            serde_json::json!(["keypair", "hmac_webhooks"]),
+            "permitted=keypair,machine_tokens,hmac_webhooks,human_login served=keypair,hmac_webhooks explicit=false",
+            201,
+        ),
+        (
+            "auth:\n  methods: [keypair]\n",
+            serde_json::json!(["keypair"]),
+            "permitted=keypair served=keypair explicit=true",
+            422,
+        ),
+        (
+            "auth:\n  methods: [keypair, hmac_webhooks]\n",
+            serde_json::json!(["keypair", "hmac_webhooks"]),
+            "permitted=keypair,hmac_webhooks served=keypair,hmac_webhooks explicit=true",
+            201,
+        ),
+    ] {
+        let process = GatewayProcess::spawn_with(&db_url, free_port(), written, true).await;
+        let response = http
+            .get(format!("{}/.well-known/vsms-auth", process.base_url))
+            .send()
+            .await
+            .expect("requesting the discovery document");
+        assert_eq!(response.status().as_u16(), 200, "auth: {written:?}");
+        let body: serde_json::Value = response.json().await.expect("a JSON document");
+        assert_eq!(
+            body,
+            serde_json::json!({ "methods": expected }),
+            "auth: {written:?}"
+        );
+
+        // The same setting reaches the API: a paired developer (who holds
+        // `webhook:manage`) creating an hmac endpoint through the generated
+        // route is refused or accepted as the YAML says.
+        let key = TestKey::console();
+        sealed_fixtures::seed_user_with_console_key(&db, "developer", &key).await;
+        let developer = sealed_fixtures::client(&process.base_url, &key);
+        let reply = developer
+            .request("POST", "/webhook_endpoints")
+            .json(&serde_json::json!({
+                "appId": app_id,
+                "url": "https://example.test/hooks",
+                "eventTypes": " message.delivered ",
+                "deliveryMode": "hmac",
+                "secret": "k".repeat(32),
+                "maskRecipient": true,
+                "maxAttempts": 8,
+            }))
+            .send()
+            .await;
+        assert_eq!(
+            reply.status,
+            hmac_create_status,
+            "auth: {written:?}: creating an hmac endpoint: {}",
+            reply.text()
+        );
+        if hmac_create_status == 422 {
+            assert!(
+                reply.json()["message"]
+                    .as_str()
+                    .is_some_and(|message| message.starts_with("auth_method_disabled: ")),
+                "{}",
+                reply.text()
+            );
+        }
+
+        let log = process.kill_and_read_log().await;
+        assert!(
+            log.contains(boot),
+            "auth: {written:?}; the boot line is missing: {log}"
+        );
+        let hmac_on = written.is_empty() || written.contains("hmac_webhooks");
+        assert!(
+            log.contains(&format!("hmac_webhooks={hmac_on}")) && log.contains("hmac_endpoints="),
+            "auth: {written:?}; the hmac endpoint count is missing from the boot log: {log}"
+        );
+    }
 }

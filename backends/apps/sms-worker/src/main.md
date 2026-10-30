@@ -38,4 +38,15 @@ document as `sms_config::Binary::Worker`, which leaves out `security.*`: it neve
 computes a hash, so it neither needs nor is given `SMS_HASH_PEPPER`. A profile
 that names no file is refused, naming the file it expected.
 
+The same document carries `auth.methods` (VSA-1). The worker hands whether
+`hmac_webhooks` is permitted to `WorkerContext::hmac_webhooks`; with it off the
+`hooks` role claims no `hmac` attempt (`sms-worker`'s `hooks.md`, "When
+`hmac_webhooks` is off"), which stays `pending` until the method is permitted
+again, and says at start how many `hmac` endpoints exist. A `hooks` worker with
+the method off and no `--envelope-signing-key-file` serves nothing and warns at
+start; it still starts, because the configuration is the deployment's and another
+worker of it may hold the key. The worker's default log filter is
+`sms_worker=info,sms_worker_bin=info`, which is why that line is emitted from
+`sms_worker::hooks` and not from `sms_api`.
+
 <!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->

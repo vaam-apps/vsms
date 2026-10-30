@@ -1,5 +1,6 @@
 //! The SMS gateway API server.
 
+mod auth_discovery;
 mod commands;
 mod dlr;
 mod health;

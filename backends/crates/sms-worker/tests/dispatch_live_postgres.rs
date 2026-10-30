@@ -532,6 +532,7 @@ async fn a_well_formed_message_reaches_submitted() {
         db: db.clone(),
         providers: registry(provider_key.clone(), provider(server.uri())),
         webhook_sealer: None,
+        hmac_webhooks: sms_api::HmacWebhooks::Permitted,
     };
     let sys = sys();
 
@@ -577,6 +578,7 @@ async fn a_rate_limited_submit_backs_off_to_queued() {
         db: db.clone(),
         providers: registry(provider_key.clone(), provider(server.uri())),
         webhook_sealer: None,
+        hmac_webhooks: sms_api::HmacWebhooks::Permitted,
     };
     let sys = sys();
 
@@ -617,6 +619,7 @@ async fn a_rejected_submit_fails_the_message_outright() {
         db: db.clone(),
         providers: registry(provider_key.clone(), provider(server.uri())),
         webhook_sealer: None,
+        hmac_webhooks: sms_api::HmacWebhooks::Permitted,
     };
     let sys = sys();
 
@@ -654,6 +657,7 @@ async fn exhausting_max_attempts_fails_the_message_without_a_further_submit_atte
         db: db.clone(),
         providers: registry(provider_key.clone(), provider(server.uri())),
         webhook_sealer: None,
+        hmac_webhooks: sms_api::HmacWebhooks::Permitted,
     };
     let sys = sys();
 
@@ -713,6 +717,7 @@ async fn no_active_provider_rejects_before_any_submission_is_attempted() {
         db: db.clone(),
         providers: registry(provider_key, provider(server.uri())),
         webhook_sealer: None,
+        hmac_webhooks: sms_api::HmacWebhooks::Permitted,
     };
     let sys = sys();
 
@@ -825,6 +830,7 @@ async fn an_indeterminate_submit_lands_in_uncertain_and_is_never_resubmitted() {
             ),
         ),
         webhook_sealer: None,
+        hmac_webhooks: sms_api::HmacWebhooks::Permitted,
     };
     let sys = sys();
 
@@ -907,6 +913,7 @@ async fn a_connect_level_failure_still_backs_off_to_queued_not_uncertain() {
             ),
         ),
         webhook_sealer: None,
+        hmac_webhooks: sms_api::HmacWebhooks::Permitted,
     };
     let sys = sys();
 
@@ -972,6 +979,7 @@ async fn a_dlr_after_an_indeterminate_submit_cannot_correlate_and_expire_stale_r
             ),
         ),
         webhook_sealer: None,
+        hmac_webhooks: sms_api::HmacWebhooks::Permitted,
     };
     let sys = sys();
 
@@ -1311,6 +1319,7 @@ async fn an_indeterminate_submit_never_fails_over_even_with_a_healthy_alternativ
             (fixture.b_key.clone(), provider_b as Arc<dyn SmsProvider>),
         ])),
         webhook_sealer: None,
+        hmac_webhooks: sms_api::HmacWebhooks::Permitted,
     };
     let sys = sys();
 
@@ -1387,6 +1396,7 @@ async fn a_permanent_failure_fails_over_to_the_next_route_and_reaches_submitted(
             (fixture.b_key.clone(), provider_b as Arc<dyn SmsProvider>),
         ])),
         webhook_sealer: None,
+        hmac_webhooks: sms_api::HmacWebhooks::Permitted,
     };
     let sys = sys();
 
@@ -1486,6 +1496,7 @@ async fn an_open_circuit_routes_new_messages_to_the_alternative_instead_of_rejec
             (fixture.b_key.clone(), provider_b as Arc<dyn SmsProvider>),
         ])),
         webhook_sealer: None,
+        hmac_webhooks: sms_api::HmacWebhooks::Permitted,
     };
     let sys = sys();
     let app_id = seed_app(&db).await;

@@ -1,0 +1,5 @@
+# `methods:` with every item commented out reads as a null, not as absent.
+auth:
+  methods:
+    # - keypair
+    # - hmac_webhooks

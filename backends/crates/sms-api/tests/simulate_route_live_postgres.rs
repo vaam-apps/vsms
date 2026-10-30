@@ -223,7 +223,7 @@ async fn a_single_matching_route_wins_and_is_reported_eligible() {
     // now requires an `Authorized` witness, obtainable only through
     // `invoke_with_db` — the "sanctioned way to invoke a procedure from
     // non-HTTP code" per that function's own doc comment.
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let ctx = app_caller_with_route_read();
     let args = simulate_route::Args {
         args: schema::SimulateRouteInput {
@@ -273,7 +273,7 @@ async fn a_route_scoped_to_a_different_app_is_reported_as_a_predicate_failure() 
 
     // cratestack 0.7.13 (cratestack#512): see the identical comment on the
     // test above.
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let ctx = app_caller_with_route_read();
     let args = simulate_route::Args {
         args: schema::SimulateRouteInput {
@@ -344,7 +344,7 @@ async fn zero_configured_routes_is_reported_distinctly_from_zero_eligible_routes
     }
 
     // cratestack 0.7.13 (cratestack#512): see the identical comment above.
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let ctx = app_caller_with_route_read();
     let args = simulate_route::Args {
         args: schema::SimulateRouteInput {
@@ -380,7 +380,7 @@ async fn simulate_route_denies_a_caller_with_no_route_read_scope() {
     // (`schema.cstack`'s `simulateRoute` `@allow`), and `simulateRoute`
     // carries no `@authorize` model check, so this stays a genuine Layer 2
     // (`require_permission`) denial, not a Layer 1 one.
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let ctx = app_caller_without_route_read();
     let args = simulate_route::Args {
         args: schema::SimulateRouteInput {
@@ -454,7 +454,7 @@ async fn a_supplied_draw_reproduces_the_same_winner_on_replay() {
         },
     };
 
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let ctx = app_caller_with_route_read();
 
     // cratestack 0.7.13 (cratestack#512): calling the trait method directly
@@ -550,7 +550,7 @@ async fn fixture_routes_from_other_tests_do_not_leak_into_an_unrelated_candidate
     // cratestack 0.7.13 (cratestack#512): calling the trait method directly
     // now requires an `Authorized` witness, obtainable only through
     // `invoke_with_db`.
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let ctx = app_caller_with_route_read();
     let args = simulate_route::Args {
         args: schema::SimulateRouteInput {

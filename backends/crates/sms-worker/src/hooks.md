@@ -105,13 +105,97 @@ still reach the sealer) is an ordinary [`Outcome::Retryable`] like any other
 failed delivery: counted, backed off, able to open the breaker and to go `dead`.
 
 Rows that wait silently are the cost, so [`SealedBacklogWatch`] pays it: a keyless
-`run` counts the due sealed attempts of **active** endpoints (a `COUNT(*)`, due
-or abandoned by a crashed worker) every five minutes and, if there are any, logs
-a `warn` with the number and `--envelope-signing-key-file`. A deactivated
+`run` counts the due sealed attempts of **active** endpoints (due or abandoned by
+a crashed worker; bounded, see below) every five minutes and, if there are any,
+logs a `warn` with the number and `--envelope-signing-key-file`. The warning names
+what else the worker does not send: `hmac` deliveries are unaffected on a worker
+that serves them ([`ServedModes::HmacOnly`]), and the line says it sends none when
+`auth.methods` does not permit them either ([`ServedModes::Neither`]). A deactivated
 endpoint's attempts are claimed by no worker, key or not, so they are not
 waiting for one; an endpoint whose circuit is open is counted, because the
 circuit is a pause that ends by itself. `backends/apps/sms-worker` logs one at
 start.
+
+# When `hmac_webhooks` is off (VSA-1)
+
+`auth.methods` is deployment configuration (`sms-config`, `auth.md`), and a
+deployment that does not permit `hmac_webhooks` (vaam's `[keypair]`) must not
+send with a shared secret, whatever rows exist. `WorkerContext::hmac_webhooks`
+carries the answer, and it decides **what the worker claims**, not what it does
+with a row it already holds: an `hmac` endpoint is excluded from the claim exactly
+as a `sealed` endpoint is for a worker without the signing key (VS-8,
+[`crate::claim::ServedModes`]). Nothing is written for such an attempt.
+
+| signing key | `hmac_webhooks` | claims                                              |
+| ----------- | --------------- | --------------------------------------------------- |
+| held        | permitted       | `hmac` and `sealed` ([`ServedModes::Both`])         |
+| not held    | permitted       | `hmac` only ([`ServedModes::HmacOnly`])             |
+| held        | off             | `sealed` only ([`ServedModes::SealedOnly`])         |
+| not held    | off             | nothing ([`ServedModes::Neither`])                  |
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending: event subscribed (an hmac endpoint still gets its attempts)
+    pending --> pending: claims skip it while hmac_webhooks is off (nothing written, attempts unchanged)
+    pending --> delivering: claim (attempts + 1), once hmac is permitted again, or the endpoint is sealed
+    delivering --> succeeded: 2xx
+```
+
+The filter is applied in both claim paths, because it is a condition of the
+endpoints the claim reads first (`ServedModes::can_claim`), never a filter over
+rows it fetched: when every endpoint is claimable it is the one time-ordered read
+of `webhook_due_idx`; when some are not (an `hmac` endpoint with the method off,
+among others) it is the per-endpoint fan-out, which never asks about an endpoint
+it may not take from. An `hmac` endpoint with 60 or more due attempts, which
+nothing purges and a subscriber keeps adding to, therefore cannot fill a
+window and starve the `sealed` endpoints behind it, which a "claim, find out,
+hand it back" design would have let it do. An expired lease of an `hmac`
+endpoint (a crash while the method was permitted) is left alone the same way.
+
+What this means for an attempt, and the reason for each choice:
+
+- **It stays `pending`** (or `failed` and resting, or `delivering` with an expired
+  lease: whatever it was). Nothing is written, so nothing costs a lease write, a
+  park write or an endpoint read per hour per attempt, and a backlog that grows by
+  the event rate costs a row each and no work. An earlier design claimed each
+  attempt and parked it as `failed` for an hour; at one event per second the
+  re-parks filled a worker within a day and sealed deliveries queued behind them.
+- **It is not counted.** `attempts` is incremented at a claim and there is none,
+  so `maxAttempts` is untouched: the day the method is permitted again the attempt
+  has every try it had, and a month of waiting does not age it into `dead`.
+- **It is off the endpoint's breaker.** No request was made, so the endpoint did
+  nothing wrong, the reasoning [`Outcome::MalformedPayload`] records for our own
+  bugs. `circuitOpenUntil` and `consecutiveFailures` are as they were.
+- **It is delivered at the next claim once the method is permitted again**, with no
+  hour's wait and no replay. Changing `auth.methods` is a restart of the workers
+  (the configuration is read at start), after which the first poll takes it.
+- **After `switchWebhookDeliveryMode` to `sealed`, the pending attempts are
+  delivered sealed.** The switch rewrites the endpoint row only; the claim reads
+  the endpoint's mode afresh, `deliver_one` reads the endpoint again and `send`
+  and `build_envelope` choose the request by that mode, and the stored `payload` is
+  the same for both. So an attempt created for an `hmac` endpoint is sealed (with
+  the sealed envelope's `eventId`, `appId` and `endpointId`) by a worker that holds
+  the key, and a worker without it leaves it pending for one that does.
+  `an_hmac_attempt_held_back_is_delivered_sealed_after_the_endpoint_is_switched`
+  proves it end to end.
+- **The sealed attempts beside them are unaffected** and delivered as before.
+
+A worker that serves nothing (no key, method off) is idle by configuration, not by
+a fault: `run` logs one `warn` at start saying so, and not a refusal to start,
+the way a keyless `hooks` worker is a warning and not an error (VS-8). The
+configuration is deployment-wide, so every worker of the deployment has the method
+off, and a scale-to-N `hooks` fleet may legitimately have one node with the key
+and others without it. Refusing would crash-loop the keyless nodes of that fleet
+for a state the keyed ones make useful.
+
+Two five-minute warnings say what is waiting, because a claim loop that skips
+rows is silent: [`SealedBacklogWatch`] (a worker with no key; above) and
+[`HmacBacklogWatch`], whose `warn` carries `held`, the count of due attempts of
+**active** `hmac` endpoints (due or abandoned by a crashed worker; bounded, see
+below), and the ways out. A deactivated endpoint's attempts are claimed by no worker, so
+they are not counted. `run` also logs once at start how many `hmac` endpoints exist
+(`sms_api::HmacBoot`, the line `serve` logs too). The API side, which refuses to
+create, switch to or rotate one, is `sms-api`'s `hmac_gate.md`.
 
 # Redirects
 
@@ -170,3 +254,20 @@ verbatim_never_reconstructed` test proves this against a real HTTP
 capture, not just by reading this paragraph.
 
 <!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->
+
+# What a backlog count costs, and why it stops at 10 001
+
+Both watches use [`crate::claim::count_attempts_waiting`], and a held backlog is exactly
+the table that is large (nothing purges attempts, and a subscriber adds one per
+event). A `COUNT(*)` over the whole table was the first form, and at about a
+million held rows the planner chose a parallel sequential scan of
+`webhook_attempts`: some 660 MB read, 0.3 to 3.3 s, on every `hooks` worker every
+five minutes. The count is one question per matching endpoint now,
+`endpoint_id = $1`, which `webhook_endpoint_due_idx` answers, plus one for the
+abandoned leases of those endpoints (`webhook_attempts_lease_reclaim_idx`), each
+reading the one indexed column with a `LIMIT` of what is left of the cap, so the
+total read is at most 10 001 index entries however deep the backlog. The figure the `warn` carries is exact
+up to 10 000 and reads `more than 10000` past it ([`crate::claim::Waiting`]); the exact
+number, when an operator wants it, is the query in
+`docs/runbooks/deployment.adoc`. `claim.md`, "What a backlog count costs", has
+the plans.
