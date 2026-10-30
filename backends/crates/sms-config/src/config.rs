@@ -11,6 +11,7 @@ use serde::Deserialize;
 use crate::auth::{AuthConfig, AuthMethods};
 use crate::cli::DEFAULT_PROFILE;
 use crate::error::ConfigError;
+use crate::human_login::{CLIENT_ID_LENGTH, HumanLogin};
 use crate::model::{Api, Bucket, Database, Deployment, Security};
 use crate::op::{ACCESS_TOKEN_TTL_SECS, Op};
 use crate::provider::{Providers, RawProvider, validate_providers};
@@ -73,6 +74,11 @@ pub struct Config {
     /// (rule 7 of `auth.md`); ask [`AuthMethods::machine_tokens_served`] rather
     /// than testing this.
     pub op: Option<Op>,
+    /// `human_login:`, the console sign-in's block. `Some` only on a deployment
+    /// that wrote it, and then `auth.methods` permits the method and `op:` is
+    /// written (rules 6 to 9 of `auth.md`); ask
+    /// [`AuthMethods::human_login_served`] rather than testing this.
+    pub human_login: Option<HumanLogin>,
 }
 
 /// What serde reads, before the rules that need more than one field.
@@ -101,6 +107,9 @@ struct Raw {
     // meant to serve tokens serving none.
     #[serde(default, deserialize_with = "present_op")]
     op: Option<Op>,
+    // The same for `human_login:`: a null is a shape error, never "not served".
+    #[serde(default, deserialize_with = "present_human_login")]
+    human_login: Option<HumanLogin>,
 }
 
 /// Reads `op` when the key is present, as a block and never as a null.
@@ -109,6 +118,14 @@ where
     D: serde::Deserializer<'de>,
 {
     Op::deserialize(deserializer).map(Some)
+}
+
+/// Reads `human_login` when the key is present, as a block and never as a null.
+fn present_human_login<'de, D>(deserializer: D) -> Result<Option<HumanLogin>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    HumanLogin::deserialize(deserializer).map(Some)
 }
 
 /// Hosts that mark a URL as a stub, searched in the host only: a path may say
@@ -228,6 +245,7 @@ impl Config {
             database,
             providers,
             op,
+            human_login,
         } = raw;
         let livemode = deployment.livemode;
 
@@ -238,7 +256,9 @@ impl Config {
         // authenticating are permitted is a property of the whole deployment, and
         // a list that permits none is better named than whichever rule would have
         // tripped on a later key.
-        let auth_methods = auth.resolve()?.with_op_block(op.is_some())?;
+        let auth_methods = auth
+            .resolve()?
+            .with_blocks(op.is_some(), human_login.is_some())?;
         require_text("deployment.name", &deployment.name)?;
         check_url(
             "deployment.public_base_url",
@@ -275,6 +295,9 @@ impl Config {
         if let Some(op) = &op {
             validate_op(op, livemode)?;
         }
+        if let Some(human_login) = &human_login {
+            validate_human_login(human_login, livemode)?;
+        }
 
         Ok(Self {
             deployment,
@@ -284,8 +307,61 @@ impl Config {
             database,
             providers,
             op,
+            human_login,
         })
     }
+}
+
+/// The rules of `human_login:` (`human_login.md`).
+fn validate_human_login(human_login: &HumanLogin, livemode: bool) -> Result<(), ConfigError> {
+    let client = &human_login.console_client;
+    require_text("human_login.console_client.client_id", &client.client_id)?;
+    if !CLIENT_ID_LENGTH.contains(&client.client_id.chars().count()) {
+        return Err(invalid(
+            "human_login.console_client.client_id",
+            &format!(
+                "must be {} to {} characters: it is the console's OauthClient.clientId",
+                CLIENT_ID_LENGTH.start(),
+                CLIENT_ID_LENGTH.end()
+            ),
+        ));
+    }
+    if client.client_id.chars().any(char::is_whitespace) {
+        return Err(invalid(
+            "human_login.console_client.client_id",
+            "must not contain whitespace",
+        ));
+    }
+    if client.redirect_uris.is_empty() {
+        return Err(invalid(
+            "human_login.console_client.redirect_uris",
+            "at least one redirect URI is required: the provider redirects a code nowhere else",
+        ));
+    }
+    for (index, uri) in client.redirect_uris.iter().enumerate() {
+        let key = format!("human_login.console_client.redirect_uris[{index}]");
+        check_url(&key, uri, livemode)?;
+        let parsed = url::Url::parse(uri).map_err(|error| ConfigError::InvalidValue {
+            key: key.clone(),
+            reason: format!("{uri:?} is not a URL: {error}"),
+        })?;
+        if parsed.fragment().is_some() {
+            return Err(invalid(
+                &key,
+                "must not carry a fragment: RFC 6749 section 3.1.2 forbids one in a redirect URI",
+            ));
+        }
+        if uri.chars().any(char::is_whitespace) {
+            return Err(invalid(
+                &key,
+                "must not contain whitespace: the registration stores the list space-delimited",
+            ));
+        }
+        if client.redirect_uris[..index].contains(uri) {
+            return Err(invalid(&key, "is listed twice"));
+        }
+    }
+    validate_bucket("human_login.login_rate_limit", human_login.login_rate_limit)
 }
 
 /// The rules of `op:` (`op.md`).

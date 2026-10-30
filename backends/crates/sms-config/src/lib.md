@@ -14,6 +14,7 @@ and in the environment. The split is vpay's, and the loader is modelled on
 | `SMS_CONFIG`, `SMS_PROFILE`                                   | `deployment.*`                                               |
 |                                                               | which authentication methods are permitted, `auth.methods`   |
 |                                                               | the `OpenID` Provider's issuer and limits, `op.*`            |
+|                                                               | the console sign-in's client and limit, `human_login.*`      |
 
 # Loading
 

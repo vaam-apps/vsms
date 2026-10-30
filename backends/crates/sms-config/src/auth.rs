@@ -21,8 +21,9 @@ pub enum AuthMethod {
     /// A webhook endpoint delivered with `X-Sms-Signature`, a signature keyed by
     /// a secret both sides hold (`WebhookEndpoint.deliveryMode = hmac`).
     HmacWebhooks,
-    /// A person's password or SSO sign-in to the console. Not restored yet
-    /// (VSA-4).
+    /// A person's password sign-in to the console, through the deployment's own
+    /// `OpenID` Provider (`authorization_code` with PKCE). Restored by VSA-4a;
+    /// the API still refuses the token it mints until VSA-4b.
     HumanLogin,
 }
 
@@ -48,16 +49,6 @@ impl AuthMethod {
 
     fn parse(name: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|method| method.as_str() == name)
-    }
-
-    /// Whether this release has the code behind the method. Naming one that does
-    /// not is refused ([`ConfigError::AuthMethodUnavailable`]); the absent
-    /// default permits it without serving it.
-    const fn is_restored(self) -> bool {
-        match self {
-            Self::Keypair | Self::HmacWebhooks | Self::MachineTokens => true,
-            Self::HumanLogin => false,
-        }
     }
 }
 
@@ -104,17 +95,18 @@ impl AuthConfig {
     /// # Errors
     ///
     /// [`ConfigError::NoAuthMethods`], [`ConfigError::UnknownAuthMethod`],
-    /// [`ConfigError::DuplicateAuthMethod`],
-    /// [`ConfigError::AuthMethodUnavailable`] and [`ConfigError::NoWayIn`]
-    /// (rules 1 to 5 in the module docs). The set it returns knows nothing of the
-    /// blocks, so [`AuthMethods::machine_tokens_served`] is `false`: the rules
-    /// that need `op:` run once the whole document is read.
+    /// [`ConfigError::DuplicateAuthMethod`] and [`ConfigError::NoWayIn`]
+    /// (rules 1 to 4 in the module docs). The set it returns knows nothing of the
+    /// blocks, so [`AuthMethods::machine_tokens_served`] and
+    /// [`AuthMethods::human_login_served`] are `false`: the rules that need `op:`
+    /// and `human_login:` run once the whole document is read.
     pub fn resolve(&self) -> Result<AuthMethods, ConfigError> {
         let Some(names) = &self.methods else {
             return Ok(AuthMethods {
                 permitted: AuthMethod::ALL.into_iter().collect(),
                 explicit: false,
                 op_block: false,
+                human_login_block: false,
             });
         };
         if names.is_empty() {
@@ -128,16 +120,11 @@ impl AuthConfig {
                 return Err(ConfigError::DuplicateAuthMethod(method));
             }
         }
-        if let Some(method) = AuthMethod::ALL
-            .into_iter()
-            .find(|method| permitted.contains(method) && !method.is_restored())
-        {
-            return Err(ConfigError::AuthMethodUnavailable(method));
-        }
         let methods = AuthMethods {
             permitted,
             explicit: true,
             op_block: false,
+            human_login_block: false,
         };
         if !methods.can_authenticate_a_caller() {
             return Err(ConfigError::NoWayIn);
@@ -151,9 +138,11 @@ impl AuthConfig {
 pub struct AuthMethods {
     permitted: BTreeSet<AuthMethod>,
     explicit: bool,
-    /// Whether the document has an `op:` block. Set by the one place that has seen the document; [`AuthConfig::resolve`] leaves
-    /// it `false`.
+    /// Whether the document has an `op:` block. Set by the one place that has
+    /// seen the document; [`AuthConfig::resolve`] leaves it `false`.
     op_block: bool,
+    /// Whether the document has a `human_login:` block, set the same way.
+    human_login_block: bool,
 }
 
 impl AuthMethods {
@@ -185,36 +174,71 @@ impl AuthMethods {
         self.permits(AuthMethod::MachineTokens) && self.op_block
     }
 
+    /// Whether `human_login` is **served**: permitted, the `human_login:` block
+    /// present **and** `op:` present (the sign-in rides the `OpenID` Provider, so
+    /// it cannot run without it). The one question `POST /login`, the grant gate,
+    /// the discovery document, the boot check for the console client and the
+    /// `seed-console-client`, `provision-user --password` and
+    /// `bootstrap --owner-password-out` commands all ask, so they cannot disagree
+    /// about it.
+    #[must_use]
+    pub fn human_login_served(&self) -> bool {
+        self.permits(AuthMethod::HumanLogin) && self.human_login_block && self.op_block
+    }
+
+    /// Whether the `OpenID` Provider is mounted: the `op:` block is present and
+    /// at least one method that rides it is served. `/token`, `/jwks.json` and the
+    /// discovery document exist exactly then.
+    #[must_use]
+    pub fn op_served(&self) -> bool {
+        self.machine_tokens_served() || self.human_login_served()
+    }
+
     /// The permitted methods this deployment actually serves: what
     /// `GET /.well-known/vsms-auth` tells a client.
     ///
-    /// Permitted, minus the methods this release has no code for (`human_login`
-    /// until VSA-4), and `machine_tokens` also needs its block
-    /// ([`Self::machine_tokens_served`]). The absent default permits all four and
-    /// serves two on a deployment that wrote no `op:`. **This is the one place
-    /// that changes when `human_login` is restored.**
+    /// Permitted, and for a method with a block, whose block is present
+    /// ([`Self::machine_tokens_served`], [`Self::human_login_served`]). The
+    /// absent default permits all four and serves two on a deployment that wrote
+    /// neither `op:` nor `human_login:`.
     pub fn served(&self) -> impl Iterator<Item = AuthMethod> + '_ {
         self.permitted().filter(|method| match method {
             AuthMethod::MachineTokens => self.machine_tokens_served(),
-            other => other.is_restored(),
+            AuthMethod::HumanLogin => self.human_login_served(),
+            AuthMethod::Keypair | AuthMethod::HmacWebhooks => true,
         })
     }
 
-    /// The rules that need the document, given whether it has an `op:` block
-    /// (`machine_tokens`' block), and the set that remembers the answer.
+    /// The rules that need the document, given whether it has an `op:` block and
+    /// a `human_login:` block, and the set that remembers the answers.
     ///
     /// # Errors
     ///
-    /// [`ConfigError::AuthMethodNotConfigured`]: `machine_tokens` is named
-    /// explicitly and `op:` is missing. [`ConfigError::AuthMethodDisabled`]: `op:`
-    /// is present and `machine_tokens` is not permitted. An absent
-    /// `auth.methods` raises neither: it permits the method and serves it only
-    /// where the block is.
-    pub(crate) fn with_op_block(mut self, op_present: bool) -> Result<Self, ConfigError> {
+    /// [`ConfigError::AuthMethodDisabled`]: `human_login:` is present and
+    /// `human_login` is not permitted, or `op:` is present and neither
+    /// `machine_tokens` nor `human_login` is. [`ConfigError::AuthMethodNotConfigured`]:
+    /// `machine_tokens` is named explicitly and `op:` is missing, `human_login` is
+    /// named explicitly and `human_login:` is missing, or `human_login:` is
+    /// present without `op:` (the sign-in rides the provider; this one holds for
+    /// the absent default too). An absent `auth.methods` raises none of the
+    /// "named" ones: it permits the methods and serves each only where its block
+    /// is.
+    pub(crate) fn with_blocks(
+        mut self,
+        op_present: bool,
+        human_login_present: bool,
+    ) -> Result<Self, ConfigError> {
         let tokens = self.permits(AuthMethod::MachineTokens);
-        if !tokens && op_present {
+        let human = self.permits(AuthMethod::HumanLogin);
+        if !human && human_login_present {
             return Err(ConfigError::AuthMethodDisabled {
-                method: AuthMethod::MachineTokens,
+                methods: vec![AuthMethod::HumanLogin],
+                key: "human_login".to_owned(),
+            });
+        }
+        if !tokens && !human && op_present {
+            return Err(ConfigError::AuthMethodDisabled {
+                methods: vec![AuthMethod::MachineTokens, AuthMethod::HumanLogin],
                 key: "op".to_owned(),
             });
         }
@@ -224,7 +248,20 @@ impl AuthMethods {
                 key: "op".to_owned(),
             });
         }
+        if human && self.explicit && !human_login_present {
+            return Err(ConfigError::AuthMethodNotConfigured {
+                method: AuthMethod::HumanLogin,
+                key: "human_login".to_owned(),
+            });
+        }
+        if human_login_present && !op_present {
+            return Err(ConfigError::AuthMethodNotConfigured {
+                method: AuthMethod::HumanLogin,
+                key: "op".to_owned(),
+            });
+        }
         self.op_block = op_present;
+        self.human_login_block = human_login_present;
         Ok(self)
     }
 
@@ -253,13 +290,15 @@ mod tests {
             permitted: methods.iter().copied().collect(),
             explicit: true,
             op_block: false,
+            human_login_block: false,
         }
     }
 
-    /// `resolve` refuses `human_login` as unavailable before it asks, so the list
-    /// that tells the rules apart cannot be written in YAML today; this builds it.
-    /// Without this test, counting `human_login` as a way in would change nothing
-    /// anyone could observe until VSA-4 restores it, and then diverge from vpay.
+    /// vpay's rule (R5): `human_login` signs a person in to the console and says
+    /// nothing about who an API caller is. `resolve` refuses a list with no way
+    /// in before it can be observed through a loaded document, so this builds the
+    /// sets directly. Until VSA-4b the API refuses a person's token, and after it
+    /// the rule still holds: a token is not the keypair or a machine's token.
     #[test]
     fn human_login_is_not_a_way_in_for_an_api_caller() {
         assert!(!permitting(&[AuthMethod::HumanLogin]).can_authenticate_a_caller());

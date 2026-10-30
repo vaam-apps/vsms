@@ -526,7 +526,7 @@ fn served(config: &Config) -> Vec<&'static str> {
 }
 
 #[test]
-fn an_absent_key_permits_all_four_and_serves_two_without_an_op_block() {
+fn an_absent_key_permits_all_four_and_serves_two_without_the_blocks() {
     let config = load(DEFAULT_PROFILE).unwrap();
     assert_eq!(
         permitted(&config),
@@ -535,10 +535,12 @@ fn an_absent_key_permits_all_four_and_serves_two_without_an_op_block() {
     assert_eq!(
         served(&config),
         ["keypair", "hmac_webhooks"],
-        "machine_tokens is permitted but needs its op: block, and human_login is served by nothing"
+        "machine_tokens needs its op: block and human_login needs its own and op:"
     );
     assert!(!config.auth_methods.is_explicit());
     assert!(config.op.is_none());
+    assert!(config.human_login.is_none());
+    assert!(!config.auth_methods.op_served());
 }
 
 #[test]
@@ -595,10 +597,14 @@ fn a_duplicate_method_is_refused() {
 }
 
 #[test]
-fn a_method_this_release_cannot_serve_is_refused_when_named() {
+fn human_login_named_without_its_block_is_refused() {
     assert_eq!(
         refused("auth-human-login"),
-        ConfigError::AuthMethodUnavailable(AuthMethod::HumanLogin)
+        ConfigError::AuthMethodNotConfigured {
+            method: AuthMethod::HumanLogin,
+            key: "human_login".to_owned(),
+        },
+        "it used to be AuthMethodUnavailable; the method has code now, and wants its block"
     );
 }
 
@@ -642,9 +648,9 @@ fn machine_tokens_alone_boots_with_its_block_and_is_not_a_no_way_in() {
 }
 
 #[test]
-fn the_op_block_without_the_method_is_dormant_configuration_and_is_refused() {
+fn the_op_block_without_either_method_is_dormant_configuration_and_is_refused() {
     let expected = ConfigError::AuthMethodDisabled {
-        method: AuthMethod::MachineTokens,
+        methods: vec![AuthMethod::MachineTokens, AuthMethod::HumanLogin],
         key: "op".to_owned(),
     };
     for profile in ["op-without-the-method", "op-without-the-method-hmac"] {
@@ -652,8 +658,10 @@ fn the_op_block_without_the_method_is_dormant_configuration_and_is_refused() {
     }
     let message = expected.to_string();
     assert!(
-        message.contains("delete op") && message.contains("add machine_tokens"),
-        "the message names both ways out: {message}"
+        message.contains("delete op")
+            && message.contains("add machine_tokens or human_login")
+            && message.contains("does not permit machine_tokens or human_login"),
+        "the message names both ways out and both methods: {message}"
     );
 }
 
@@ -671,6 +679,186 @@ fn the_absent_default_serves_machine_tokens_exactly_when_op_is_written() {
     assert_eq!(op.token_rate_limit.burst, 10);
     assert_eq!(op.signing_key.refresh_interval_secs, 60);
     assert_eq!(op.signing_key.rotation_overlap_secs, 1800);
+}
+
+// --- human_login: ----------------------------------------------------------
+
+fn not_configured_human(key: &str) -> ConfigError {
+    ConfigError::AuthMethodNotConfigured {
+        method: AuthMethod::HumanLogin,
+        key: key.to_owned(),
+    }
+}
+
+#[test]
+fn the_absent_default_serves_human_login_exactly_when_both_blocks_are_written() {
+    let config = load("human-login-default-methods").unwrap();
+    assert!(!config.auth_methods.is_explicit());
+    assert!(config.auth_methods.human_login_served());
+    assert!(config.auth_methods.machine_tokens_served());
+    assert_eq!(
+        served(&config),
+        ["keypair", "machine_tokens", "hmac_webhooks", "human_login"]
+    );
+    let human = config.human_login.expect("the block is read");
+    assert_eq!(human.console_client.client_id, "sms-console");
+    assert_eq!(
+        human.console_client.redirect_uris,
+        ["https://admin.example.com/api/auth/callback"]
+    );
+    assert_eq!(human.login_rate_limit.burst, 5);
+}
+
+#[test]
+fn human_login_alone_beside_the_keypair_mounts_the_provider_without_serving_tokens() {
+    // `op:` is refused only when neither method that rides it is permitted.
+    let config = load("auth-human-login-with-blocks").expect("a legal deployment");
+    assert_eq!(permitted(&config), ["keypair", "human_login"]);
+    assert_eq!(served(&config), ["keypair", "human_login"]);
+    assert!(config.auth_methods.human_login_served());
+    assert!(!config.auth_methods.machine_tokens_served());
+    assert!(config.auth_methods.op_served());
+}
+
+#[test]
+fn a_list_naming_all_four_with_both_blocks_serves_all_four() {
+    let config = load("auth-all-four-with-blocks").unwrap();
+    assert_eq!(
+        served(&config),
+        ["keypair", "machine_tokens", "hmac_webhooks", "human_login"]
+    );
+}
+
+#[test]
+fn the_human_login_block_without_op_is_refused_even_under_the_absent_default() {
+    // The sign-in rides the provider. The default permits human_login, so
+    // without this rule the block would be accepted and serve nothing.
+    assert_eq!(
+        refused("human-login-without-op"),
+        not_configured_human("op")
+    );
+    assert_eq!(
+        refused("auth-human-login-without-op"),
+        not_configured_human("op")
+    );
+}
+
+#[test]
+fn the_human_login_block_without_the_method_is_dormant_configuration_and_is_refused() {
+    let expected = ConfigError::AuthMethodDisabled {
+        methods: vec![AuthMethod::HumanLogin],
+        key: "human_login".to_owned(),
+    };
+    for profile in [
+        "human-login-without-the-method",
+        "human-login-beside-tokens-without-the-method",
+    ] {
+        assert_eq!(refused(profile), expected, "{profile}");
+    }
+    let message = expected.to_string();
+    assert!(
+        message.contains("delete human_login") && message.contains("add human_login"),
+        "{message}"
+    );
+}
+
+#[test]
+fn human_login_is_not_a_way_in_for_an_api_caller() {
+    assert_eq!(refused("auth-hmac-and-human-login"), ConfigError::NoWayIn);
+}
+
+#[test]
+fn a_human_login_that_is_a_null_is_refused_not_read_as_absent() {
+    let message = shape_message("human-login-null");
+    assert!(
+        message.contains("human_login") || message.contains("struct HumanLogin"),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_human_login_block_missing_a_key_or_with_an_unknown_one_is_refused_and_named() {
+    assert!(shape_message("shape-human-login-missing-keys").contains("login_rate_limit"));
+    assert!(shape_message("shape-human-login-unknown-key").contains("sso_group"));
+    assert!(shape_message("shape-console-client-unknown-key").contains("secret"));
+}
+
+fn invalid_reason(profile: &str, key: &str) -> String {
+    match refused(profile) {
+        ConfigError::InvalidValue { key: got, reason } if got == key => reason,
+        other => panic!("{profile}: expected InvalidValue for {key}, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_console_client_id_is_a_clean_oauth_client_id_of_the_columns_length() {
+    let key = "human_login.console_client.client_id";
+    assert_eq!(
+        refused("human-login-client-id-blank"),
+        ConfigError::EmptyField {
+            key: key.to_owned()
+        }
+    );
+    for profile in [
+        "human-login-client-id-too-short",
+        "human-login-client-id-too-long",
+    ] {
+        assert!(
+            invalid_reason(profile, key).contains("8 to 64"),
+            "{profile}"
+        );
+    }
+    assert!(invalid_reason("human-login-client-id-whitespace", key).contains("whitespace"));
+    // 64 is the column's own ceiling and loads.
+    load("human-login-client-id-longest").expect("64 characters is the longest the column holds");
+}
+
+#[test]
+fn the_redirect_uris_are_a_non_empty_list_of_clean_distinct_urls() {
+    let list = "human_login.console_client.redirect_uris";
+    assert!(invalid_reason("human-login-no-redirect-uris", list).contains("at least one"));
+    let first = format!("{list}[0]");
+    assert!(matches!(
+        refused("human-login-redirect-not-a-url"),
+        ConfigError::InvalidValue { key, .. } if key == first
+    ));
+    assert!(invalid_reason("human-login-redirect-fragment", &first).contains("fragment"));
+    assert!(invalid_reason("human-login-redirect-whitespace", &first).contains("whitespace"));
+    assert!(
+        invalid_reason("human-login-redirect-duplicate", &format!("{list}[1]")).contains("twice")
+    );
+}
+
+#[test]
+fn the_login_bucket_is_range_checked() {
+    assert!(matches!(
+        refused("human-login-bucket-burst-zero"),
+        ConfigError::InvalidValue { key, .. } if key == "human_login.login_rate_limit.burst"
+    ));
+    assert!(matches!(
+        refused("human-login-bucket-refill-zero"),
+        ConfigError::InvalidValue { key, .. }
+            if key == "human_login.login_rate_limit.refill_per_second"
+    ));
+}
+
+#[test]
+fn under_livemode_the_redirect_uris_are_https_and_not_a_stub() {
+    // The second entry is the insecure one: every entry is checked, not the first.
+    assert!(matches!(
+        refused("human-login-livemode-insecure-redirect"),
+        ConfigError::InsecureHost { key, url }
+            if key == "human_login.console_client.redirect_uris[1]"
+                && url == "http://admin.example.com/cb"
+    ));
+    assert!(matches!(
+        refused("human-login-livemode-stub-redirect"),
+        ConfigError::StubHostInLivemode { key, .. }
+            if key == "human_login.console_client.redirect_uris[0]"
+    ));
+    load("human-login-livemode-valid").expect("a real https redirect is fine in livemode");
+    load("human-login-sandbox-may-use-http")
+        .expect("a sandbox may redirect to localhost over http");
 }
 
 #[test]

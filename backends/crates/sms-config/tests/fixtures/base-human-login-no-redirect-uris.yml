@@ -1,0 +1,15 @@
+op:
+  issuer: https://sms.example.com
+  token_rate_limit:
+    burst: 10
+    refill_per_second: 0.3333333333333333
+  signing_key:
+    refresh_interval_secs: 60
+    rotation_overlap_secs: 1800
+human_login:
+  console_client:
+    client_id: sms-console
+    redirect_uris: []
+  login_rate_limit:
+    burst: 5
+    refill_per_second: 0.1

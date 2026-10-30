@@ -189,7 +189,7 @@ pub enum ConfigError {
     #[error(
         "auth.methods is present and empty (or null: `methods:` with every item commented \
          out); a deployment that permits no way of authenticating is a misconfiguration. Name \
-         one or more of: keypair, machine_tokens, hmac_webhooks (or delete the key to permit every method)"
+         one or more of: keypair, machine_tokens, hmac_webhooks, human_login (or delete the key to permit every method)"
     )]
     NoAuthMethods,
 
@@ -205,19 +205,15 @@ pub enum ConfigError {
     #[error("auth.methods names {0} more than once; each method is listed at most once")]
     DuplicateAuthMethod(AuthMethod),
 
-    /// `auth.methods` names a method this release has no code for
-    /// (`human_login`, restored by VSA-4). Listing it would promise a door that
-    /// is not there. Delete it from the list.
-    #[error(
-        "auth.methods names {0}, which is not available in this release; delete it from the \
-         list (an absent auth.methods permits it without serving it)"
-    )]
-    AuthMethodUnavailable(AuthMethod),
-
-    /// `auth.methods` names a method explicitly and the block that makes it run
-    /// is missing: `machine_tokens` without `op:`. An absent `auth.methods` never
-    /// raises this: it permits the method and serves it only where its block is,
-    /// so a deployment that never wrote the block keeps booting.
+    /// A method needs a block and the document lacks it, or the block it rides
+    /// on. Three cases: `machine_tokens` named explicitly without `op:`;
+    /// `human_login` named explicitly without `human_login:`; and `human_login:`
+    /// written without `op:` (a person signs in through the `OpenID` Provider, so
+    /// the sign-in cannot run without it). The first two never fire on an absent
+    /// `auth.methods`, which permits the methods and serves each only where its
+    /// block is, so a deployment that never wrote the block keeps booting; the
+    /// third fires on the absent default too, because the block is there and
+    /// would serve nothing.
     #[error(
         "auth.methods names {method} but {key} is not configured; add it, or delete {method} \
          from auth.methods"
@@ -229,17 +225,22 @@ pub enum ConfigError {
         key: String,
     },
 
-    /// A block is present for a method `auth.methods` does not permit: `op:` on
-    /// a list without `machine_tokens`. Dormant configuration is refused so that
-    /// a door an operator believes is shut cannot be one that is only unwatched.
+    /// A block is present for a method `auth.methods` does not permit:
+    /// `human_login:` on a list without `human_login`, or `op:` on a list with
+    /// neither `machine_tokens` nor `human_login` (the two methods that ride the
+    /// provider). Dormant configuration is refused so that a door an operator
+    /// believes is shut cannot be one that is only unwatched.
     #[error(
-        "{key} is configured but auth.methods does not permit {method}; delete {key}, or add \
-         {method} to auth.methods"
+        "{key} is configured but auth.methods does not permit {}; delete {key}, or add {} to \
+         auth.methods",
+        either(.methods),
+        either(.methods)
     )]
     AuthMethodDisabled {
-        /// The method that is not permitted.
-        method: AuthMethod,
-        /// The configuration that belongs to it.
+        /// The methods that would make the block meaningful; any one of them
+        /// does.
+        methods: Vec<AuthMethod>,
+        /// The configuration that belongs to them.
         key: String,
     },
 
@@ -282,4 +283,13 @@ pub enum ConfigError {
         /// The YAML key that replaced it.
         key: String,
     },
+}
+
+/// `a`, `a or b`: how a list of alternatives reads in an error message.
+fn either(methods: &[AuthMethod]) -> String {
+    methods
+        .iter()
+        .map(|method| method.as_str())
+        .collect::<Vec<_>>()
+        .join(" or ")
 }
