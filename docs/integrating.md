@@ -6,7 +6,7 @@ Everything below works against a local stack with no Orange or MTN account, no r
 
 ## 1. Get a credential
 
-vsms has no API keys and no shared secrets. A caller is an **`AppClient`** holding an Ed25519 private key, and every request is a COSE_Sign1 message signed with it. The gateway answers with a message signed by its own key, which you pin. (A deployment that serves other applications can also run an OpenID Provider and mint short-lived bearer tokens for a *machine client*; see [Machine clients and tokens](#machine-clients-and-tokens) below. It is off unless the operator turns it on, and a token is not yet accepted by the API.)
+vsms has no API keys and no shared secrets. A caller is an **`AppClient`** holding an Ed25519 private key, and every request is a COSE_Sign1 message signed with it. The gateway answers with a message signed by its own key, which you pin. (A deployment that serves other applications can also run an OpenID Provider and mint short-lived bearer tokens for a *machine client*; see [Machine clients and tokens](#machine-clients-and-tokens) below. It is off unless the operator turns it on; when the deployment lists `machine_tokens`, the API accepts that token as a bearer beside the signed envelope.)
 
 Make your key, then give the operator its public half:
 
