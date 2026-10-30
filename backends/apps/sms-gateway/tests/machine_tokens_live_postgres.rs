@@ -512,19 +512,34 @@ async fn post_token(
     grant: &str,
     assertion: &str,
 ) -> (u16, serde_json::Value) {
+    post_token_asking(base_url, client_id, grant, assertion, Some("sms:send")).await
+}
+
+/// [`post_token`] asking for `scope`, or for none: a token minted without a
+/// `scope` claim, which `/token` allows and which carries no scope of its own.
+async fn post_token_asking(
+    base_url: &str,
+    client_id: &str,
+    grant: &str,
+    assertion: &str,
+    scope: Option<&str>,
+) -> (u16, serde_json::Value) {
+    let mut form = vec![
+        ("grant_type", grant),
+        ("client_id", client_id),
+        (
+            "client_assertion_type",
+            "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+        ),
+        ("client_assertion", assertion),
+        ("refresh_token", "not-a-real-refresh-token"),
+    ];
+    if let Some(scope) = scope {
+        form.push(("scope", scope));
+    }
     let response = reqwest::Client::new()
         .post(format!("{base_url}/token"))
-        .form(&[
-            ("grant_type", grant),
-            ("client_id", client_id),
-            (
-                "client_assertion_type",
-                "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
-            ),
-            ("client_assertion", assertion),
-            ("scope", "sms:send"),
-            ("refresh_token", "not-a-real-refresh-token"),
-        ])
+        .form(&form)
         .send()
         .await
         .expect("POSTing to /token");
@@ -878,6 +893,28 @@ async fn mint(base_url: &str, machine: &Machine) -> String {
     )
     .await;
     assert_eq!(status, 200, "{token}");
+    token["access_token"]
+        .as_str()
+        .expect("an access token")
+        .to_owned()
+}
+
+/// A real access token minted asking for no scope, so it carries no `scope`
+/// claim and acts with whatever the rows allow.
+async fn mint_unscoped(base_url: &str, machine: &Machine) -> String {
+    let (status, token) = post_token_asking(
+        base_url,
+        &machine.client_id,
+        "client_credentials",
+        &sign_client_assertion(&machine.client_id, base_url, &machine.pem),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{token}");
+    assert!(
+        token.get("scope").is_none_or(serde_json::Value::is_null),
+        "an unscoped request gets an unscoped token: {token}"
+    );
     token["access_token"]
         .as_str()
         .expect("an access token")
@@ -1267,7 +1304,7 @@ async fn an_app_client_scope_the_oauth_client_lacks_is_not_granted_to_a_minted_t
     let machine = provision(&db, &deployment, "ceiling", &["sms:send"]).await;
     let gateway = deployment.spawn().await;
     // Minted before the AppClient is touched, asking for no scope.
-    let token = mint(&issuer, &machine).await;
+    let token = mint_unscoped(&issuer, &machine).await;
 
     let app_client = db
         .app_client()
