@@ -13,11 +13,11 @@ envelope (`keypair`), a token (`machine_tokens` served), or both. Neither is
 refused at construction ([`NoDoor`]), the same refusal `ConfigError::NoWayIn`
 makes at load.
 
-| `keypair` | `machine_tokens` served | envelope mode | an unsigned request     | a signed request                       |
-| --------- | ----------------------- | ------------- | ----------------------- | -------------------------------------- |
-| on        | off                     | `Required`    | coarse 401, by the layer | opened and sealed                      |
-| on        | on                      | `Optional`    | reaches the door         | opened and sealed                      |
-| off       | on                      | `Off`         | reaches the door         | 415, by the layer (never forwarded)    |
+| `keypair` | `machine_tokens` served | envelope mode | an unsigned request      | a signed request                    |
+| --------- | ----------------------- | ------------- | ------------------------ | ----------------------------------- |
+| on        | off                     | `Required`    | coarse 401, by the layer | opened and sealed                   |
+| on        | on                      | `Optional`    | reaches the door         | opened and sealed                   |
+| off       | on                      | `Off`         | reaches the door         | 415, by the layer (never forwarded) |
 
 `crate::envelope::mode_for` is the table. Three settings do not follow it
 (`crate::envelope::layer`): routes the layer cannot bind fail closed (`500`) in
