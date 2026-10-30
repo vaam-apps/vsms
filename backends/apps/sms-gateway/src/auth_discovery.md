@@ -11,8 +11,10 @@ a deployment with no blocks (`machine_tokens` needs `op:`; `human_login` needs
 `human_login:` **and** `op:`), three with `op:` alone, all four with both, and
 vaam's `[keypair]` answers one. A console or an SDK reads
 this instead of a second switch that could disagree with the server's. Listing
-`machine_tokens` now also means the API accepts the token it mints (VSA-3b); the
-shape of the document did not change.
+`machine_tokens` also means the API accepts the token it mints (VSA-3b). Listing
+`human_login` (VSA-4a) means `POST /login` and the `authorization_code` grant are
+mounted, **not** that the API accepts the person's token (VSA-4b); the shape of the
+document did not change.
 
 - **Unauthenticated and outside the envelope**, like `/healthz` and `/readyz`:
   `serve` merges it beside them, after `sms_api::router` has applied its layers

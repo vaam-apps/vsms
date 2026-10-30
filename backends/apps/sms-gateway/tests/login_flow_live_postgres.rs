@@ -1330,6 +1330,37 @@ async fn provision_user_writes_a_password_file_prints_nothing_secret_and_that_pa
     );
     assert_eq!(std::fs::read_to_string(&out).unwrap(), password);
 
+    gateway.kill();
+}
+
+/// An existing password is refused without `--reset`, and replaced with it: the new
+/// password works and the old one stops.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn an_existing_password_is_refused_without_reset_and_replaced_with_it() {
+    let _guard = TEST_MUTEX.lock().await;
+    let deployment = Deployment::new(Serves::People, 100).await;
+    deployment.prepare().await;
+    let email = format!("reset-{}@example.test", unique_suffix());
+    let out = scratch_file("password");
+    let out_str = out.display().to_string();
+    deployment.cli_ok(
+        "provision-user",
+        &[
+            "--email",
+            email.as_str(),
+            "--display-name",
+            "Provisioned Person",
+            "--role-key",
+            "support",
+            "--password",
+            "--password-out",
+            out_str.as_str(),
+        ],
+    );
+    let password = std::fs::read_to_string(&out).expect("the password file");
+    let gateway = deployment.spawn().await;
+
     // A fresh path without --reset: the existing password is refused, no file made.
     let other = scratch_file("second");
     let other_str = other.display().to_string();

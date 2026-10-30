@@ -411,6 +411,20 @@ async fn a_soft_deleted_account_is_refused_with_the_right_password() {
     );
 }
 
+/// The median time of `attempts` refused logins for `email`.
+async fn median(db: &Cratestack, email: &str, attempts: usize) -> Duration {
+    let mut taken = Vec::new();
+    for _ in 0..attempts {
+        let started = Instant::now();
+        authenticate_user(db, email, "a wrong password")
+            .await
+            .expect_err("refused");
+        taken.push(started.elapsed());
+    }
+    taken.sort();
+    taken[attempts / 2]
+}
+
 /// **A missing account costs the same Argon2 work as a wrong password.** Proven by
 /// the clock, because the side channel it closes is the clock: the median of a few
 /// unknown-email attempts is at least half the median of wrong-password attempts.
@@ -424,19 +438,6 @@ async fn an_unknown_email_takes_as_long_as_a_wrong_password() {
     let db = db().await;
     let suffix = unique_suffix();
     let account = seed_account(&db, &suffix, Some("correct horse battery staple"), true).await;
-
-    async fn median(db: &Cratestack, email: &str, attempts: usize) -> Duration {
-        let mut taken = Vec::new();
-        for _ in 0..attempts {
-            let started = Instant::now();
-            authenticate_user(db, email, "a wrong password")
-                .await
-                .expect_err("refused");
-            taken.push(started.elapsed());
-        }
-        taken.sort();
-        taken[attempts / 2]
-    }
 
     // One of each first, so the dummy hash and the pool are warm.
     authenticate_user(&db, "warm-up@example.test", "x")

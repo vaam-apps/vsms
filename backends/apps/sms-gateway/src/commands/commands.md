@@ -21,17 +21,38 @@ that subcommand's own file — `seed_dispatch::seed_dispatch_core` and
 `pub(crate)` because `bootstrap::bootstrap_command` reuses them directly
 rather than re-deriving their logic (see `bootstrap.rs`'s own doc for why).
 
+# The password commands (VSA-4a)
+
+`seed_console_client` reconciles the console's `OauthClient` row
+(`sms_auth::console_client`); `provision_user` and `bootstrap` give a person a
+generated password. The password is **written to a file and never printed**:
+`secret_file::write_new_secret_file`, the one writer, creates the file `0600` with
+`O_EXCL` (so an existing file is refused, atomically, and the file is never
+visible with looser permissions) and is also what `provision_client` writes its
+private key with. The order inside `provision_user::issue_password` is deliberate:
+an existing password is refused (without `--reset`) *before* anything is generated
+or created; the password is hashed and the file written *before* the hash is
+stored; and the file is removed if storing fails, because a credential nobody
+holds the password to is a worse failure than a file with no credential. The
+password is never in an error, and a test holds stdout and stderr to that.
+
 # Which subcommands read the YAML configuration (VSC-1)
 
-Four take `--config`/`--profile` (`SMS_CONFIG`/`SMS_PROFILE`): `serve`, whose
+Nine take `--config`/`--profile` (`SMS_CONFIG`/`SMS_PROFILE`): `serve`, whose
 pepper, pool size, rate limits and providers are in `config/application*.yml`;
 `mtn-subscribe-dlr`, whose credentials are the `providers[code=mtn_cm]` entry of
-the same document; and `provision-client` and `rotate-signing-key` (VSA-3a), which
-read it only to learn whether the deployment serves `machine_tokens` and refuse
-before the database when it does not (`Binary::Operator`, no `security:`).
-`main.rs` pins the four names. Every other subcommand is a one-shot operator action
-on the database and reads no deployment configuration; their arguments stay
-arguments. `main.rs` refuses a retired flag (`sms_config::RETIRED`) before clap
+the same document; `provision-client` (VSA-3a), which reads it only to learn
+whether the deployment serves `machine_tokens`; `rotate-signing-key`, which asks
+whether the provider is mounted for either method (VSA-4a); `register-client` and
+`pair-console-key` (VSA-3b), which ask whether it permits `keypair`; and, since
+VSA-4a, `seed-console-client` (always), `provision-user` and `bootstrap`, which
+read it **only for their password flags** (`--password`, `--owner-password-out`) to
+learn whether it serves `human_login`. All of them refuse before the database when
+the answer is no (`Binary::Operator`, no `security:`). `main.rs` pins the nine
+names. Every other subcommand is a one-shot operator action on the database and
+reads no deployment configuration; their arguments stay arguments. `provision-user`
+and `bootstrap` without a password flag read none either, so the plain
+`provision-user` that has always worked on a bare database still does. `main.rs` refuses a retired flag (`sms_config::RETIRED`) before clap
 parses.
 
 `serve` also reads `auth.methods` (VSA-1): it passes the `hmac_webhooks` answer to

@@ -21,8 +21,8 @@ parameters, so a hash made with other ones verifies as it was made and a future
 change of the defaults does not lock anyone out.
 
 There is **no pepper** (VSA-4 plan, decision 1): a hash exported from before #446
-(`docs/runbooks/deployment.adoc`, "Keeping the OpenID Provider's rows across 0009
-and 0012") has to verify after it is imported, and a pepper would make every
+(`docs/runbooks/deployment.adoc`, the section on keeping the `OpenID` Provider's
+rows across 0009 and 0012) has to verify after it is imported, and a pepper would make every
 imported hash wrong. The dependency is `argon2` 0.6, not the 0.5 that #446
 deleted: `authkestra-engine` already resolves 0.6.0, so there is one copy in the
 tree, and the PHC format is the same across the two.

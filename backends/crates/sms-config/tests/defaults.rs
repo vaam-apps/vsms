@@ -131,3 +131,54 @@ fn the_committed_base_leaves_auth_methods_absent_so_every_method_is_permitted() 
         "config/application.yml must carry `auth:` as a comment, not as a key"
     );
 }
+
+/// The commented examples in `config/application.yml` are claims about what a
+/// deployment may write, and a comment is the one place nothing would notice them
+/// drifting. Uncommented, the `op:` and `human_login:` examples load, and serve
+/// both methods.
+#[test]
+fn the_commented_op_and_human_login_examples_load_once_uncommented_and_serve_both() {
+    let text = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../config/application.yml"),
+    )
+    .unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    let mut overlay = String::new();
+    for block in ["# op:", "# human_login:"] {
+        let start = lines
+            .iter()
+            .position(|line| *line == block)
+            .unwrap_or_else(|| panic!("config/application.yml has no commented {block} example"));
+        overlay.push_str(&lines[start][2..]);
+        overlay.push('\n');
+        for line in &lines[start + 1..] {
+            // The example is the run of `#   ` lines (an indented continuation).
+            let Some(rest) = line.strip_prefix("# ") else {
+                break;
+            };
+            if !rest.starts_with("  ") {
+                break;
+            }
+            overlay.push_str(rest);
+            overlay.push('\n');
+        }
+    }
+    let dir = std::env::temp_dir().join(format!("sms-config-example-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::copy(common::committed_base_alone(), dir.join("application.yml")).unwrap();
+    std::fs::write(dir.join("application-example.yml"), &overlay).unwrap();
+
+    let config = Config::load_with_env(
+        Some(&dir.join("application.yml")),
+        "example",
+        Binary::Gateway,
+        &|name| (name == "SMS_HASH_PEPPER").then(|| "p".repeat(48)),
+    )
+    .unwrap_or_else(|error| panic!("the commented examples do not load: {error}\n{overlay}"));
+    assert!(config.auth_methods.machine_tokens_served(), "{overlay}");
+    assert!(config.auth_methods.human_login_served(), "{overlay}");
+    let human = config.human_login.expect("the block is read");
+    assert_eq!(human.console_client.client_id, "sms-console");
+    assert_eq!(human.login_rate_limit.burst, 5);
+    std::fs::remove_dir_all(&dir).ok();
+}

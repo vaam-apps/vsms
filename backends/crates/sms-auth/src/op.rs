@@ -408,7 +408,7 @@ mod tests {
         );
         let machines = op_config("https://sms.example.org".to_owned(), grants(true, false));
         assert_eq!(machines.scopes_supported, ["sms:send", "sms:read"]);
-        assert!(machines.response_types_supported.is_empty());
+        assert_eq!(machines.response_types_supported, Vec::<String>::new());
     }
 
     /// The refresh slot cannot hold a token, whatever asks it to.

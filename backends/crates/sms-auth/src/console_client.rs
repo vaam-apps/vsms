@@ -356,7 +356,7 @@ mod tests {
         for (broken, expected) in cases {
             assert_eq!(
                 mismatches(&broken, &console()),
-                [expected.clone()],
+                std::slice::from_ref(&expected),
                 "{expected}"
             );
         }

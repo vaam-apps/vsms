@@ -13,8 +13,9 @@ members = [
   "backends/crates/sms-metrics",
   "backends/crates/sms-api",
   # VSA-3a: the embedded OpenID Provider's stores, keys and client provisioning
-  # (deleted in #446, restored for the `machine_tokens` method). The human half
-  # (login, SSO) is VSA-4 and is not in the crate.
+  # (deleted in #446, restored for the `machine_tokens` method; VSA-4a adds the
+  # password login and the console client row). The SSO broker is VSA-4c and is not
+  # in the crate.
   "backends/crates/sms-auth",
   "backends/crates/sms-worker",
   "backends/crates/sms-provider",

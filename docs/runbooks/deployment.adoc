@@ -24,7 +24,8 @@ below:
 `Command::RegisterClient`) and registers an integrator's own Ed25519 public
 key as an `AppClient` -- step 5 below uses it for the console composer's
 key. The gateway never generates, sees or stores a private key; there is no
-token to mint and no `provision-client` any more (deleted in VS-4).
+token to mint unless the deployment serves `machine_tokens` (`provision-client`
+was deleted in VS-4 and is back behind `op:`, VSA-3a).
 * *`sms-gateway create-app` exists* (`Command::CreateApp`, production-readiness
 audit N1) and closes what used to be a real chicken-and-egg gap: creating
 the very first `App` a real production deployment sends through --
@@ -274,9 +275,11 @@ auth:
 *Absent means all four*, which is what every deployment had before the key
 existed, so an upgrade changes nothing until you write it. An empty list, a null
 (`methods:` with every item commented out), an unknown name, a duplicate, a list
-with neither `keypair` nor `machine_tokens`, `human_login` (this release does not
-have it), `machine_tokens` without an `op:` block and an `op:` block without
-`machine_tokens` are each refused at start, naming the rule. The
+with neither `keypair` nor `machine_tokens`, `machine_tokens` without an `op:` block,
+`human_login` without a `human_login:` block, a `human_login:` block without `op:`
+(even under the absent default) or without the method, and an `op:` block when
+neither `machine_tokens` nor `human_login` is permitted are each refused at start,
+naming the rule. The
 change takes a restart of the gateway _and_ the worker, like any other key in the
 file.
 
@@ -429,6 +432,78 @@ pepper, and *refuse on a deployment that serves no tokens*:
 Nothing is written. A client made with `register-client` signs its requests instead
 of asking for a token, and every deployment serves that.
 
+=== The console sign-in: `human_login:`, the console client, a password (VSA-4a)
+
+A person with a password can sign in to the console through the same provider
+(owner ruling R5; `docs/architecture.md`, section 4.10). It is off unless you write
+the `human_login:` block *and* `op:`, and vaam's `methods: [keypair]` keeps it off
+even then. *The API does not accept the token this sign-in issues yet* (VSA-4b), and
+the console has no sign-in screen until VSA-5: this release lets you stand the
+sign-in up and prove it, not use it.
+
+[,yaml]
+----
+op:                                   # as above: the sign-in rides the provider
+  issuer: https://sms.example.org
+  # …
+human_login:
+  console_client:
+    client_id: sms-console            # 8 to 64 characters; the only client_id /login accepts
+    redirect_uris:                    # exact match; https and no stub host under livemode
+      - https://admin.sms.example.org/api/auth/callback
+  login_rate_limit:                   # per email address and per source address,
+    burst: 5                          # before any password is hashed
+    refill_per_second: 0.1
+----
+
+Every key is required; there is no secret in the block. A `human_login:` block without
+`op:` is refused at start even when `auth.methods` is absent.
+
+*Order matters, once, on a fresh deployment.* `serve` refuses to start while no
+signing key is active _and_ while the console client row is missing or differs from
+the block, so, with `run --rm` and never `exec`:
+
+[,bash]
+----
+docker compose --env-file .env run --rm sms-gateway rotate-signing-key
+docker compose --env-file .env run --rm sms-gateway seed-console-client
+----
+
+`seed-console-client` registers the console as a *public* client: no key, the
+`authorization_code` grant alone, the `openid profile` scopes, PKCE required, and
+exactly the block's redirect URIs. It *reconciles*: run it again after changing a
+redirect URI, and it says what was wrong. `serve` checks the row at start and stops
+with a message naming every difference and this command, and a row that carries the
+`refresh_token` grant a pre-#446 console was registered with is the difference it
+exists to catch (this deployment issues no refresh token).
+
+*Giving a person a password* (generated, shown to nobody, written to a file):
+
+[,bash]
+----
+umask 077
+docker compose --env-file .env run --rm sms-gateway provision-user \
+  --email you@example.com --display-name "Your Name" --role-key owner \
+  --password --password-out secrets/you.password
+----
+
+The file is created with mode `0600` and never overwritten; the password is not
+printed. Read it once, hand it over by a channel you trust, and delete the file. An
+account that exists without a password gets one; an account that already has one is
+refused unless you pass `--reset`, which replaces it at once (the old password stops
+working). `bootstrap` takes `--owner-password-out <file>` with `--owner-email`: it
+also registers the console client in the same run. All three commands read the same
+YAML as `serve` (`--config`, `--profile`; `provision-user` and `bootstrap` only for
+the password flags) and *refuse on a deployment that does not serve `human_login`*:
+`auth_method_disabled: this deployment signs no person in`, before the database is
+touched, writing nothing and creating no file.
+
+Passwords are Argon2id with no pepper, so a hash exported before `0009` (above)
+verifies once imported. The sign-in answers every refusal with one `401
+invalid_credentials` and throttles per email and per source address; the gateway
+logs `human_login is served` at start. Authorization codes live in the gateway's
+memory for sixty seconds, so run one gateway replica (the chart does).
+
 === Before deploying: the `webhook_attempts` index of migration 0011
 
 Migration `0011_webhook_endpoint_due_idx` builds an index on `webhook_attempts`
@@ -518,8 +593,9 @@ the rows before the new release starts:
   one (VSA-3a); a token the old key signed is not verifiable by it.
 
 | `user_credentials`
-| Every password hash. Each person is given a new password through `provision-user`
-  once the release serves the login (VSA-4).
+| Every password hash. Each person is given a new password through
+  `provision-user --password --password-out` once the release serves the login
+  (VSA-4a, `The console sign-in` below).
 
 | `client_assertions`, `sso_transactions`
 | Spent client assertions and sign-ins in flight. Both are ephemeral: nothing
@@ -527,9 +603,9 @@ the rows before the new release starts:
 |===
 
 *Only the first three are read, and only with `op:` written.* This release has a
-token endpoint behind `auth.methods` and `op:` (VSA-3a, below) but no `/login` and no
-SSO broker (VSA-4), and no table is reachable by any route, so a deployment that
-never used them loses nothing it can see. A deployment that is *already past* `0009` has nothing to
+token endpoint behind `auth.methods` and `op:` (VSA-3a, below) and a `/login` behind
+`human_login:` (VSA-4a, below), but no SSO broker (VSA-4c), and no table is reachable
+by any route, so a deployment that never used them loses nothing it can see. A deployment that is *already past* `0009` has nothing to
 keep: 0009 deleted the rows when it ran, and `0012` only ever finds the tables
 missing.
 
@@ -595,7 +671,8 @@ existed carries the same keys and hashes, and is as secret as they are.
 *After an import, an `oauth_clients` row blocks a hard delete of its AppClient.*
 `oauth_clients.app_client_id` is a plain `NO ACTION` foreign key (so is
 `user_credentials.user_id`, for a User), and the imported rows are read only by
-the token endpoint (VSA-3a, when `op:` is written) and the login (VSA-4). Until then, deleting an AppClient from the console (or a User)
+the token endpoint (VSA-3a, when `op:` is written) and the login (VSA-4a, when
+`human_login:` is). Until then, deleting an AppClient from the console (or a User)
 fails with a foreign-key error naming `oauth_clients_app_client_id_fkey`
 (`user_credentials_user_id_fkey`). Remove the imported rows that name it first,
 then delete it again:
@@ -607,7 +684,7 @@ DELETE FROM user_credentials WHERE user_id = '<user id>';
 ----
 
 The client or the password that row stood for is gone with it;
-`provision-client` (below) and VSA-4 provision a new one.
+`provision-client` and `provision-user --password` (below) provision a new one.
 
 The statements above are the ones
 `a_provider_export_taken_before_0009_is_restored_after_0012`
@@ -747,9 +824,10 @@ docker compose --env-file .env run --rm sms-gateway provision-user \
   --email you@example.com --display-name "Your Name" --role-key owner
 ----
 
-`provision-user` still prints a generated password once; the console never
-asks for it (the password login and the OpenID routes it served go with
-VS-4). What matters here is the account: `pair-console-key --user
+`provision-user` prints no credential. A password is optional and explicit
+(`--password --password-out <file>`, on a deployment that serves `human_login`: see
+`The console sign-in` above); the console does not ask for one (it has no sign-in
+screen until VSA-5). What matters here is the account: `pair-console-key --user
 you@example.com` attaches the browser's key to it, and the key speaks as
 that account's role. A person paired by a vaam admin phone instead gets an
 `admin` account created for them on first pairing, never an `owner`.

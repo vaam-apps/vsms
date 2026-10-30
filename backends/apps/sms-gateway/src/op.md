@@ -1,8 +1,8 @@
 Mounting the OP's HTTP surface. #20.
 
-Hand-wired to exactly the three routes a `client_credentials` +
-`private_key_jwt` deployment needs — `/jwks.json`,
-`/.well-known/openid-configuration`, `/token` — rather than
+Hand-wired to exactly the three routes the provider needs — `/jwks.json`,
+`/.well-known/openid-configuration`, `/token` (plus `POST /login`, `login.rs`,
+when `human_login` is served) — rather than
 `authkestra_axum::op::OpExt::op_axum_router()`, which mounts
 `/authorize`, `/device_authorization`, `/userinfo` and `/device/verify`
 too. Those need `SessionStore`/`SessionConfig` wiring for flows nothing
@@ -23,7 +23,10 @@ differently:
   document straight from `OidcDiscovery::from_config`, with no way to
   chain `.with_private_key_jwt()` onto the result — so a spec-compliant
   client consulting discovery would never learn this OP accepts
-  `private_key_jwt` (#18). [`discovery_handler`] below calls it.
+  `private_key_jwt` (#18) - and it adds an `authorization_endpoint` for any
+  provider that lists `authorization_code`, which here would point at a route
+  that is never mounted. [`discovery_document`] chains the one on and drops the
+  other (VSA-4a).
 
 **The signing key and JWKS are live-refreshed, not a startup
 snapshot.** Found in review (#97): the first version of this module
@@ -42,19 +45,29 @@ advertises the new `kid` while tokens are still signed with the old one, which
 every verifier can check; the other order had a window in which a token carried a
 `kid` the JWKS did not list yet (inherited from `29f93c4^`).
 
-# Restored by VSA-3a, and mounted only when `machine_tokens` is served
+# Restored by VSA-3a and VSA-4a, and mounted only when a method that rides it is served
 
-This module is `29f93c4^`'s, minus the console's half: no `/authorize`, no login,
-no `vsms_sso_login_endpoint` in the discovery document. `serve` mounts [`router`]
-**only** when `AuthMethods::machine_tokens_served` (the method permitted **and**
-the `op:` block present); otherwise `/token`, `/jwks.json` and
-`/.well-known/openid-configuration` are simply not routes, and answer 404 like
-any other path (`tests/machine_tokens_live_postgres.rs`,
+This module is `29f93c4^`'s, minus `/authorize` (never mounted again: the console
+reaches `handle_authorize` through `POST /login`) and the SSO discovery member
+`vsms_sso_login_endpoint` (VSA-4c). `serve` mounts [`router`] **only** when
+`AuthMethods::op_served` (`machine_tokens` served, or `human_login` served: the
+method permitted, its block present, and `op:` present); otherwise `/token`,
+`/jwks.json` and `/.well-known/openid-configuration` are simply not routes, and
+answer 404 like any other path (`tests/machine_tokens_live_postgres.rs`,
 `with_the_method_off_nothing_is_mounted_and_the_commands_refuse`). The routes sit **outside** the
 envelope layer, as before: a `/token` caller has no key to sign with yet, it is
 asking for a token. A token this module mints is accepted by the API as a bearer
 (VSA-3b): `op_bearer` verifies it against the keyring this module publishes
 `/jwks.json` from, and `sms_api::bearer` turns it into a caller. The routes
 stay outside both doors, because they are how a caller gets a token.
+
+# The `/token` route's two layers (VSA-4a)
+
+The grant gate (`grant_gate.rs`) is **outermost**, the per-`client_id` bucket
+(`token_rate_limit.rs`) inside it: a request for a grant this deployment does not
+serve is refused before it takes a token from anyone's bucket. [`OpState::store`]
+and [`OpState::config`] are what `login.rs` feeds `handle_authorize`; the store's
+clone shares the authorization-code `MemoryStore` with the `/token` handler's own,
+which is what lets a code issued by `POST /login` be redeemed at `/token`.
 
 <!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->

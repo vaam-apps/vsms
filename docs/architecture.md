@@ -870,7 +870,7 @@ model Role {
 
 - `FederatedLink(issuer, subject, userId)` with a hand-written `UNIQUE (issuer, subject)` — the identity key; console pairing finds or provisions a `User` through `(issuer = "vaam", subject = <the person's id at vaam>)`. It is **not** `User.subject`: that column is vsms's own subject (the row's `id`, written by `provision_user.rs` and the JIT path), while an upstream `sub` is unique only within its issuer and chosen by someone else; putting it in `User.subject` would give one column two meanings and let an upstream-chosen string collide with a local id-shaped subject. Never `email`. `@@audit`; no `update` or `delete` action (unlinking is deliberately not an operation yet).
 
-**The OpenID Provider and human-login models, restored empty (VSA-2).** Owner ruling R5 (2026-10-27): which ways in a deployment permits is configuration (`auth.methods`, §4.9), and the default keeps every legacy way, machine tokens and human login among them. VS-4 deleted the state those two keep in the database; `0012_restore_openid_provider` creates it again, **persistence only**, until the code that uses them came back. VSA-3a (§4.10) reads and writes `oauth_clients`, `oauth_signing_keys` and `client_assertions` for the OpenID Provider; `user_credentials` and `sso_transactions` stay unread until VSA-4 (human login, `/login`, the SSO broker), and the configuration still refuses `human_login` (§4.9). No route serves any of the five.
+**The OpenID Provider and human-login models, restored empty (VSA-2).** Owner ruling R5 (2026-10-27): which ways in a deployment permits is configuration (`auth.methods`, §4.9), and the default keeps every legacy way, machine tokens and human login among them. VS-4 deleted the state those two keep in the database; `0012_restore_openid_provider` creates it again, **persistence only**, until the code that uses them came back. VSA-3a (§4.10) reads and writes `oauth_clients`, `oauth_signing_keys` and `client_assertions` for the OpenID Provider; `user_credentials` is read and written since VSA-4a by the password login and `provision-user --password` (§4.10), and `sso_transactions` stays unread until VSA-4c (the SSO broker). No route serves any of the five.
 
 | Model (table)                            | Holds                                                                                               | Policy                                                       | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | ---------------------------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -1750,7 +1750,7 @@ sequenceDiagram
 - **Every refusal of a signature is one unsigned 401** (unknown, revoked, expired, forged, replayed, inactive owner). A holder of a dead key learns nothing from the answer. A payload that is not `application/json` is an unsigned 415 before any key is looked up.
 - **Replay protection is a table, not a cache.** `EnvelopeNonce` (forward migration `0008`) holds one row per accepted `cti`, behind a unique index, so two replicas receiving one request record it once between them. An expired row that has not been swept yet is deleted and the insert retried once; the worker's `sweep_envelope_nonces` job deletes expired rows in bounded batches.
 - **The server holds two Ed25519 keys**, `--envelope-signing-key-file` (signs every answer) and `--envelope-next-signing-key-file` (promoted by the next rotation), both PKCS#8 PEM and both required; the same key twice is refused and `serve` does not boot without them. They are the only keys it needs: it takes no issuer and no signing key of an identity provider (VS-4). `sms-gateway server-keys` prints the two public keys a client pins, so a rotation is: check that clients already pin today's `next` (the key being promoted), promote it, hand out the newly minted `next`, retire the old key. Whatever the mode, the keys are required: `serve` does not boot without them.
-- **Outside the layer:** `/dlr/*` (provider callbacks, which authenticate themselves), `/healthz` and `/readyz`, `GET /.well-known/vsms-auth` (§4.9) and, only when `machine_tokens` is served (§4.10), the OpenID Provider's `/token`, `/jwks.json` and `/.well-known/openid-configuration`. With the method off those three are the router's 404, like `/login` and `/login/sso/*` (deleted in VS-4, back with VSA-4): `the_deleted_openid_provider_routes_are_not_served` and `with_the_method_off_nothing_is_mounted_and_the_commands_refuse` request each from a real `sms-gateway serve`. A machine token is a credential of the layer's routes, through the bearer door (§4.10), only when `machine_tokens` is served.
+- **Outside the layer:** `/dlr/*` (provider callbacks, which authenticate themselves), `/healthz` and `/readyz`, `GET /.well-known/vsms-auth` (§4.9) and, only when `machine_tokens` or `human_login` is served (§4.10), the OpenID Provider's `/token`, `/jwks.json` and `/.well-known/openid-configuration`, plus `POST /login` when `human_login` is. With neither served those are the router's 404, like `/login/sso/*` (deleted in VS-4, back with VSA-4c): `the_deleted_openid_provider_routes_are_not_served` and `with_the_method_off_nothing_is_mounted_and_the_commands_refuse` request each from a real `sms-gateway serve`. A machine token is a credential of the layer's routes, through the bearer door (§4.10), only when `machine_tokens` is served.
 - **Layer order, outside in:** per-source rate limit, envelope, the bearer door (§4.10), per-principal rate limit (charged to `client:<id>` or `user:<id>`), idempotency (fingerprinted on the verified principal), the owner-grant guard, the four RBAC layers, the `keypair` gate and the `hmac_webhooks` gate (§4.9), the generated router. Beside the router, outside the envelope: `/dlr/*`, `/healthz`, `/readyz` and `GET /.well-known/vsms-auth` (§4.9).
 
 
@@ -1778,23 +1778,23 @@ What a stolen private key allows is whatever its client's scopes allow, until so
 
 ### 4.3 Human callers
 
-A person is a paired `ConsoleKey` (§2.9): a non-extractable P-256 key their browser made, which a vaam admin phone (`registerConsoleKey`) or, as the break-glass, an operator on the command line (`sms-gateway pair-console-key --user <email|id> --public-key <k>`) vouched for. Every request the console makes is sealed in the browser (§4.0, `docs/design/console-pairing.md`). There is no password, no TOTP, no OpenID session, no cookie, no refresh token and no single sign-on: owner rulings Q1 and Q2 (2026-10-26) — *phone pairing only*, break-glass is command-line key enrolment — and the standing ban on access and refresh tokens. Admin rights are a device's, never a code's: a paired console user is `admin`, never `owner` (R2), and a key lasts 30 days (R3).
+A person is a paired `ConsoleKey` (§2.9): a non-extractable P-256 key their browser made, which a vaam admin phone (`registerConsoleKey`) or, as the break-glass, an operator on the command line (`sms-gateway pair-console-key --user <email|id> --public-key <k>`) vouched for. Every request the console makes is sealed in the browser (§4.0, `docs/design/console-pairing.md`). There is no TOTP, no cookie, no refresh token and no single sign-on, and — unless the deployment serves `human_login` (VSA-4a, §4.10) — no password and no OpenID session either: owner rulings Q1 and Q2 (2026-10-26) — *phone pairing only*, break-glass is command-line key enrolment — and the standing ban on refresh tokens. Owner ruling R5 (2026-10-27) put the password back behind configuration: a deployment that serves `human_login` lets a person with a password sign in to the console, and the API **still refuses the token that sign-in issues** (VSA-4b is what lets it in), so a password opens nothing yet but the provider's own `/token`. Admin rights are a device's, never a code's: a paired console user is `admin`, never `owner` (R2), and a key lasts 30 days (R3).
 
 The principal is built per request by the signer directory from the verified key: the person's `User.id` as `sub`, `kind` `user`, the `role` of their `Role`, and its `permissions` as `perms` (§5.3). A deactivated user or a `Role` keyed `system`/`app` is refused (§2.10). Standing is cached for 60 seconds, so deactivating a person takes effect within one TTL, and a revoked or expired key row on the next request.
 
 How an account comes to exist, with nothing to sign in with:
 
-- **`provisionUser`** (console) and **`sms-gateway provision-user`** make a `User` row and print no credential. **`sms-gateway bootstrap --owner-email … --owner-display-name …`** does the same for the first owner. A key is then attached by pairing, or by `pair-console-key`.
+- **`provisionUser`** (console) and **`sms-gateway provision-user`** make a `User` row and print no credential. **`sms-gateway bootstrap --owner-email … --owner-display-name …`** does the same for the first owner. A key is then attached by pairing, or by `pair-console-key`. On a deployment that serves `human_login`, `provision-user --password --password-out <file>` and `bootstrap --owner-password-out <file>` also give the person a generated password, written to a `0600` file and never printed (§4.10).
 - **`registerConsoleKey`** finds or JIT-provisions the person through `FederatedLink(issuer = "vaam", subject = <vaam user id>)`, as `admin`.
 
 #### What VS-4 deleted (2026-10-27), and what came back
 
-For the record, since earlier revisions of this section described all of it. VSA-3a (owner ruling R5) restored the machine half behind `auth.methods` and `op:` (§4.10): the OpenID Provider's `/token`, `/jwks.json` and discovery, the `authkestra` family, the `sms-auth` crate (stores, keys, client provisioning), `token_rate_limit`, `rotate-signing-key` and `provision-client`. The human half (`/login`, `/login/sso/*`, `sms-fake-oidc`, `seed-console-client`, the password code) is VSA-4 and is still deleted.
+For the record, since earlier revisions of this section described all of it. VSA-3a (owner ruling R5) restored the machine half behind `auth.methods` and `op:` (§4.10): the OpenID Provider's `/token`, `/jwks.json` and discovery, the `authkestra` family, the `sms-auth` crate (stores, keys, client provisioning), `token_rate_limit`, `rotate-signing-key` and `provision-client`. VSA-4a (§4.10) restored the password half: `/login`, `seed-console-client`, the Argon2id password code and the password options of `provision-user` and `bootstrap`. The SSO half (`/login/sso/*`, `sms-fake-oidc`) is VSA-4c and is still deleted.
 
 - The OpenID Provider: `/token`, `/jwks.json`, `/.well-known/openid-configuration`, the human `/login` and the Keycloak `/login/sso/start` and `/callback`, the `authkestra` dependency family, the `sms-auth` crate, `sms-fake-oidc`, `token_rate_limit`, and `serve`'s `--issuer` flag and its start-up requirement for an active signing key.
 - The tables `oauth_clients`, `oauth_signing_keys`, `client_assertions`, `user_credentials` and `sso_transactions` (`0009_drop_openid_provider`, forward-only: the password hashes and private signing keys must not come back from a `down`). VSA-2 (owner ruling R5) created them again, empty, as `0012_restore_openid_provider`; the rows did not come back (§2.8).
-- The commands `rotate-signing-key`, `provision-client` (which generated an RSA key server-side for `private_key_jwt`) and `seed-console-client`, and the password half of `provision-user` and `bootstrap`.
-- The Argon2id password code (`sms_core::password`).
+- The commands `rotate-signing-key`, `provision-client` (which generated an RSA key server-side for `private_key_jwt`) and `seed-console-client`, and the password half of `provision-user` and `bootstrap` (all back: VSA-3a and VSA-4a).
+- The Argon2id password code (`sms_core::password`; back with VSA-4a).
 
 ### 4.4 Outbound webhooks: sealed or HMAC, per endpoint
 
@@ -1977,21 +1977,25 @@ auth:
 | `keypair`        | requests signed by a registered key and the sealed answers (§4.0, §4.2, §4.3)                     | served; the envelope is `Required` alone, `Optional` beside tokens, and when off a signed body is a 415       |
 | `machine_tokens` | `Authorization: Bearer` from the deployment's own OpenID Provider                                 | served when `op:` is written (VSA-3a, §4.10), and the API accepts its tokens beside the envelope (VSA-3b)     |
 | `hmac_webhooks`  | webhook endpoints delivered with `X-Sms-Signature` (`deliveryMode: hmac`, §4.4) and their secrets | served, and gated by this switch                                                                              |
-| `human_login`    | a person's password or SSO sign-in to the console                                                 | **not restored** (VSA-4): permitted by the default, served by nothing                                         |
+| `human_login`    | a person's password sign-in to the console (SSO is VSA-4c)                                        | served when `human_login:` and `op:` are written (VSA-4a, §4.10); the API still refuses the token (VSA-4b)    |
 
 **Absent means all four**, so a configuration written before the key existed gets what it always got, and every deployment of an app other than vaam keeps working untouched. vaam writes `methods: [keypair]` (its overlay is `deploy/values/vsms.<mode>.yaml` in `vaam-apps`, not here). The rules, one `sms_config::ConfigError` variant each, are `backends/crates/sms-config/src/auth.md`'s:
 
 1. an empty list or a null (`methods:` with every item commented out reads as a null, not as absent: the operator was narrowing the list, and all four is the opposite of what they meant) is refused (`NoAuthMethods`);
 2. an unknown name is refused (`UnknownAuthMethod`);
 3. a duplicate is refused (`DuplicateAuthMethod`);
-4. naming `human_login` is refused (`AuthMethodUnavailable`): it is not restored, and a list that names it promises a door that is not there. VSA-4 changes one function (`AuthMethod::is_restored`) and the rule goes with it. (`machine_tokens` was in this rule until VSA-3a restored it);
-5. a list that permits nothing able to authenticate a caller is refused (`NoWayIn`): vpay's rule is neither `keypair` nor `machine_tokens` (`human_login` signs a person in to the console and does not count). `[hmac_webhooks]` alone would be a gateway that answers every API call with the unsigned 401, and is refused. Since VSA-3b the API accepts a token, so `machine_tokens` is a way in and `[machine_tokens]` alone, with its `op:` block, boots; a deployment on it has **no signed way in**, so a signed request is a 415 and registering a key or pairing a console is a 422 `auth_method_disabled` (§4.10, `keypair_gate.md`), pairing a console until VSA-5. `[keypair, machine_tokens]` boots and serves `/token`;
-6. `machine_tokens` named explicitly with no `op:` block is refused (`AuthMethodNotConfigured`). The absent default never raises it: it permits the method and serves it only where its block is;
-7. an `op:` block on a list that does not permit `machine_tokens` is refused (`AuthMethodDisabled`), naming both ways out: dormant configuration is how an operator comes to believe a door is shut that is open.
+4. a list that permits nothing able to authenticate a caller is refused (`NoWayIn`): vpay's rule is neither `keypair` nor `machine_tokens` (`human_login` signs a person in to the console and does not count). `[hmac_webhooks]` alone, and `[hmac_webhooks, human_login]`, would be a gateway that answers every API call with the unsigned 401, and are refused. Since VSA-3b the API accepts a token, so `machine_tokens` is a way in and `[machine_tokens]` alone, with its `op:` block, boots; a deployment on it has **no signed way in**, so a signed request is a 415 and registering a key or pairing a console is a 422 `auth_method_disabled` (§4.10, `keypair_gate.md`), pairing a console until VSA-5. `[keypair, machine_tokens]` boots and serves `/token`;
+5. `machine_tokens` named explicitly with no `op:` block is refused (`AuthMethodNotConfigured`). The absent default never raises it: it permits the method and serves it only where its block is;
+6. `human_login` named explicitly with no `human_login:` block is refused (`AuthMethodNotConfigured`). The absent default never raises it either;
+7. a `human_login:` block with no `op:` block is refused (`AuthMethodNotConfigured`, naming `op`) — **under the absent default too**: the sign-in rides the provider, so the block would be accepted and serve nothing;
+8. a `human_login:` block on a list that does not permit `human_login` is refused (`AuthMethodDisabled`): dormant configuration is how an operator comes to believe a door is shut that is open;
+9. an `op:` block on a list that permits neither `machine_tokens` nor `human_login` is refused (`AuthMethodDisabled`), naming both ways out. `op:` serves either method, so it is refused only when neither is permitted.
 
-vpay has the same two for `human_login` (`staff_auth`, `dashboard_client`); vsms's `human_login:` block arrives with VSA-4. `keypair` has no YAML (its keys are database rows) and `hmac_webhooks` has none either (endpoints are rows, so the gate is at run time, not at boot).
+(`AuthMethodUnavailable`, VSA-1's rule for a method with no code, and `AuthMethod::is_restored` are gone: with `human_login` back every method has code.)
 
-**Permitted is not served.** `AuthMethods::served` is what a client may be told: the permitted methods this release has code for, and, for `machine_tokens`, whose block is present (`AuthMethods::machine_tokens_served`, the one question the router, the discovery document and both commands ask). The absent default permits four and serves two on a deployment that wrote no `op:`, and three on one that did.
+vpay has the same two for `human_login` (`staff_auth`, `dashboard_client`); vsms's block is `human_login:` (VSA-4a; `backends/crates/sms-config/src/human_login.md`). `keypair` has no YAML (its keys are database rows) and `hmac_webhooks` has none either (endpoints are rows, so the gate is at run time, not at boot).
+
+**Permitted is not served.** `AuthMethods::served` is what a client may be told: the permitted methods whose block is present — `machine_tokens` with `op:` (`AuthMethods::machine_tokens_served`), `human_login` with `human_login:` **and** `op:` (`AuthMethods::human_login_served`), the questions the router, the grant gate, the discovery document and the commands ask. The absent default permits four and serves two on a deployment that wrote neither block, three with `op:`, and all four with both. The provider is mounted exactly when one of the two is served (`AuthMethods::op_served`).
 
 ```mermaid
 sequenceDiagram
@@ -2007,6 +2011,10 @@ sequenceDiagram
 #### With `machine_tokens` off
 
 `/token`, `/jwks.json` and `/.well-known/openid-configuration` are not mounted: each is the router's 404, indistinguishable from any path that never existed, and the discovery document does not list the method. `sms-gateway provision-client` and `sms-gateway rotate-signing-key` read the configuration before the database and refuse with `auth_method_disabled: this deployment issues no tokens (…); use register-client to register a signing key instead`, writing nothing. `register-client` is what every deployment serves. The same switch, `AuthMethods::machine_tokens_served`, decides all of it, so the commands and the server cannot disagree. (`with_the_method_off_nothing_is_mounted_and_the_commands_refuse` runs both halves for the absent default and for `[keypair]`; `the_token_commands_refuse_before_the_database_when_the_method_is_off` runs them with no database at all.)
+
+#### With `human_login` off
+
+`POST /login` is not mounted, `/token` refuses `authorization_code` with `unsupported_grant_type` (the grant gate, §4.10), and the discovery document does not list the method. `seed-console-client`, `provision-user --password` and `bootstrap --owner-password-out` read the configuration before the database and refuse with `auth_method_disabled: this deployment signs no person in (…); a person gets in by pairing a browser key (pair-console-key)`, writing nothing and creating no file. The same switch (`AuthMethods::human_login_served`) decides all of it. (`the_password_commands_refuse_before_the_database_when_human_login_is_not_served` runs the three with no database at all.)
 
 #### With `hmac_webhooks` off
 
@@ -2033,9 +2041,9 @@ sequenceDiagram
 - **The worker.** No `hooks` worker claims an `hmac` endpoint's attempt while the method is off: the endpoint is excluded from the claim exactly as a `sealed` endpoint is for a worker without the signing key (VS-8), in both claim paths (the single time-ordered read when every endpoint is claimable, the per-endpoint fan-out otherwise), so a deep `hmac` backlog cannot fill a window and starve the `sealed` endpoints behind it. Nothing is written for such an attempt: it stays `pending` (or `failed` and resting, or `delivering` with an expired lease, whatever it was), is **not counted** toward the dead-letter limit (counting happens at a claim and there is none) and is **off the endpoint's breaker** (no request was made, so none failed). When the method is permitted again (changing `auth.methods` is a restart) the next claim delivers it, with every try it had and no replay. After `switchWebhookDeliveryMode` to `sealed` the pending attempts are delivered **sealed**: the switch rewrites the endpoint only, and the claim, the delivery and the envelope all read the endpoint's mode afresh for each attempt. `sealed` attempts beside them are delivered as before. A worker with the method off and no signing key serves nothing and warns at start (it does not refuse to start: the configuration is the deployment's, and another worker of it may hold the key). Every five minutes a worker with the method off warns with `held`, the number of due attempts it is holding back: counted per `hmac` endpoint, from the index alone, over at most 10 001 rows in all, so the cost does not grow with the backlog, and `more than 10000` beyond that. When the backlog is released, the held attempts are delivered oldest first, ahead of the fresh ones, with `occurredAt` the delivery time; `docs/runbooks/deployment.adoc` has the SQL to delete the stale ones first. `backends/crates/sms-worker/src/hooks.md`, "When `hmac_webhooks` is off", has each choice and its reason.
 - **Boot.** `serve` and every `hooks` worker log how many `hmac` endpoints exist: an `info` line when the method is permitted or nothing is left behind, a `warn` when endpoints remain and the method is off, naming what to do (switch them to `sealed`, or delete them).
 
-### 4.10 The OpenID Provider and machine tokens (VSA-3a)
+### 4.10 The OpenID Provider, machine tokens and the console sign-in (VSA-3a, VSA-4a)
 
-Owner ruling R5 (2026-10-27) restored the machine half of the provider that #446 deleted, behind `auth.methods` and a YAML block. VSA-3a restored the provider and its two commands; VSA-3b makes the API accept what the provider mints, as a second way in beside the signed envelope (end of this section).
+Owner ruling R5 (2026-10-27) restored the provider that #446 deleted, behind `auth.methods` and a YAML block per method. VSA-3a restored the machine half and its two commands; VSA-3b makes the API accept what it mints, as a second way in beside the signed envelope; VSA-4a restores the console's password sign-in on the same provider (last subsection). The provider is mounted when `machine_tokens` or `human_login` is served; each grant is served only by its own method.
 
 ```yaml
 op:
@@ -2081,7 +2089,7 @@ stateDiagram-v2
     Serving --> Serving: rotate-signing-key (the previous key overlaps in the JWKS)
 ```
 
-- **The grant is `client_credentials` with `private_key_jwt`, and nothing else.** `29f93c4^` also advertised `authorization_code` and `refresh_token`; those were the console's password login (#194), which is VSA-4's. `authkestra`'s `client_credentials` handler returns `refresh_token: None` unconditionally, so a machine client never held a refresh token, and `provision-client` registers `client_credentials` alone, so the handler refuses any other grant for it. The discovery document lists `["client_credentials"]` and `a_served_provider_mints_a_verifiable_token_with_no_refresh_and_follows_a_rotation` asserts it, the missing `refresh_token` and the refusal of the refresh grant (owner ruling R5, question 8: the refresh grant is offered only while a legacy method that needs it is on, and machine tokens do not).
+- **A machine's grant is `client_credentials` with `private_key_jwt`, and nothing else.** `29f93c4^` also advertised `authorization_code` and `refresh_token`; those were the console's password login (#194), which is the last subsection's. `authkestra`'s `client_credentials` handler returns `refresh_token: None` unconditionally, so a machine client never held a refresh token, and `provision-client` registers `client_credentials` alone, so the handler refuses any other grant for it. The discovery document lists exactly the grants served (`["client_credentials"]` for a deployment that serves only machines) and `a_served_provider_mints_a_verifiable_token_with_no_refresh_and_follows_a_rotation` asserts it, the missing `refresh_token` and the refusal of the refresh grant, which since VSA-4a is the grant gate's `unsupported_grant_type` (owner ruling R5, question 8: there is no refresh grant).
 - **No shared secret.** `OauthClient` has no secret column: it holds the client's public JWK. `provision-client` generates the RSA keypair, stores the public half and writes the private PEM once to `--key-out` (`0600`, `O_EXCL`, refusing an existing file), never to stdout. A spent assertion's `jti` is a `ClientAssertion` row (`create` plus catching `23505`), so a captured assertion is single-use.
 - **The tables are reached through delegates under the `system` context.** `OauthClient`, `OauthSigningKey` and `ClientAssertion` stay `@@internal("all")`, which removes routes and not the in-process delegates, so `db.oauth_signing_key()` and the rest exist and every call is `sms_api::system_context(..)`, the only context their policies admit. No raw SQL, no new route, no schema change; `provider_models_are_unreachable.rs` stays green unchanged and `the_restored_tables_answer_the_system_context_and_refuse_everyone_else` runs the policy against the database.
 - **`serve` fails at start with no active signing key**, not on the first `/token`. A fresh deployment runs `rotate-signing-key` once first (`run --rm`, never `exec`: waiting for health before rotating deadlocks).
@@ -2137,6 +2145,72 @@ stateDiagram-v2
 - **One principal.** Both doors record `client:<clientId>`, so a client that uses both shares one rate-limit bucket and one `Idempotency-Key` namespace. A refusal is one 401 with the layer's body, byte for byte, whatever failed (the reason is logged at `debug`).
 - **A token caller gets plain JSON.** Unresolved routes stay `Required` (a route the layer cannot bind fails closed with a 500 in every mode), and an unsigned request's answer is never sealed, whatever its `Accept` says: no response seal and no contract-lock 426.
 - **`keypair` off.** `[machine_tokens]` alone sets the layer `Off`: a signed body is a 415, `registerAppClientKey` and `registerConsoleKey` are a 422 `auth_method_disabled` (`sms_api::keypair_gate`), and `register-client` and `pair-console-key` refuse the same way when given a configuration that omits `keypair`. Pairing a console is unavailable on such a deployment until VSA-5.
+
+#### The console sign-in (VSA-4a)
+
+`human_login` is served when `auth.methods` permits it and **both** `human_login:` and `op:` are written (§4.9): a person signs in through the provider's `authorization_code` grant with PKCE. The block names the one public client the console is and the limit in front of the password check:
+
+```yaml
+human_login:
+  console_client:
+    client_id: sms-console                 # 8 to 64 characters; the only client_id /login accepts
+    redirect_uris:                         # exact match; https and no stub host under livemode
+      - https://admin.vsms.example.org/api/auth/callback
+  login_rate_limit:                        # per email and per source address, before any password is hashed
+    burst: 5
+    refill_per_second: 0.1
+```
+
+```mermaid
+sequenceDiagram
+    participant U as Console (its server, never a browser)
+    participant L as POST /login
+    participant R as Limiter (email, source)
+    participant A as authenticate_user
+    participant H as handle_authorize (authkestra)
+    participant T as POST /token
+    U->>L: email, password, client_id, redirect_uri, PKCE S256 challenge, state, nonce
+    alt client_id is not the console's
+        L-->>U: 401 invalid_credentials
+    end
+    L->>R: one token from the source bucket, one from the email bucket
+    alt throttled
+        R-->>U: 429 rate_limited, Retry-After (no password was hashed)
+    end
+    L->>A: system context sms-gateway:login
+    A->>A: Argon2id verify (against a dummy hash when no usable account)
+    alt no account, no password, inactive, deleted, wrong password, broken role
+        A-->>U: 401 invalid_credentials (one answer)
+    end
+    A->>A: stamp lastLoginAt
+    L->>H: Identity(User.id), the authorization request
+    H-->>L: redirect carrying code=... or error=...
+    L-->>U: 200 {redirect}  (an error redirect is a 400 invalid_request)
+    U->>T: grant_type=authorization_code, code, code_verifier
+    T-->>U: access_token (RS256, 15 min) + id_token, never a refresh_token
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> Off: no human_login: block, or op:, or the method not permitted
+    Off --> Refusing: seed-console-client, provision-user --password, bootstrap --owner-password-out
+    Refusing --> Off: auth_method_disabled, before the database
+    [*] --> Unchecked: served
+    Unchecked --> Refused: serve boot: console client row missing, wrong redirect URIs, or refresh_token
+    Refused --> Unchecked: seed-console-client reconciles it
+    Unchecked --> Serving: the row matches human_login.console_client
+```
+
+- **Passwords are Argon2id and nothing else.** `sms_core::password`: the `argon2` crate's own defaults (19 MiB, 2 passes, 1 lane), a random salt, a PHC string in `user_credentials.password_hash` (`hasRole('system')` on every action; the hash is a separate model so no route can return it). **No pepper**: a hash exported before #446 (the runbook's "Keeping the OpenID Provider's rows across 0009 and 0012") must verify once imported. A new password is generated (24 alphanumeric characters), hashed, and written to a `0600` file created with `O_EXCL` by `provision-user --password --password-out <file>` or `bootstrap --owner-password-out <file>`; it is **never printed**. An existing password is refused unless `--reset`.
+- **The check costs the same whoever you are.** `authenticate_user` runs a real Argon2 verification on every call, against the stored hash or, when no usable account matches (unknown email, no password set, inactive, soft-deleted), against a dummy hash made by the process's own hasher. A hand-typed dummy that failed to parse would make the missing-account path faster than a real check; a unit test holds the dummy to verifying the password it was made from, and a live test holds the two paths' clocks together. The hashing runs on the blocking pool.
+- **One generic answer.** Every refusal of the person or the attempt is `401 {"error": "invalid_credentials"}`, including a `client_id` that is not the console's; a database outage is a `503`, not a 401. `lastLoginAt` is stamped on success, which is why `User.update` admits `hasRole('system')` again (a policy, not a wire shape: the contract digests of `cratestack contract digest` are unchanged, vsms keeps no contracts lock, and `migrations-current` needs no migration).
+- **The limiter is in front of the password.** `login_rate_limit` is one bucket applied twice, per email (trimmed and lowercased, capped) and per source address (the real TCP peer, as the API's own source limiter keys), before any hashing. The buckets are in memory, which is the single-replica assumption the authorization codes share (below); a second replica would double the burst per source.
+- **`handle_authorize` is the library's, unmodified.** PKCE with S256 only, exact `redirect_uri` match, `response_type=code`, the client's own scope and grant admission. Its answer for a request it refused is a redirect carrying `error=`; `POST /login` maps that to a `400 invalid_request` so the console is never handed an error as though it were a sign-in. `GET /authorize` is **not mounted** and the discovery document has no `authorization_endpoint`.
+- **The grant gate** (`sms-gateway`'s `grant_gate.rs`) sits in front of `/token`, outside its rate limiter: `client_credentials` only when `machine_tokens` is served, `authorization_code` only when `human_login` is, and anything else, `refresh_token` above all, is `400 unsupported_grant_type`. Discovery lists exactly the grants served plus `code_challenge_methods_supported: ["S256"]`.
+- **No refresh token, three ways.** The console client is registered for `authorization_code` alone and `serve` refuses to start on a row that carries more; the gate answers a refresh request `unsupported_grant_type`; and the store's refresh slot (`RefusingRefreshStore`) cannot hold one. `offline_access` is not among the console's scopes, so `handle_authorize` refuses a request for it.
+- **`serve` checks the console client row at boot** (`sms_auth::console_client`): missing, a redirect URI list that differs from the configuration, a refresh grant, a key, an `AppClient` link or a missing PKCE requirement each stop the process with a message that names every difference and the command, `sms-gateway seed-console-client`, which reconciles the row (and says what was wrong). A fresh deployment runs `rotate-signing-key` and `seed-console-client` before `serve` (`run --rm`, never `exec`).
+- **Codes are in memory, so one replica.** An authorization code lives 60 seconds in the process that issued it (the chart pins `replicas: 1`); a code lost to a restart costs a person one more sign-in. Moving it to Postgres is a follow-up, not a precondition.
+- **What a password opens, today: nothing in the API.** The access token carries the person's `User.id` as `sub` and an `identity` claim, which the bearer door refuses (`HumanToken`) until VSA-4b adds the person's realm. Admin rights are a device's, never a password's (owner, 2026-10-09), and the role the API will give a password session is VSA-4b's to state, not this release's. The console has no sign-in screen until VSA-5.
 
 ---
 

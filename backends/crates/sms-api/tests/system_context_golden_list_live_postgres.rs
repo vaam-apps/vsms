@@ -1174,10 +1174,10 @@ async fn seed_and_verify_client_assertion(
     seeded
 }
 
-/// `UserCredential` (restored by VSA-2, no reader until VSA-4's login): the
+/// `UserCredential` (restored by VSA-2, read by VSA-4a's login): the
 /// password-hash row is read and written under `sys` only, and
 /// `hasRole('system')` is its *entire* policy on every action, not a gap found
-/// live. VSA-4's `authenticate_user` is its one future reader.
+/// live. `authenticate_user` is its reader.
 async fn seed_and_verify_user_credential(db: &Cratestack, user_id: &str) -> schema::UserCredential {
     // A plausible-shaped but fixed literal, not a real Argon2id hash: this
     // test proves the read/write policy, never authentication itself.

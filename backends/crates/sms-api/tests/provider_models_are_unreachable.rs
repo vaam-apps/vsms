@@ -1,9 +1,10 @@
 //! VSA-2 brought five models back (`OauthClient`, `OauthSigningKey`,
 //! `ClientAssertion`, `UserCredential`, `SsoTransaction`) as persistence only.
-//! Nothing reads or writes them until VSA-3 and VSA-4, and two of them hold the
-//! most sensitive material this system has had: the OP's private signing keys
-//! and Argon2id password hashes. This file is what keeps them unreachable, and
-//! it needs no database, so plain `just test` runs it.
+//! The provider reads and writes them since VSA-3a and VSA-4a (single sign-on,
+//! VSA-4c, later), and two of them hold the most sensitive material this system
+//! has had: the OP's private signing keys and Argon2id password hashes. This
+//! file is what keeps them unreachable, and it needs no database, so plain
+//! `just test` runs it.
 //!
 //! Two locks, each checked by what it does:
 //!

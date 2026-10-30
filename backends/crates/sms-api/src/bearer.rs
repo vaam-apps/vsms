@@ -50,7 +50,7 @@ pub enum BearerRefusal {
     NotYetValid,
     /// The token belongs to a person (it carries an `identity`), not a machine.
     /// Only machine callers have a door here; a person signs in some other way
-    /// (VSA-4).
+    /// (VSA-4b; VSA-4a issues the token and this door still refuses it).
     #[error("the token belongs to a person, not a machine client")]
     HumanToken,
     /// The token carries a `cnf` (confirmation) claim: it is bound to a key the

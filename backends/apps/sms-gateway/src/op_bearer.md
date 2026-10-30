@@ -16,7 +16,7 @@ is `sms_api`'s to decide, from rows (`docs/architecture.md` section 4.9).
 | the signature               | `Signature`                  | RSA, under that key                                                                          |
 | `iss` is `op.issuer`        | `Issuer`                     | required, exact                                                                              |
 | `exp`, `nbf`                | `Expired`, `NotYetValid`     | 60 seconds of leeway ([`LEEWAY_SECS`]); `exp` required                                       |
-| no `identity`               | `HumanToken`                 | a person's token has no door here (VSA-4)                                                    |
+| no `identity`               | `HumanToken`                 | a person's token has no door here (VSA-4b)                                                    |
 | no `cnf`                    | `SenderConstrained`          | a token bound to a key needs that key's proof, which this door never checks                  |
 | `aud` contains `sub`        | `Audience`                   | by hand, after the signature: authkestra stamps `aud = client_id`                            |
 

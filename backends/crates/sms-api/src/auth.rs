@@ -87,7 +87,7 @@ impl Principal {
 ///   AppClient.clientId`, `role = "app"`, the client's scopes);
 /// - a paired, unexpired `ConsoleKey` of an active `User` is a **user**
 ///   principal, that person's role and the permissions of that role. A token
-///   never is one: the human realm is VSA-4.
+///   never is one: the human realm is VSA-4b.
 ///
 /// Nothing here reads an `Authorization` header as an identity. A request that
 /// carries one beside a verified signature is refused outright (400), and one

@@ -4,7 +4,7 @@ A deployment that serves `machine_tokens` (`auth.methods` permits it **and**
 `op:` is written) mints tokens at `/token`, and this module is what lets the API
 accept one. It is `Authorization: Bearer <token>` for a **machine client** and
 nothing else: a person's token is refused ([`BearerRefusal::HumanToken`]) and
-the human realm is VSA-4, and a token bound to a key (a `cnf` claim) is refused
+the human realm is VSA-4b (VSA-4a issues a person's token and the API still refuses it), and a token bound to a key (a `cnf` claim) is refused
 ([`BearerRefusal::SenderConstrained`]) because this door checks no proof of it.
 
 # The doors, and the mode each sets

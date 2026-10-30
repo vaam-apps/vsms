@@ -201,8 +201,9 @@ enum ConsentChannel {
 // deployment permits is configuration, and the default keeps the legacy
 // ones). `ClientAuthMethod`, `OauthClient`, `OauthSigningKey` and
 // `ClientAssertion` are read and written by the OpenID Provider since VSA-3a
-// (`sms-auth`, under the internal `system` context); `UserCredential` and
-// `SsoTransaction` are PERSISTENCE ONLY until VSA-4 (human login). Every model
+// (`sms-auth`, under the internal `system` context); `UserCredential` is read
+// and written by the password login and `provision-user --password` since VSA-4a,
+// and `SsoTransaction` is PERSISTENCE ONLY until VSA-4c (single sign-on). Every model
 // carries `@@internal("all")`, so the generated REST routes, RPC arms and client
 // stubs for it do not exist, on top of the `hasRole('system')` policies restored
 // unchanged. The in-process delegates (`db.oauth_client()`) are not routes and
@@ -1413,7 +1414,8 @@ model UserCredential {
   id Cuid @id @default(dbgenerated())
   userId Cuid @unique
   user User @relation(fields: [userId], references: [id])
-  // Argon2id PHC string (written by VSA-4's login) — never a raw
+  // Argon2id PHC string (written by `provision-user --password`, read by the
+  // login: VSA-4a) — never a raw
   // digest, never reversible, never logged. @sensitive is redundant with
   // the model-level isolation above but costs nothing and matches
   // OauthSigningKey.privateKeyPem's own belt-and-braces convention.
@@ -1495,7 +1497,7 @@ model FederatedLink {
 // lives five minutes). `consoleRequest` is the console's own authorize
 // request as JSON, replayed into the unmodified `handle_authorize` after the
 // upstream sign-in succeeds. Expired rows were deleted by a background task in
-// `sms-gateway serve` (`sso.rs::spawn_transaction_reaper`), which VSA-4
+// `sms-gateway serve` (`sso.rs::spawn_transaction_reaper`), which VSA-4c
 // restores; until then nothing writes a row, so nothing expires.
 //
 // No `update` action: a transaction is created and then consumed, never

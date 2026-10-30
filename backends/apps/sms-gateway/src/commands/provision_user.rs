@@ -352,18 +352,16 @@ pub(crate) async fn provision_user_command(args: ProvisionUserArgs) -> Result<()
         return Ok(());
     };
 
-    let user_id = match created {
-        Some(user_id) => {
-            println!("provisioned user: {email} (id={user_id})");
-            user_id
-        }
-        None => {
-            println!("a User with email {email:?} already exists — its role is not changed");
-            user_id_by_email(&db, &email)
-                .await?
-                .with_context(|| format!("the User with email {email:?} vanished"))?
-        }
+    let user_id = if let Some(user_id) = created {
+        println!("provisioned user: {email} (id={user_id})");
+        user_id
+    } else {
+        println!("a User with email {email:?} already exists — its role is not changed");
+        user_id_by_email(&db, &email)
+            .await?
+            .with_context(|| format!("the User with email {email:?} vanished"))?
     };
+
     let issued = issue_password(&db, &user_id, &out, reset).await?;
     announce_password(issued, &email, &out);
     Ok(())

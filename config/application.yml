@@ -35,8 +35,9 @@ deployment:
 # delivered with a shared-secret signature (`hmac_webhooks`), and the two other
 # methods are permitted but run only with what they need. `machine_tokens` (the
 # deployment's own OpenID Provider, VSA-3a) runs when the `op:` block below is
-# present; `human_login` has no code in this release (VSA-4). A deployment that
-# serves one application and wants fewer says so; vaam's overlay is
+# present; `human_login` (a person's password sign-in to the console, VSA-4a)
+# runs when the `human_login:` block below AND `op:` are present. A deployment
+# that serves one application and wants fewer says so; vaam's overlay is
 # `methods: [keypair]`.
 # With `hmac_webhooks` off, creating, updating, switching or rotating an `hmac`
 # endpoint answers 422 (`auth_method_disabled`) and no worker claims what is
@@ -44,14 +45,18 @@ deployment:
 # the method is permitted again (or, if the endpoint is switched to `sealed`, sealed).
 # With `machine_tokens` off, `/token`, `/jwks.json` and the discovery document
 # are not mounted (404), and `provision-client` and `rotate-signing-key` refuse.
-# Naming `human_login` is refused until it exists, and so is an empty or null
-# list, a duplicate, an unknown name, any list with neither `keypair` nor
-# `machine_tokens`, `machine_tokens` without `op:`, and `op:` without
-# `machine_tokens` (docs/architecture.md, section 4.9). Not written here, on
-# purpose: writing it would turn this file's shipped behaviour off.
+# With `human_login` off, `POST /login` is not mounted, `/token` refuses
+# `authorization_code`, and `seed-console-client`, `provision-user --password` and
+# `bootstrap --owner-password-out` refuse. Refused at load: an empty or null list,
+# a duplicate, an unknown name, any list with neither `keypair` nor
+# `machine_tokens`, `machine_tokens` without `op:`, `human_login` without
+# `human_login:`, `human_login:` without `op:` (even under the absent default) or
+# without the method, and `op:` when neither `machine_tokens` nor `human_login` is
+# permitted (docs/architecture.md, section 4.9). Not written here, on purpose:
+# writing it would turn this file's shipped behaviour off.
 #
 # auth:
-#   methods: [keypair, machine_tokens, hmac_webhooks]
+#   methods: [keypair, machine_tokens, hmac_webhooks, human_login]
 
 # The deployment's own OpenID Provider (VSA-3a): `/token`, `/jwks.json` and
 # `/.well-known/openid-configuration`, which mint a short-lived bearer token for a
@@ -71,6 +76,27 @@ deployment:
 #   signing_key:
 #     refresh_interval_secs: 60             # how soon a running serve sees a rotation
 #     rotation_overlap_secs: 1800           # a rotated-out key keeps publishing; > refresh_interval_secs + 900
+
+# The console's password sign-in (VSA-4a): `POST /login` and the provider's
+# `authorization_code` grant (PKCE, S256 only, no refresh token), through the one
+# public client below. Present means served (when `auth.methods` permits
+# `human_login` AND `op:` is written, because the sign-in rides the provider);
+# absent means no sign-in. Not written here, on purpose: serving it needs the
+# console client row (`sms-gateway seed-console-client`, which registers exactly
+# this and which `serve` checks at boot) and a signing key. There is no secret in
+# this block: a person's password is typed at sign-in and kept as an Argon2id hash
+# (`provision-user --password --password-out <file>`). The API does not accept the
+# token this issues yet (VSA-4b), and the console has no sign-in screen until
+# VSA-5. Every key is required. docs/architecture.md, sections 4.9 and 4.10.
+#
+# human_login:
+#   console_client:
+#     client_id: sms-console                # 8 to 64 characters; the only client_id /login accepts
+#     redirect_uris:                        # exact match; https and no stub host under livemode
+#       - https://admin.vsms.example.org/api/auth/callback
+#   login_rate_limit:                       # per email address and per source address,
+#     burst: 5                              # both before any password is hashed
+#     refill_per_second: 0.1
 
 security:
   # The server-held pepper behind Message.msisdnHash / bodyHash. At least 32
