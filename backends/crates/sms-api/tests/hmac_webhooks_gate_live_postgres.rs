@@ -2,8 +2,8 @@
 //!
 //! A real router (`sms_api::router`, built with `HmacWebhooks::Disabled`), a real
 //! paired person holding `webhook:manage`, sealed requests, a real Postgres: the
-//! four calls that would make or re-key an `hmac` endpoint, through the generated
-//! `POST` and `PATCH` (the middleware, `sms_api::hmac_gate`) and through the two
+//! calls that would make, re-key or replay an `hmac` endpoint, through the generated
+//! `POST` and `PATCH` (the middleware, `sms_api::hmac_gate`) and through the three
 //! procedures, all answer 422 with `auth_method_disabled` and write nothing; and
 //! the calls an operator who switched the method off still needs keep working.
 //! With the method permitted every one of them is what it was before the key
@@ -134,6 +134,62 @@ impl Deployment {
             .run(&owner())
             .await
             .expect("seeding a sealed endpoint")
+    }
+
+    /// A `failed` attempt of `endpoint_id`, which is what `replayWebhookAttempt`
+    /// accepts: created `pending` and moved through `delivering`, the way a worker
+    /// leaves one.
+    async fn failed_attempt(&self, endpoint_id: &str) -> schema::WebhookAttempt {
+        let sys = system_context("hmac-gate-test");
+        let pending = self
+            .db
+            .webhook_attempt()
+            .create(schema::CreateWebhookAttemptInput {
+                endpointId: endpoint_id.to_owned(),
+                sourceEventId: cratestack::uuid::Uuid::new_v4(),
+                aggregateId: format!("cmsg{}", unique_suffix()),
+                eventType: "message.delivered".to_owned(),
+                payload: "{}".to_owned(),
+                leaseOwner: None,
+                leaseUntil: None,
+                nextAttemptAt: Some(chrono::Utc::now()),
+                lastStatusCode: None,
+                lastError: None,
+                lastAttemptAt: None,
+                deliveredAt: None,
+            })
+            .run(&sys)
+            .await
+            .expect("seeding a pending attempt");
+        let mut attempt = pending;
+        for state in [
+            schema::AttemptState::delivering,
+            schema::AttemptState::failed,
+        ] {
+            attempt = self
+                .db
+                .webhook_attempt()
+                .update(attempt.id.clone())
+                .set(schema::UpdateWebhookAttemptInput {
+                    state: Some(state),
+                    ..Default::default()
+                })
+                .if_match(attempt.version)
+                .run(&sys)
+                .await
+                .expect("moving the seeded attempt along");
+        }
+        attempt
+    }
+
+    async fn attempt(&self, id: &str) -> schema::WebhookAttempt {
+        self.db
+            .webhook_attempt()
+            .find_unique(id.to_owned())
+            .run(&system_context("hmac-gate-test"))
+            .await
+            .expect("re-reading the attempt")
+            .expect("the attempt exists")
     }
 
     async fn endpoint_count(&self) -> usize {
@@ -338,6 +394,47 @@ async fn with_hmac_off_switching_to_hmac_and_rotating_are_422_and_write_nothing(
     assert_eq!(unchanged.version, hmac.version);
 }
 
+/// A replay resets an attempt to `pending`, and with the method off nothing claims
+/// an `hmac` endpoint's attempts: answering 200 would tell an operator their
+/// delivery was retried when it was only held back. Refused instead, after the
+/// attempt is found and before it is written; a `sealed` endpoint's attempt
+/// replays as ever.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn with_hmac_off_replaying_an_hmac_attempt_is_422_and_a_sealed_ones_is_not() {
+    let _guard = TEST_MUTEX.lock().await;
+    let deployment = deployment(HmacWebhooks::Disabled).await;
+    let developer = deployment.developer().await;
+    let hmac = deployment.hmac_endpoint().await;
+    let sealed = deployment.sealed_endpoint().await;
+    let held = deployment.failed_attempt(&hmac.id).await;
+    let replayable = deployment.failed_attempt(&sealed.id).await;
+
+    let refused = developer
+        .request("POST", "/$procs/replayWebhookAttempt")
+        .json(&serde_json::json!({"args": {"attemptId": held.id}}))
+        .send()
+        .await;
+    assert_disabled(
+        &refused,
+        "replayWebhookAttempt of an hmac endpoint's attempt",
+    );
+    let unchanged = deployment.attempt(&held.id).await;
+    assert_eq!(unchanged.state, schema::AttemptState::failed);
+    assert_eq!(unchanged.version, held.version, "a refusal writes nothing");
+
+    let replayed = developer
+        .request("POST", "/$procs/replayWebhookAttempt")
+        .json(&serde_json::json!({"args": {"attemptId": replayable.id}}))
+        .send()
+        .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.text());
+    assert_eq!(
+        deployment.attempt(&replayable.id).await.state,
+        schema::AttemptState::pending
+    );
+}
+
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres - see module docs"]
 async fn with_hmac_off_a_caller_without_webhook_manage_is_told_so_first() {
@@ -427,5 +524,17 @@ async fn with_hmac_permitted_every_call_is_what_it_was() {
     assert_eq!(
         deployment.reread(&sealed.id).await.deliveryMode,
         WebhookDeliveryMode::hmac
+    );
+
+    let failed = deployment.failed_attempt(&hmac.id).await;
+    let replayed = developer
+        .request("POST", "/$procs/replayWebhookAttempt")
+        .json(&serde_json::json!({"args": {"attemptId": failed.id}}))
+        .send()
+        .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.text());
+    assert_eq!(
+        deployment.attempt(&failed.id).await.state,
+        schema::AttemptState::pending
     );
 }

@@ -10,12 +10,13 @@ read once, in `sms-gateway serve`, and nothing below it knows a file exists.
 
 # Where it is enforced
 
-| Call                                               | Refused when `hmac_webhooks` is off                                   | By                          |
-| -------------------------------------------------- | --------------------------------------------------------------------- | --------------------------- |
-| `POST /webhook_endpoints` (generated create)       | the body names `deliveryMode: hmac`                                   | [`enforce_hmac_gate`]       |
-| `PATCH /webhook_endpoints/{id}` (generated update) | the body names `deliveryMode: hmac`, or sets `secret` or `prevSecret` | [`enforce_hmac_gate`]       |
-| `switchWebhookDeliveryMode` to `hmac`              | always; to `sealed` is allowed                                        | `Procedures::switch_mode`   |
-| `rotateWebhookSecret`                              | always                                                                | `Procedures::rotate_secret` |
+| Call                                               | Refused when `hmac_webhooks` is off                                   | By                           |
+| -------------------------------------------------- | --------------------------------------------------------------------- | ---------------------------- |
+| `POST /webhook_endpoints` (generated create)       | the body names `deliveryMode: hmac`                                   | [`enforce_hmac_gate`]        |
+| `PATCH /webhook_endpoints/{id}` (generated update) | the body names `deliveryMode: hmac`, or sets `secret` or `prevSecret` | [`enforce_hmac_gate`]        |
+| `switchWebhookDeliveryMode` to `hmac`              | always; to `sealed` is allowed                                        | `Procedures::switch_mode`    |
+| `rotateWebhookSecret`                              | always                                                                | `Procedures::rotate_secret`  |
+| `replayWebhookAttempt`                             | the attempt's endpoint is `hmac`                                      | `Procedures::replay_attempt` |
 
 Every refusal is the same: HTTP 422, the envelope's `code` `VALIDATION_ERROR`
 (cratestack gives every 422 that one code), and a message that **starts with
