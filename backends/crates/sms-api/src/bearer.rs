@@ -53,6 +53,12 @@ pub enum BearerRefusal {
     /// (VSA-4).
     #[error("the token belongs to a person, not a machine client")]
     HumanToken,
+    /// The token carries a `cnf` (confirmation) claim: it is bound to a key the
+    /// holder must prove, and this door checks no proof. Accepted as a plain
+    /// bearer it would lose the constraint it was issued with, so it is
+    /// refused.
+    #[error("the token is sender-constrained, and this door checks no proof of the key")]
+    SenderConstrained,
 }
 
 /// What a verified token says, and nothing it does not.
@@ -427,6 +433,7 @@ mod tests {
             BearerRefusal::Expired,
             BearerRefusal::NotYetValid,
             BearerRefusal::HumanToken,
+            BearerRefusal::SenderConstrained,
         ];
         let mut bodies = std::collections::BTreeSet::new();
         for refusal in all {

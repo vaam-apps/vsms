@@ -163,6 +163,14 @@ impl BearerVerifier for OpBearerVerifier {
         if claims.identity.is_some() {
             return Err(BearerRefusal::HumanToken);
         }
+        // A sender-constrained token (RFC 7800 `cnf`: a DPoP or mTLS binding) is
+        // only good with the proof of the key it names. This door checks no
+        // proof, so accepting it as a plain bearer would strip the constraint
+        // from a token whose holder was promised there was one. Refused whatever
+        // the confirmation says.
+        if claims.extra.contains_key("cnf") {
+            return Err(BearerRefusal::SenderConstrained);
+        }
         // Addressed to its own client, and to nothing else that excludes it.
         if claims.sub.is_empty()
             || !claims
@@ -551,6 +559,51 @@ mod tests {
         // about the algorithm and not about the claims.
         let genuine = mint(a, Some(&a.kid), &claims(&json!({})));
         assert!(v.verify(&genuine).await.is_ok());
+    }
+
+    /// A token bound to a key (RFC 7800 `cnf`, as DPoP or mTLS issue them) is
+    /// good only with the proof of that key, which this door never checks. It is
+    /// refused however the confirmation is spelled, and a token without one
+    /// still verifies.
+    #[tokio::test]
+    async fn a_sender_constrained_token_is_not_a_plain_bearer() {
+        let (a, _) = keys();
+        let v = plain(&[a]);
+        for cnf in [
+            json!({"jkt": "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I"}),
+            json!({"x5t#S256": "bwcK0esc3ACC3DB2Y5_lESsXE8o9ltc05O89jdN-dg2"}),
+            json!({}),
+            json!(null),
+            json!("not even an object"),
+        ] {
+            let mut token_claims = claims(&json!({}));
+            token_claims["cnf"] = cnf.clone();
+            let token = mint(a, Some(&a.kid), &token_claims);
+            assert_eq!(
+                refusal(&v, &token).await,
+                BearerRefusal::SenderConstrained,
+                "cnf {cnf}"
+            );
+        }
+        // As the OP's own `TokenManager` would carry one in.
+        let token = a
+            .manager
+            .issue_client_token_with_extra(
+                CLIENT,
+                900,
+                Some("sms:send".to_owned()),
+                Some(CLIENT.to_owned()),
+                std::collections::HashMap::from([("cnf".to_owned(), json!({"jkt": "abc"}))]),
+            )
+            .expect("issuing");
+        assert_eq!(
+            refusal(&v, &token).await,
+            BearerRefusal::SenderConstrained,
+            "issued with a cnf"
+        );
+        // The same claims without it are fine.
+        let token = mint(a, Some(&a.kid), &claims(&json!({})));
+        assert!(v.verify(&token).await.is_ok());
     }
 
     #[tokio::test]

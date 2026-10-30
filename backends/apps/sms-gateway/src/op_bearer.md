@@ -17,6 +17,7 @@ is `sms_api`'s to decide, from rows (`docs/architecture.md` section 4.9).
 | `iss` is `op.issuer`        | `Issuer`                     | required, exact                                                                              |
 | `exp`, `nbf`                | `Expired`, `NotYetValid`     | 60 seconds of leeway ([`LEEWAY_SECS`]); `exp` required                                       |
 | no `identity`               | `HumanToken`                 | a person's token has no door here (VSA-4)                                                    |
+| no `cnf`                    | `SenderConstrained`          | a token bound to a key needs that key's proof, which this door never checks                  |
 | `aud` contains `sub`        | `Audience`                   | by hand, after the signature: authkestra stamps `aud = client_id`                            |
 
 The audience rule is "contains `sub`", not "equals `vsms`": a token is addressed
@@ -79,5 +80,9 @@ interval and not one each.
 - `validate_aud = false` with nothing in its place.
 - `scope` or `perms` read from the token as a grant.
 - A human realm. A token with an `identity` is `HumanToken`.
+- Sender-constrained tokens. The provider mints none today, but a `cnf` claim
+  (RFC 7800) means the token is only good with a proof of possession, and a
+  door that checks none must not wave it through as a bearer: it is
+  `SenderConstrained`, whatever the claim holds.
 
 <!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->
