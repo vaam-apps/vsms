@@ -39,7 +39,7 @@ whose attempts the worker will not take, with that many due, fills it and starve
 everyone behind it. It is also why nothing is written for a row the worker cannot
 serve, which a "claim it, find out, hand it back" design could not say: the attempt
 stays `pending`, uncounted and off the endpoint's breaker. [`claim_webhook_attempts`]
-is that claim; [`count_attempts_waiting`] is the count the two backlog
+is that claim; [`count_attempts_waiting`] is the bounded count the two backlog
 watches report with.
 
 # What a claim costs, and why it is not always one query
@@ -189,3 +189,53 @@ resting out a backoff is read to the end of that run on each poll. That is the
 `hmac` work itself, and `webhook_due_idx` does the same.
 
 <!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->
+
+# What a backlog count costs, and why it reads one column
+
+[`count_attempts_waiting`] is what the two backlog watches report with, on every
+`hooks` worker that serves less than both modes, every five minutes. Its first form
+was one `COUNT(*)` with the endpoint's mode and state as `EXISTS` conditions. A held
+backlog is the table's bulk (nothing purges attempts), and at about a million held
+rows the planner chose a parallel sequential scan of `webhook_attempts`: some
+660 MB read, 0.3 to 3.3 s, per worker per five minutes. It is now one question per
+matching endpoint, each stopped by `LIMIT` at what is left of 10 001, and one for the
+abandoned leases of those endpoints. The framework has no capped `COUNT`, so the
+rows are read and counted here, and **the column read decides the plan**:
+
+- **`SELECT next_attempt_at ... WHERE endpoint_id = $1 AND <due> LIMIT n`** is an
+  index-only scan of `webhook_endpoint_due_idx` in every shape tried. The first
+  version read `id` (and then sorted by `next_attempt_at`, as the claim does), and
+  both failed on the seeded table below: with `id` and no order, an endpoint
+  holding a tenth of the table, all of it at the end of the heap as a held backlog
+  is, got a sequential scan with `LIMIT` (the planner believes the matches evenly
+  spread), 47 000 buffers, 190 ms; with the order, an endpoint of 5 % of the table
+  got `webhook_due_idx` walked in time order and filtered, 274 ms. Both are the
+  scans this count exists to avoid. Index-only does not need the heap to be vacuumed
+  (a held backlog is inserts, whose pages are not all-visible): the unvacuumed
+  endpoint below costs 10 001 heap fetches, 709 buffers, 3.5 ms.
+- **The abandoned leases** are `state = 'delivering' AND lease_until < $now` over
+  the endpoints: `webhook_attempts_lease_reclaim_idx` holds `delivering` rows only,
+  so it reads what is in flight and not the backlog.
+
+`EXPLAIN (ANALYZE, BUFFERS)` on PostgreSQL 16.15, `webhook_attempts` of 1 016 000
+rows (776 MB with its indexes; 716 000 due: five `hmac` endpoints of 100 000 each,
+two of 110 000 laid out at the end of the heap, one of them never vacuumed, a
+`sealed` one of 60 000, endpoints of 1 000 to 50 000, and 150 000 `succeeded` rows of
+history), the statements the code sends (captured with `log_statement = all`), each as
+the seventh execution of a prepared statement, the way `sqlx` runs it:
+
+| question                                             | plan                                             | buffers |     time |
+| ---------------------------------------------------- | ------------------------------------------------ | ------: | -------: |
+| the old `COUNT(*)`                                   | parallel sequential scan of the table            |  75 201 | 238.9 ms |
+| one endpoint, 99 999 due                             | index-only scan, `webhook_endpoint_due_idx`      |      43 |   2.2 ms |
+| one endpoint, 110 000 due, at the end of the heap    | index-only scan, `webhook_endpoint_due_idx`      |      42 |   2.1 ms |
+| one endpoint, 110 000 due, never vacuumed            | index-only scan, 10 001 heap fetches             |     709 |   3.5 ms |
+| one endpoint, 50 000 due                             | index-only scan, `webhook_endpoint_due_idx`      |      93 |   2.4 ms |
+| one endpoint, 1 000 due                              | index-only scan, `webhook_endpoint_due_idx`      |       8 |   0.4 ms |
+| the abandoned leases of five endpoints (3 in flight) | index scan, `webhook_attempts_lease_reclaim_idx` |       2 |  0.04 ms |
+
+A deployment with five backlogged endpoints pays the second row five times at most
+(the total stops at 10 001, so two endpoints at the cap end the count), under 15 ms,
+against 239 ms for the old count on this table.
+`the_backlog_count_stops_at_the_cap_and_says_more_than_it` (`hooks_live_postgres`)
+pins the cap, in total and across endpoints.

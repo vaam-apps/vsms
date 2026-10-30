@@ -1100,6 +1100,24 @@ async fn a_keyless_worker_says_how_many_sealed_attempts_it_cannot_serve_every_fi
     assert_eq!(text.matches("WARN").count(), 1, "{text}");
     assert!(text.contains("--envelope-signing-key-file"), "{text}");
     assert!(text.contains(&format!("{SEALED_BACKLOG}")), "{text}");
+    assert!(
+        text.contains("hmac deliveries are unaffected"),
+        "a keyless worker that permits hmac still sends them: {text}"
+    );
+
+    // The same worker on a deployment that does not permit `hmac_webhooks` sends
+    // no hmac delivery either, and the line must not say it does.
+    let neither = with_hmac(keyless(&db), sms_api::HmacWebhooks::Disabled);
+    let before = logs.text().len();
+    hooks::SealedBacklogWatch::new()
+        .report(&neither, &sys(), start)
+        .await
+        .unwrap();
+    let text = logs.text();
+    let line = &text[before..];
+    assert_eq!(line.matches("WARN").count(), 1, "{text}");
+    assert!(line.contains("sends no hmac delivery either"), "{line}");
+    assert!(!line.contains("unaffected"), "{line}");
 
     assert_eq!(
         hooks::SealedBacklogWatch::new()
@@ -2915,6 +2933,7 @@ async fn a_deactivated_endpoints_attempts_do_not_count_as_waiting_for_the_key() 
         count_attempts_waiting(&db, &sys(), Utc::now(), WebhookDeliveryMode::sealed)
             .await
             .expect("counting")
+            .get()
     };
     let update = |input: UpdateWebhookEndpointInput| {
         let db = db.clone();
@@ -3453,6 +3472,104 @@ async fn with_hmac_off_a_worker_says_how_many_hmac_attempts_it_holds_back_every_
         None,
         "a deployment that permits the method serves them: nothing to report"
     );
+}
+
+/// Inserts `n` due `pending` attempts for `endpoint_id` in one statement, the way
+/// a subscriber would have over a long outage: a table far too large to seed through
+/// the API. `tag` keeps the dedupe key (endpoint, aggregate, event type) unique, and
+/// the `bulk-` prefix is what `clear_claimable_backlog` deletes, as it does for the
+/// other test that inserts thousands.
+async fn seed_due_attempts(endpoint_id: &str, tag: &str, n: i64) {
+    psql(&format!(
+        "INSERT INTO webhook_attempts \
+           (id, endpoint_id, source_event_id, aggregate_id, event_type, payload, state, \
+            next_attempt_at, version) \
+         SELECT 'cap-{tag}-' || g, '{endpoint_id}', gen_random_uuid(), 'bulk-{tag}-' || g, \
+                'message.delivered', '{{}}', 'pending', now() - interval '1 minute', 1 \
+           FROM generate_series(1, {n}) g"
+    ))
+    .await;
+}
+
+/// The backlog count is bounded: it reads ids per endpoint up to
+/// `WAITING_COUNT_CAP + 1` in all, so what it costs does not grow with a backlog
+/// that nothing purges. Exactly the cap is stated as a number; one more, across two
+/// endpoints that are each under it, is "more than 10000", and the watch's line
+/// says so rather than a figure it did not count.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn the_backlog_count_stops_at_the_cap_and_says_more_than_it() {
+    use sms_worker::claim::{WAITING_COUNT_CAP, Waiting};
+
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+    let first = seed_hmac_endpoint(
+        &db,
+        &app_id,
+        "https://hooks.example.test/first",
+        8,
+        "whsec_cap1_0123456789abcdef0123456789abcdef",
+        None,
+    )
+    .await;
+    let second = seed_hmac_endpoint(
+        &db,
+        &app_id,
+        "https://hooks.example.test/second",
+        8,
+        "whsec_cap2_0123456789abcdef0123456789abcdef",
+        None,
+    )
+    .await;
+    let count = || async {
+        count_attempts_waiting(&db, &sys(), Utc::now(), WebhookDeliveryMode::hmac)
+            .await
+            .expect("counting")
+    };
+
+    let cap = i64::try_from(WAITING_COUNT_CAP).unwrap();
+    seed_due_attempts(&first.id, "a", cap).await;
+    assert_eq!(
+        count().await,
+        Waiting::of(WAITING_COUNT_CAP),
+        "exactly the cap is stated as a number, not as `more than`"
+    );
+    assert!(!count().await.is_more_than_cap());
+
+    // Neither endpoint is over the cap on its own: the total is what is capped.
+    seed_due_attempts(&second.id, "b", 5).await;
+    let over = count().await;
+    assert!(over.is_more_than_cap(), "{over:?}");
+    assert_eq!(
+        over.get(),
+        WAITING_COUNT_CAP + 1,
+        "it stops at the first row past the cap"
+    );
+    assert_eq!(over.to_string(), "more than 10000");
+
+    // And an endpoint alone far past the cap is still read only to it.
+    seed_due_attempts(&first.id, "c", 2_000).await;
+    assert_eq!(
+        count().await.get(),
+        WAITING_COUNT_CAP + 1,
+        "a deeper backlog costs no more"
+    );
+
+    let (logs, _guard_logs) = capture_logs();
+    let start = std::time::Instant::now();
+    let reported = hooks::HmacBacklogWatch::new()
+        .report(&hmac_off(&db), &sys(), start)
+        .await
+        .unwrap();
+    assert_eq!(reported, Some(WAITING_COUNT_CAP + 1));
+    assert!(
+        logs.text().contains("held=more than 10000"),
+        "{}",
+        logs.text()
+    );
+    psql("DELETE FROM webhook_attempts WHERE aggregate_id LIKE 'bulk-%'").await;
 }
 
 /// After `switchWebhookDeliveryMode` to `sealed`, the attempts that waited for the

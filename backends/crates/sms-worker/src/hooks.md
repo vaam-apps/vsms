@@ -105,9 +105,12 @@ still reach the sealer) is an ordinary [`Outcome::Retryable`] like any other
 failed delivery: counted, backed off, able to open the breaker and to go `dead`.
 
 Rows that wait silently are the cost, so [`SealedBacklogWatch`] pays it: a keyless
-`run` counts the due sealed attempts of **active** endpoints (a `COUNT(*)`, due
-or abandoned by a crashed worker) every five minutes and, if there are any, logs
-a `warn` with the number and `--envelope-signing-key-file`. A deactivated
+`run` counts the due sealed attempts of **active** endpoints (due or abandoned by
+a crashed worker; bounded, see below) every five minutes and, if there are any,
+logs a `warn` with the number and `--envelope-signing-key-file`. The warning names
+what else the worker does not send: `hmac` deliveries are unaffected on a worker
+that serves them ([`ServedModes::HmacOnly`]), and the line says it sends none when
+`auth.methods` does not permit them either ([`ServedModes::Neither`]). A deactivated
 endpoint's attempts are claimed by no worker, key or not, so they are not
 waiting for one; an endpoint whose circuit is open is counted, because the
 circuit is a pause that ends by itself. `backends/apps/sms-worker` logs one at
@@ -188,8 +191,8 @@ for a state the keyed ones make useful.
 Two five-minute warnings say what is waiting, because a claim loop that skips
 rows is silent: [`SealedBacklogWatch`] (a worker with no key; above) and
 [`HmacBacklogWatch`], whose `warn` carries `held`, the count of due attempts of
-**active** `hmac` endpoints (a `COUNT(*)`, due or abandoned by a crashed worker),
-and the ways out. A deactivated endpoint's attempts are claimed by no worker, so
+**active** `hmac` endpoints (due or abandoned by a crashed worker; bounded, see
+below), and the ways out. A deactivated endpoint's attempts are claimed by no worker, so
 they are not counted. `run` also logs once at start how many `hmac` endpoints exist
 (`sms_api::HmacBoot`, the line `serve` logs too). The API side, which refuses to
 create, switch to or rotate one, is `sms-api`'s `hmac_gate.md`.
@@ -251,3 +254,20 @@ verbatim_never_reconstructed` test proves this against a real HTTP
 capture, not just by reading this paragraph.
 
 <!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->
+
+# What a backlog count costs, and why it stops at 10 001
+
+Both watches use [`crate::claim::count_attempts_waiting`], and a held backlog is exactly
+the table that is large (nothing purges attempts, and a subscriber adds one per
+event). A `COUNT(*)` over the whole table was the first form, and at about a
+million held rows the planner chose a parallel sequential scan of
+`webhook_attempts`: some 660 MB read, 0.3 to 3.3 s, on every `hooks` worker every
+five minutes. The count is one question per matching endpoint now,
+`endpoint_id = $1`, which `webhook_endpoint_due_idx` answers, plus one for the
+abandoned leases of those endpoints (`webhook_attempts_lease_reclaim_idx`), each
+reading the one indexed column with a `LIMIT` of what is left of the cap, so the
+total read is at most 10 001 index entries however deep the backlog. The figure the `warn` carries is exact
+up to 10 000 and reads `more than 10000` past it ([`crate::claim::Waiting`]); the exact
+number, when an operator wants it, is the query in
+`docs/runbooks/deployment.adoc`. `claim.md`, "What a backlog count costs", has
+the plans.

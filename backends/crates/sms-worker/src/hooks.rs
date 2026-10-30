@@ -185,18 +185,22 @@ impl SealedBacklogWatch {
         }
         let waiting =
             count_attempts_waiting(&ctx.db, sys, Utc::now(), WebhookDeliveryMode::sealed).await?;
-        let waiting = usize::try_from(waiting).unwrap_or(0);
-        if waiting > 0 {
+        let held_back = waiting.get();
+        if held_back > 0 {
+            let hmac = if served_modes(ctx).serves(WebhookDeliveryMode::hmac) {
+                "hmac deliveries are unaffected."
+            } else {
+                "It sends no hmac delivery either: auth.methods does not permit hmac_webhooks."
+            };
             warn!(
-                waiting,
+                waiting = %waiting,
                 "sealed webhook deliveries are waiting that this worker cannot send: it holds no \
                  envelope signing key. Start it with --envelope-signing-key-file \
                  (SMS_ENVELOPE_SIGNING_KEY_FILE, the gateway's key), or run a hooks worker that \
-                 has it. hmac deliveries are unaffected, and nothing is counted against the sealed \
-                 attempts meanwhile"
+                 has it. {hmac} Nothing is counted against the sealed attempts meanwhile"
             );
         }
-        Ok(Some(waiting))
+        Ok(Some(held_back))
     }
 }
 
@@ -252,10 +256,10 @@ impl HmacBacklogWatch {
         }
         let held =
             count_attempts_waiting(&ctx.db, sys, Utc::now(), WebhookDeliveryMode::hmac).await?;
-        let held = usize::try_from(held).unwrap_or(0);
-        if held > 0 {
+        let held_back = held.get();
+        if held_back > 0 {
             warn!(
-                held,
+                held = %held,
                 "hmac webhook deliveries are held back: auth.methods does not permit \
                  hmac_webhooks, so no worker claims them. They stay pending, uncounted, and are \
                  delivered once the method is permitted again and the workers restarted. Or \
@@ -263,7 +267,7 @@ impl HmacBacklogWatch {
                  pending attempts are delivered sealed, or delete them"
             );
         }
-        Ok(Some(held))
+        Ok(Some(held_back))
     }
 }
 

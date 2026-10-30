@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
-use cratestack::{CratestackContext, CratestackError, FilterExpr};
+use cratestack::{CratestackContext, CratestackError, FilterExpr, IntoColumnName};
 use sms_api::HmacWebhooks;
 use sms_api::schema::{
     AttemptState, Cratestack, Job, JobState, Message, MessageState, UpdateJobInput,
@@ -637,21 +637,6 @@ fn expired_leases(now: DateTime<Utc>) -> FilterExpr {
         .and(webhook_attempt::leaseUntil().lt(now))
 }
 
-/// The attempts whose endpoint delivers in `mode`, as a correlated subquery on
-/// `endpointId` the delegate renders itself (the endpoint's own read policy
-/// applies inside it, as for any relation filter).
-fn endpoint_delivers(mode: WebhookDeliveryMode) -> FilterExpr {
-    webhook_attempt::endpoint().deliveryMode().eq(mode)
-}
-
-/// The attempts of an active endpoint, as a correlated subquery on `endpointId`.
-/// Half of [`ServedModes::can_claim`], for the count that cannot load rows: the
-/// other half, the circuit, compares an optional timestamp, which a filter over a
-/// relation does not offer (`is_null` is all it has for an optional field).
-fn endpoint_is_active() -> FilterExpr {
-    webhook_attempt::endpoint().active().eq(true)
-}
-
 /// [`Claimable::candidates`] for [`WebhookAttempt`], for a worker serving `served`:
 /// at most `budget` attempts, oldest first, every one of an endpoint the worker
 /// can claim from at the time of the read.
@@ -864,7 +849,7 @@ pub async fn filter_by_endpoint_health(
 
 /// Claim up to `budget` webhook attempts a worker serving `served` can deliver
 /// ([`ServedModes`]). [`claim_batch`] for a [`WebhookAttempt`] claims
-/// [`ServedModes::Both`]; `hooks` calls this with what its signing key allows.
+/// [`ServedModes::Both`]; `hooks` calls this with what the signing key and `auth.methods` allow.
 ///
 /// # Errors
 ///
@@ -881,42 +866,167 @@ pub async fn claim_webhook_attempts(
     lease_candidates(db, sys, worker, now, candidates).await
 }
 
+/// The most attempts a backlog count reads for any one question, and so the
+/// largest figure it states exactly: past it the answer is "more than this".
+pub const WAITING_COUNT_CAP: usize = 10_000;
+
+/// How many attempts [`count_attempts_waiting`] found, never more than
+/// [`WAITING_COUNT_CAP`] `+ 1`: it stops reading at the first row past the cap, so
+/// what it costs does not depend on how deep the backlog is.
+///
+/// ```
+/// use sms_worker::claim::{WAITING_COUNT_CAP, Waiting};
+///
+/// assert_eq!(Waiting::of(4).to_string(), "4");
+/// assert!(!Waiting::of(WAITING_COUNT_CAP).is_more_than_cap());
+/// assert!(Waiting::of(WAITING_COUNT_CAP + 1).is_more_than_cap());
+/// assert_eq!(Waiting::of(WAITING_COUNT_CAP + 1).to_string(), "more than 10000");
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Waiting(usize);
+
+impl Waiting {
+    /// A count of `found` attempts, clamped to the one past the cap that means
+    /// "more than the cap".
+    #[must_use]
+    pub const fn of(found: usize) -> Self {
+        Self(if found > WAITING_COUNT_CAP {
+            WAITING_COUNT_CAP + 1
+        } else {
+            found
+        })
+    }
+
+    /// The number found: exact up to [`WAITING_COUNT_CAP`], and
+    /// [`WAITING_COUNT_CAP`] `+ 1` when there are more.
+    #[must_use]
+    pub const fn get(self) -> usize {
+        self.0
+    }
+
+    /// Whether the backlog is deeper than the count would read.
+    #[must_use]
+    pub const fn is_more_than_cap(self) -> bool {
+        self.0 > WAITING_COUNT_CAP
+    }
+}
+
+impl std::fmt::Display for Waiting {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.is_more_than_cap() {
+            write!(f, "more than {WAITING_COUNT_CAP}")
+        } else {
+            write!(f, "{}", self.0)
+        }
+    }
+}
+
 /// How many attempts of `mode` endpoints are being held back from workers:
 /// due, or abandoned by a crashed worker, whose endpoint delivers `mode` and is
-/// **active**. A worker counts them to say so, with a `COUNT(*)` rather than the
-/// rows, which carry payloads. For `sealed` they wait for a worker that holds the
-/// signing key ([`ServedModes::HmacOnly`] and [`ServedModes::Neither`] never claim
-/// one); for `hmac` they wait for `auth.methods` to permit `hmac_webhooks`
-/// again ([`ServedModes::SealedOnly`] and [`ServedModes::Neither`]).
+/// **active**. For `sealed` they wait for a worker that holds the signing key
+/// ([`ServedModes::HmacOnly`] and [`ServedModes::Neither`] never claim one); for
+/// `hmac` they wait for `auth.methods` to permit `hmac_webhooks` again
+/// ([`ServedModes::SealedOnly`] and [`ServedModes::Neither`]).
+///
+/// The count is **bounded**, per endpoint and in total: one question per
+/// matching endpoint (`endpoint_id = $1`, which `webhook_endpoint_due_idx`
+/// answers), each reading at most the rows still short of
+/// [`WAITING_COUNT_CAP`] `+ 1`, then one for the abandoned leases of those
+/// endpoints. A `COUNT(*)` over the whole table was the first design and
+/// measured badly: with about a million held rows the planner chose a parallel
+/// sequential scan of `webhook_attempts` (some 660 MB, 0.3 to 3.3 s), on every
+/// `hooks` worker every five minutes, and the held backlog is exactly the table
+/// that is large. The framework has no capped `COUNT`, so the index column is read and
+/// the rows counted here; never the payloads. `claim.md`, "What a backlog
+/// count costs", has the plans.
 ///
 /// A deactivated endpoint's attempts are left out: no worker claims them, with the
 /// key or without it, so they say nothing about the key or the method, and counting
 /// them made a deployment with one deactivated sealed endpoint warn for as long as
 /// its rows exist. An endpoint whose circuit is open is counted: the circuit is a
 /// pause that ends by itself, after which its attempts are exactly what such a
-/// worker cannot take. (It is also what a filter over a relation cannot say: it
-/// offers `is_null` for an optional timestamp and no comparison.)
+/// worker cannot take.
 ///
 /// # Errors
 ///
-/// Whatever the aggregate returns.
+/// Whatever reading the endpoints or the attempts returns.
 pub async fn count_attempts_waiting(
     db: &Cratestack,
     sys: &CratestackContext,
     now: DateTime<Utc>,
     mode: WebhookDeliveryMode,
-) -> Result<i64, CratestackError> {
-    db.webhook_attempt()
-        .aggregate()
-        .count()
-        .where_expr(
-            due_attempts(now)
-                .or(expired_leases(now))
-                .and(endpoint_delivers(mode))
-                .and(endpoint_is_active()),
-        )
+) -> Result<Waiting, CratestackError> {
+    let endpoints: Vec<String> = db
+        .webhook_endpoint()
+        .find_many()
         .run(sys)
-        .await
+        .await?
+        .into_iter()
+        .filter(|endpoint| endpoint.active && endpoint.deliveryMode == mode)
+        .map(|endpoint| endpoint.id)
+        .collect();
+    if endpoints.is_empty() {
+        return Ok(Waiting::of(0));
+    }
+
+    let mut found = 0_usize;
+    for endpoint_id in &endpoints {
+        found += read_waiting(
+            db,
+            sys,
+            due_attempts(now).and(webhook_attempt::endpointId().eq(endpoint_id.clone())),
+            webhook_attempt::nextAttemptAt(),
+            found,
+        )
+        .await?;
+        if found > WAITING_COUNT_CAP {
+            return Ok(Waiting(found));
+        }
+    }
+    found += read_waiting(
+        db,
+        sys,
+        expired_leases(now).and(webhook_attempt::endpointId().in_(endpoints)),
+        webhook_attempt::leaseUntil(),
+        found,
+    )
+    .await?;
+    Ok(Waiting(found))
+}
+
+/// How many attempts `filter` selects, reading at most the rows still short of
+/// the cap given `found` already. `LIMIT` is what bounds the cost (the total is
+/// never clamped afterwards, so a `LIMIT` that stopped bounding it would show), and **the
+/// column read is what makes the plan hold**: it is the one an index carries
+/// (`next_attempt_at` is in `webhook_endpoint_due_idx`, `lease_until` is the key of
+/// `webhook_attempts_lease_reclaim_idx`), so the planner answers from the index
+/// alone. Reading `id` made it a gamble on the table's layout: for an endpoint
+/// holding a tenth of the table, all of it at the end of the heap (a held backlog is
+/// the newest rows), the planner chose a sequential scan with `LIMIT`, believing
+/// the matches evenly spread, and read the whole table. No `ORDER BY`, either: with
+/// one, the planner may walk `webhook_due_idx` in time order and filter, which
+/// reads every other endpoint's rows on the way (`claim.md`, "What a backlog count
+/// costs").
+async fn read_waiting<C: IntoColumnName>(
+    db: &Cratestack,
+    sys: &CratestackContext,
+    filter: FilterExpr,
+    column: C,
+    found: usize,
+) -> Result<usize, CratestackError> {
+    let room = WAITING_COUNT_CAP + 1 - found.min(WAITING_COUNT_CAP + 1);
+    if room == 0 {
+        return Ok(0);
+    }
+    Ok(db
+        .webhook_attempt()
+        .find_many()
+        .where_expr(filter)
+        .select([column])
+        .limit(i64::try_from(room).unwrap_or(i64::MAX))
+        .run(sys)
+        .await?
+        .len())
 }
 
 #[async_trait]
