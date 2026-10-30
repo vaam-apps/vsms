@@ -15,9 +15,10 @@ request's extensions.
 - the envelope layer (`crate::envelope`) opens the `COSE_Sign1` message, checks
   the signature and records a `VerifiedSigner`; [`GatewayAuth`] maps that signer
   through `crate::signers::SignerDirectory`;
-- the bearer door (`crate::bearer`, VSA-3b, only when `machine_tokens` is served)
-  verifies a machine token, resolves its client **from rows**, and records a
-  `BearerCaller` holding the same `Standing`.
+- the bearer door (`crate::bearer`, VSA-3b, when `machine_tokens` or
+  `human_login` is served) verifies a machine's or a person's token, resolves
+  who it names **from rows**, and records a `BearerCaller` holding the same
+  `Standing`.
 
 Both end in one `GatewayAuth::context_for`, so no policy can tell the doors
 apart. There is no JWKS to fetch here and the header is never read as an
@@ -67,6 +68,21 @@ Two signer kinds, one outcome each:
   **user** principal: `sub = User.id`, `role = Role.key`, `perms` = the role's
   permissions, no `scope`. A role keyed `system` or `app` is refused
   ([`RESERVED_ROLE_KEYS`]).
+
+A person's **access token** (VSA-4b) is the second route to the user principal,
+the same `Standing::User` a console key gives: `sub = User.id`, the role's
+`perms`, no `scope` (the token's OIDC `openid profile` is what the console may
+read about the person, never fed to Layer 2). With one cap, applied by
+[`refuse_device_only_role`]: a person whose role is in [`DEVICE_ONLY_ROLES`]
+(`owner`, `admin`) is refused with a 403 ([`DEVICE_REQUIRED`]) behind a token,
+and acts only from a paired console key. The function runs twice, deliberately:
+in `SignerDirectory::bearer_standing`, where the standing is built, **after** the
+cache read and on the value just read (the cache is shared with the signed door,
+where an `admin` is legitimate, so that is what covers the cache), and in
+[`GatewayAuth::authenticate`] on the standing the door recorded. The second is a
+safety net, not the cache's cover: it catches the case where the first is ever
+moved into the cache loader, and a standing that reached the provider any other
+way. Keep both, and keep the first after the cache read.
 
 A key's own revocation and expiry are read on every request, never cached. The
 standing of its owner (`AppClient`, `User` and `Role`) is cached for 60

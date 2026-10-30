@@ -10,8 +10,8 @@
 //! 1. A correct email/password, correct PKCE `code_verifier` and matching `state`
 //!    complete the `/login` -> `/token` round trip. `state` and `nonce` survive it
 //!    byte for byte, an `id_token` comes back, **and no refresh token does**. The
-//!    access token is **not yet a credential for the API** (VSA-4b), while a
-//!    console key paired to the same person is.
+//!    access token **is a credential for the API** (VSA-4b), and the `id_token`
+//!    beside it is not; a console key paired to the same person is one too.
 //! 2. **The PKCE guard-failure proof**: a wrong `code_verifier` is `invalid_grant`.
 //!    A code is single use. Only S256 is accepted.
 //! 3. **One generic 401** for every refusal of the person: an unknown email, a
@@ -185,6 +185,8 @@ enum Serves {
     Machines,
     /// The absent `auth.methods` with both blocks: everything.
     Both,
+    /// `[machine_tokens, human_login]`: tokens alone, the keypair off.
+    TokensOnly,
 }
 
 /// The buckets a test deployment is written with. The defaults are wide enough
@@ -240,6 +242,7 @@ impl Deployment {
             Serves::People => "auth:\n  methods: [keypair, human_login]\n",
             Serves::Machines => "auth:\n  methods: [keypair, machine_tokens]\n",
             Serves::Both => "",
+            Serves::TokensOnly => "auth:\n  methods: [machine_tokens, human_login]\n",
         };
         let op = format!(
             "op:\n  issuer: {issuer}\n  token_rate_limit:\n    burst: {}\n    \
@@ -256,7 +259,7 @@ impl Deployment {
         );
         let blocks = match serves {
             Serves::Machines => op,
-            Serves::People | Serves::Both => format!("{op}{human}"),
+            Serves::People | Serves::Both | Serves::TokensOnly => format!("{op}{human}"),
         };
         let config = TestConfig::write(
             Path::new(env!("CARGO_TARGET_TMPDIR")),
@@ -432,17 +435,34 @@ async fn seed_account(
     password: Option<&str>,
     active: bool,
 ) -> (String, String) {
-    let role_key = format!("loginflow{}", suffix.to_lowercase());
-    db.role()
-        .create(schema::CreateRoleInput {
-            key: role_key.clone(),
-            label: "login flow gate test role".to_owned(),
-            description: None,
-            permissions: " message:read ".to_owned(),
-        })
-        .run(&owner())
-        .await
-        .expect("seeding a Role");
+    seed_account_in(db, suffix, None, password, active).await
+}
+
+/// [`seed_account`] in a built-in role (`admin`, `operator`, ...) instead of a
+/// role made for the test, when `role_key` is `Some`.
+async fn seed_account_in(
+    db: &Cratestack,
+    suffix: &str,
+    role_key: Option<&str>,
+    password: Option<&str>,
+    active: bool,
+) -> (String, String) {
+    let role_key = if let Some(role_key) = role_key {
+        role_key.to_owned()
+    } else {
+        let role_key = format!("loginflow{}", suffix.to_lowercase());
+        db.role()
+            .create(schema::CreateRoleInput {
+                key: role_key.clone(),
+                label: "login flow gate test role".to_owned(),
+                description: None,
+                permissions: " message:read ".to_owned(),
+            })
+            .run(&owner())
+            .await
+            .expect("seeding a Role");
+        role_key
+    };
 
     let email = format!("login-flow-{suffix}@example.test");
     let user = db
@@ -618,6 +638,32 @@ fn exchange<'a>(
 
 // --- the round trip ---------------------------------------------------------
 
+/// VSA-4b: the API reads the person's access token, end to end from `/login`
+/// through `/token`, as that person with the role their row says; the same
+/// sign-in's `id_token` is not a credential.
+async fn assert_the_api_reads_the_access_token_and_not_the_id_token(
+    base_url: &str,
+    access_token: &str,
+    id_token: &str,
+) {
+    for (token, expected, what) in [
+        (
+            access_token,
+            200,
+            "a person's access token is accepted (VSA-4b)",
+        ),
+        (id_token, 401, "an ID token is not a credential"),
+    ] {
+        let reply = reqwest::Client::new()
+            .get(format!("{base_url}/roles"))
+            .bearer_auth(token)
+            .send()
+            .await
+            .expect("calling GET /roles with a person's token");
+        assert_eq!(reply.status(), expected, "{what}");
+    }
+}
+
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres - see module docs"]
 async fn a_correct_login_completes_the_full_authorization_code_pkce_round_trip() {
@@ -696,20 +742,13 @@ async fn a_correct_login_completes_the_full_authorization_code_pkce_round_trip()
         "a good login stamps lastLoginAt"
     );
 
-    // VSA-4a issues the person's token; VSA-4b is what lets the API read it. Until
-    // then the bearer door refuses it (the unsigned 401)...
-    let with_token = reqwest::Client::new()
-        .get(format!("{}/roles", gateway.base_url))
-        .bearer_auth(access_token)
-        .send()
-        .await
-        .expect("calling GET /roles with a person's token");
-    assert_eq!(
-        with_token.status(),
-        401,
-        "a person's token is not yet accepted by the API (VSA-4b)"
-    );
-    // ...while a console key paired to the same person is let in by its signature.
+    assert_the_api_reads_the_access_token_and_not_the_id_token(
+        &gateway.base_url,
+        access_token,
+        id_token,
+    )
+    .await;
+    // A console key paired to the same person is let in by its signature too.
     let key = TestKey::console();
     sealed_fixtures::pair_console_key(&db, &user_id, &key, chrono::Duration::days(30)).await;
     let roles = sealed_fixtures::client(&gateway.base_url, &key)
@@ -2117,30 +2156,10 @@ async fn mint_machine_token(base_url: &str, client_id: &str, pem: &str) -> Strin
         .to_owned()
 }
 
-/// **A person's token has no door even when the machine door is open.** With
-/// `machine_tokens` and `human_login` served together the API accepts a bearer,
-/// but only a machine's: the access token and the `id_token` of a completed
-/// sign-in are both refused, and the refusal is the `HumanToken` one, not the
-/// absence of a door.
-///
-/// Both halves are proven in the one running process. The reason is read where it
-/// is written, the door's own debug line (the response is the same coarse 401 for
-/// every refusal by design); and a machine token minted by the same provider
-/// beside them is accepted, which a missing door could not do.
-#[tokio::test]
-#[ignore = "needs a live, fully migrated Postgres - see module docs"]
-async fn a_persons_token_is_refused_as_a_persons_beside_an_open_machine_door() {
-    let _guard = TEST_MUTEX.lock().await;
-    let db = db().await;
-    let deployment = Deployment::new(Serves::Both, 100).await;
-    deployment.prepare().await;
-    let password = test_password();
-    let (_, email) = seed_account(&db, &unique_suffix(), Some(&password), true).await;
-
-    let (machine_id, machine_pem) = provision_machine(&db, &deployment).await;
-
-    // A serve whose log we can read: the door explains each refusal at debug.
-    let log_path = scratch_file("both-doors-serve.log");
+/// Starts `deployment`'s `serve` with the bearer door's refusals at `debug` in a
+/// log file, and returns it with the log's path.
+async fn spawn_logged(deployment: &Deployment, name: &str) -> (Gateway, PathBuf) {
+    let log_path = scratch_file(name);
     let mut command = deployment.serve_command();
     command
         .env(
@@ -2151,16 +2170,74 @@ async fn a_persons_token_is_refused_as_a_persons_beside_an_open_machine_door() {
         .stderr(Stdio::inherit());
     let mut child = command.spawn().expect("spawning sms-gateway serve");
     wait_until_ready(&deployment.base_url(), &mut child).await;
-    let gateway = Gateway {
-        child,
-        base_url: deployment.base_url(),
-    };
+    (
+        Gateway {
+            child,
+            base_url: deployment.base_url(),
+        },
+        log_path,
+    )
+}
+
+/// How many refusals the door logged, and how many of them were `reason`.
+fn refusals_in(log_path: &Path, reason: &str) -> (usize, usize) {
+    let log = std::fs::read_to_string(log_path).expect("reading the serve log");
+    (
+        log.matches("a bearer token was refused").count(),
+        log.matches(reason).count(),
+    )
+}
+
+const REASON_ID_TOKEN: &str = "the token is an ID token, not an access token";
+const REASON_HUMAN: &str =
+    "the token belongs to a person, and this deployment accepts only a machine's";
+const REASON_MACHINE: &str =
+    "the token belongs to a machine client, and this deployment accepts only a person's";
+
+/// The OP's own `TokenManager` for `deployment`, read from the database the way
+/// `serve` reads it: tokens a test mints by hand are signed by the real key.
+async fn op_signer(
+    db: &Cratestack,
+    deployment: &Deployment,
+) -> std::sync::Arc<authkestra_engine::TokenManager> {
+    sms_auth::op::load_signing_keys(db, &sys(), &deployment.base_url())
+        .await
+        .expect("loading the OP signing keys")
+        .0
+}
+
+fn identity_of(user_id: &str) -> authkestra_engine::Identity {
+    authkestra_engine::Identity {
+        provider_id: "sms-console".to_owned(),
+        external_id: user_id.to_owned(),
+        email: None,
+        username: None,
+        attributes: std::collections::HashMap::new(),
+    }
+}
+
+/// **A person's access token is accepted beside an open machine door, and the ID
+/// token of the same sign-in is not.**
+///
+/// Both halves are proven in the one running process. The reason is read where
+/// it is written, the door's own debug line (the response is the same coarse 401
+/// for every refusal by design); and a machine token minted by the same provider
+/// beside them is accepted too.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn a_persons_access_token_is_accepted_and_its_id_token_is_not() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let deployment = Deployment::new(Serves::Both, 100).await;
+    deployment.prepare().await;
+    let password = test_password();
+    let (_, email) = seed_account(&db, &unique_suffix(), Some(&password), true).await;
+
+    let (machine_id, machine_pem) = provision_machine(&db, &deployment).await;
+    let (gateway, log_path) = spawn_logged(&deployment, "both-doors-serve.log").await;
     let base_url = gateway.base_url.clone();
 
-    // The machine's token, from the same provider.
     let machine_token = mint_machine_token(&base_url, &machine_id, &machine_pem).await;
-
-    // The person's tokens, from a real sign-in.
     let (code, verifier) = sign_in(&deployment, &base_url, &email, &password).await;
     let token = post_token(&base_url, &exchange(&deployment, &code, &verifier)).await;
     assert!(token.status.is_success(), "{} {}", token.status, token.body);
@@ -2169,25 +2246,232 @@ async fn a_persons_token_is_refused_as_a_persons_beside_an_open_machine_door() {
 
     let (status, body) = preview_with(&base_url, &machine_token).await;
     assert_eq!(status, 200, "the machine door is open: {body}");
-    for (name, bearer) in [("access token", access_token), ("id_token", id_token)] {
-        let (status, body) = preview_with(&base_url, bearer).await;
-        assert_eq!(status, 401, "a person's {name} has no door: {body}");
-        assert!(
-            body.contains("request could not be authenticated"),
-            "the coarse refusal, whatever the reason: {body}"
-        );
-    }
+    let (status, body) = preview_with(&base_url, access_token).await;
+    assert_eq!(status, 200, "a person's access token is accepted: {body}");
+    let (status, body) = preview_with(&base_url, id_token).await;
+    assert_eq!(status, 401, "a person's ID token has no door: {body}");
+    assert!(
+        body.contains("request could not be authenticated"),
+        "the coarse refusal, whatever the reason: {body}"
+    );
     gateway.kill();
 
-    let log = std::fs::read_to_string(&log_path).expect("reading the serve log");
-    let refusals = log.matches("a bearer token was refused").count();
-    let human = log
-        .matches("the token belongs to a person, not a machine client")
-        .count();
     assert_eq!(
-        (refusals, human),
-        (2, 2),
-        "exactly the two person tokens were refused, both as a person's, and the machine \
-         token was not refused at all:\n{log}"
+        refusals_in(&log_path, REASON_ID_TOKEN),
+        (1, 1),
+        "exactly the ID token was refused, as an ID token"
     );
+}
+
+/// `[keypair, human_login]`: only people are served, so a person's token has a
+/// door (it did not before VSA-4b, when the keypair alone made the envelope
+/// `Required`) and a machine's has none.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn with_only_people_served_a_persons_token_works_and_a_machines_does_not() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let deployment = Deployment::new(Serves::People, 100).await;
+    deployment.prepare().await;
+    let password = test_password();
+    let (_, email) = seed_account(&db, &unique_suffix(), Some(&password), true).await;
+    let (gateway, log_path) = spawn_logged(&deployment, "people-serve.log").await;
+    let base_url = gateway.base_url.clone();
+
+    let (code, verifier) = sign_in(&deployment, &base_url, &email, &password).await;
+    let token = post_token(&base_url, &exchange(&deployment, &code, &verifier)).await;
+    assert!(token.status.is_success(), "{}", token.body);
+    let (status, body) =
+        preview_with(&base_url, token.body["access_token"].as_str().unwrap()).await;
+    assert_eq!(status, 200, "a person's token is a door: {body}");
+
+    // A machine's token, signed by the real key: only people are served.
+    let signer = op_signer(&db, &deployment).await;
+    let machine = signer
+        .issue_client_token_with_extra(
+            "appc_handminted",
+            900,
+            Some("sms:send".to_owned()),
+            Some("appc_handminted".to_owned()),
+            std::collections::HashMap::new(),
+        )
+        .expect("minting a machine token");
+    let (status, body) = preview_with(&base_url, &machine).await;
+    assert_eq!(status, 401, "{body}");
+
+    // A person's token addressed to something other than the console.
+    let other = signer
+        .issue_user_token_with_extra(
+            identity_of("usr_handminted"),
+            900,
+            Some("openid profile".to_owned()),
+            Some("some_other_client".to_owned()),
+            std::collections::HashMap::new(),
+        )
+        .expect("minting a person token");
+    let (status, body) = preview_with(&base_url, &other).await;
+    assert_eq!(status, 401, "{body}");
+    gateway.kill();
+
+    assert_eq!(
+        refusals_in(&log_path, REASON_MACHINE),
+        (2, 1),
+        "one MachineToken"
+    );
+    let log = std::fs::read_to_string(&log_path).unwrap();
+    assert!(
+        log.matches("the token is not addressed to its own client")
+            .count()
+            == 1,
+        "the wrong audience is an Audience refusal:\n{log}"
+    );
+}
+
+/// `[keypair, machine_tokens]`: no person realm, so a person's token (signed by
+/// the real key, with a real account behind it) is a `HumanToken` refusal.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn with_only_machines_served_a_persons_token_is_refused_as_a_persons() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let deployment = Deployment::new(Serves::Machines, 100).await;
+    // `seed-console-client` refuses where `human_login` is not served: only the
+    // provider's key is needed here.
+    ensure_orange_cm_provider(&db).await;
+    deployment.cli_ok("rotate-signing-key", &[]);
+    let (user_id, _) = seed_account(&db, &unique_suffix(), None, true).await;
+    let (gateway, log_path) = spawn_logged(&deployment, "machines-serve.log").await;
+
+    let person = op_signer(&db, &deployment)
+        .await
+        .issue_user_token_with_extra(
+            identity_of(&user_id),
+            900,
+            Some("openid profile".to_owned()),
+            Some(deployment.console_client_id.clone()),
+            std::collections::HashMap::new(),
+        )
+        .expect("minting a person token");
+    let (status, body) = preview_with(&gateway.base_url, &person).await;
+    assert_eq!(status, 401, "{body}");
+    gateway.kill();
+
+    assert_eq!(refusals_in(&log_path, REASON_HUMAN), (1, 1));
+}
+
+/// `[machine_tokens, human_login]`: the keypair is off, the envelope is `Off`,
+/// a person's token works and a signed body is the layer's 415.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn with_tokens_alone_a_persons_token_works_and_a_signed_request_is_a_415() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let deployment = Deployment::new(Serves::TokensOnly, 100).await;
+    deployment.prepare().await;
+    let password = test_password();
+    let (user_id, email) = seed_account(&db, &unique_suffix(), Some(&password), true).await;
+    let gateway = deployment.spawn().await;
+
+    let (code, verifier) = sign_in(&deployment, &gateway.base_url, &email, &password).await;
+    let token = post_token(&gateway.base_url, &exchange(&deployment, &code, &verifier)).await;
+    assert!(token.status.is_success(), "{}", token.body);
+    let (status, body) = preview_with(
+        &gateway.base_url,
+        token.body["access_token"].as_str().unwrap(),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+
+    let key = TestKey::console();
+    sealed_fixtures::pair_console_key(&db, &user_id, &key, chrono::Duration::days(30)).await;
+    let signed = sealed_fixtures::client(&gateway.base_url, &key)
+        .request("POST", "/$procs/previewMessage")
+        .json(&serde_json::json!({"args": {"body": "hello"}}))
+        .send()
+        .await;
+    assert_eq!(signed.status, 415, "{}", signed.text());
+    gateway.kill();
+}
+
+/// **Owner and admin act only from a paired console key.** The account signs in
+/// with its password, and its access token is a 403 with the device text; paired
+/// to a console key, the same account is let in. The owner is the one
+/// `bootstrap --owner-password-out` writes.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn an_owner_or_admin_signed_in_with_a_password_is_refused_until_a_key_is_paired() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    ensure_orange_cm_provider(&db).await;
+    let deployment = Deployment::new(Serves::People, 100).await;
+    deployment.cli_ok("rotate-signing-key", &[]);
+
+    // The owner, exactly as bootstrap leaves them.
+    let owner_email = format!("owner-{}@example.test", unique_suffix());
+    let out = scratch_file("owner-password-4b");
+    let out_str = out.display().to_string();
+    deployment.cli_ok(
+        "bootstrap",
+        &[
+            "--skip-seed-dispatch",
+            "--owner-email",
+            owner_email.as_str(),
+            "--owner-display-name",
+            "First Owner",
+            "--owner-password-out",
+            out_str.as_str(),
+        ],
+    );
+    let owner_password = std::fs::read_to_string(&out).expect("the owner's password file");
+    // Read once, and not left lying in the scratch directory.
+    std::fs::remove_file(&out).expect("removing the owner's password file");
+    // An admin, seeded the way provision-user leaves one.
+    let admin_password = test_password();
+    let (admin_id, admin_email) = seed_account_in(
+        &db,
+        &unique_suffix(),
+        Some("admin"),
+        Some(&admin_password),
+        true,
+    )
+    .await;
+    let gateway = deployment.spawn().await;
+
+    let device_text = sms_api::DEVICE_REQUIRED;
+    for (who, email, password) in [
+        ("owner", owner_email.as_str(), owner_password.as_str()),
+        ("admin", admin_email.as_str(), admin_password.as_str()),
+    ] {
+        let (code, verifier) = sign_in(&deployment, &gateway.base_url, email, password).await;
+        let token = post_token(&gateway.base_url, &exchange(&deployment, &code, &verifier)).await;
+        assert!(token.status.is_success(), "{who}: {}", token.body);
+        let access = token.body["access_token"].as_str().expect("access token");
+        for path in ["/users", "/roles"] {
+            let reply = reqwest::Client::new()
+                .get(format!("{}{path}", gateway.base_url))
+                .bearer_auth(access)
+                .send()
+                .await
+                .expect("calling the API");
+            let status = reply.status().as_u16();
+            let body = reply.text().await.unwrap_or_default();
+            assert_eq!(status, 403, "{who} {path}: {body}");
+            assert!(body.contains(device_text), "{who} {path}: {body}");
+        }
+    }
+
+    // Paired to a console key (a device), the admin acts with the role.
+    let key = TestKey::console();
+    sealed_fixtures::pair_console_key(&db, &admin_id, &key, chrono::Duration::days(30)).await;
+    let users = sealed_fixtures::client(&gateway.base_url, &key)
+        .request("GET", "/users")
+        .send()
+        .await;
+    assert!(
+        users.sealed && users.status == 200,
+        "a paired key carries the admin role: {} {}",
+        users.status,
+        users.text()
+    );
+    gateway.kill();
 }

@@ -1722,7 +1722,7 @@ Operator inference is a **hint in a database table, never a hardcoded match**. B
 
 ### 4.0 The signed transport (VS-3)
 
-Every route the generated router serves is wrapped in cratestack's `EnvelopeLayer`, as the router's last layer (the coarse per-source rate limiter sits outside it). Its mode follows the ways in the deployment opened (`auth.methods`, §4.9): **`Required`** when the signed envelope is the only one (the default, and vaam), so a request is a COSE_Sign1 message and nothing unsigned reaches the router; **`Optional`** when `machine_tokens` is served too, so a signed request is opened and sealed as ever and an unsigned one reaches the bearer door (§4.10); **`Off`** when `keypair` is off and tokens are the only way in, so a request with a COSE body is refused with a 415 and never forwarded. An `Authorization` header beside a good signature is refused with a 400 in every mode.
+Every route the generated router serves is wrapped in cratestack's `EnvelopeLayer`, as the router's last layer (the coarse per-source rate limiter sits outside it). Its mode follows the ways in the deployment opened (`auth.methods`, §4.9): **`Required`** when the signed envelope is the only one (the default, and vaam), so a request is a COSE_Sign1 message and nothing unsigned reaches the router; **`Optional`** when a token is served too (`machine_tokens`, or since VSA-4b `human_login`: `[keypair, human_login]` is `Optional`, where it was `Required` while no person's token could be used), so a signed request is opened and sealed as ever and an unsigned one reaches the bearer door (§4.10); **`Off`** when `keypair` is off and tokens are the only way in, so a request with a COSE body is refused with a 415 and never forwarded. An `Authorization` header beside a good signature is refused with a 400 in every mode.
 
 ```mermaid
 sequenceDiagram
@@ -1778,7 +1778,7 @@ What a stolen private key allows is whatever its client's scopes allow, until so
 
 ### 4.3 Human callers
 
-A person is a paired `ConsoleKey` (§2.9): a non-extractable P-256 key their browser made, which a vaam admin phone (`registerConsoleKey`) or, as the break-glass, an operator on the command line (`sms-gateway pair-console-key --user <email|id> --public-key <k>`) vouched for. Every request the console makes is sealed in the browser (§4.0, `docs/design/console-pairing.md`). There is no TOTP, no cookie, no refresh token and no single sign-on, and — unless the deployment serves `human_login` (VSA-4a, §4.10) — no password and no OpenID session either: owner rulings Q1 and Q2 (2026-10-26) — *phone pairing only*, break-glass is command-line key enrolment — and the standing ban on refresh tokens. Owner ruling R5 (2026-10-27) put the password back behind configuration: a deployment that serves `human_login` lets a person with a password sign in to the console, and the API **still refuses the token that sign-in issues** (VSA-4b is what lets it in), so a password opens nothing yet but the provider's own `/token`. A paired console user is `admin`, never `owner` (R2), and a key lasts 30 days (R3). Which roles a password session may carry is decided in VSA-4b; in this release a person's token is refused by the API whatever its roles.
+A person is a paired `ConsoleKey` (§2.9): a non-extractable P-256 key their browser made, which a vaam admin phone (`registerConsoleKey`) or, as the break-glass, an operator on the command line (`sms-gateway pair-console-key --user <email|id> --public-key <k>`) vouched for. Every request the console makes is sealed in the browser (§4.0, `docs/design/console-pairing.md`). There is no TOTP, no cookie, no refresh token and no single sign-on, and — unless the deployment serves `human_login` (VSA-4a, §4.10) — no password and no OpenID session either: owner rulings Q1 and Q2 (2026-10-26) — *phone pairing only*, break-glass is command-line key enrolment — and the standing ban on refresh tokens. Owner ruling R5 (2026-10-27) put the password back behind configuration: a deployment that serves `human_login` lets a person with a password sign in to the console, and, since VSA-4b, the API accepts the access token that sign-in issues, as that person with the role their row says: **except** an `owner` or an `admin`, which act only from a paired console key (`403 DEVICE_REQUIRED`, §4.10). A paired console user is `admin`, never `owner` (R2), and a key lasts 30 days (R3).
 
 The principal is built per request by the signer directory from the verified key: the person's `User.id` as `sub`, `kind` `user`, the `role` of their `Role`, and its `permissions` as `perms` (§5.3). A deactivated user or a `Role` keyed `system`/`app` is refused (§2.10). Standing is cached for 60 seconds, so deactivating a person takes effect within one TTL, and a revoked or expired key row on the next request.
 
@@ -1975,12 +1975,12 @@ auth:
   methods: [keypair, hmac_webhooks]   # absent means all four
 ```
 
-| Method           | What it permits                                                                                   | State in this release                                                                                         |
-| ---------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `keypair`        | requests signed by a registered key and the sealed answers (§4.0, §4.2, §4.3)                     | served; the envelope is `Required` alone, `Optional` beside tokens, and when off a signed body is a 415       |
-| `machine_tokens` | `Authorization: Bearer` from the deployment's own OpenID Provider                                 | served when `op:` is written (VSA-3a, §4.10), and the API accepts its tokens beside the envelope (VSA-3b)     |
-| `hmac_webhooks`  | webhook endpoints delivered with `X-Sms-Signature` (`deliveryMode: hmac`, §4.4) and their secrets | served, and gated by this switch                                                                              |
-| `human_login`    | a person's password sign-in to the console (SSO is VSA-4c)                                        | served when `human_login:` and `op:` are written (VSA-4a, §4.10); the API still refuses the token (VSA-4b)    |
+| Method           | What it permits                                                                                   | State in this release                                                                                                                |
+| ---------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `keypair`        | requests signed by a registered key and the sealed answers (§4.0, §4.2, §4.3)                     | served; the envelope is `Required` alone, `Optional` beside tokens, and when off a signed body is a 415                              |
+| `machine_tokens` | `Authorization: Bearer` from the deployment's own OpenID Provider                                 | served when `op:` is written (VSA-3a, §4.10), and the API accepts its tokens beside the envelope (VSA-3b)                            |
+| `hmac_webhooks`  | webhook endpoints delivered with `X-Sms-Signature` (`deliveryMode: hmac`, §4.4) and their secrets | served, and gated by this switch                                                                                                     |
+| `human_login`    | a person's password sign-in to the console (SSO is VSA-4c)                                        | served when `human_login:` and `op:` are written (VSA-4a, §4.10); the API accepts the access token, never as owner or admin (VSA-4b) |
 
 **Absent means all four**, so a configuration written before the key existed gets what it always got, and every deployment of an app other than vaam keeps working untouched. vaam writes `methods: [keypair]` (its overlay is `deploy/values/vsms.<mode>.yaml` in `vaam-apps`, not here). The rules, one `sms_config::ConfigError` variant each, are `backends/crates/sms-config/src/auth.md`'s:
 
@@ -2101,9 +2101,9 @@ stateDiagram-v2
 - **The `/token` bucket** is keyed on `client_id` for `client_credentials`, the dimension the edge cannot read from a form body, and on the SHA-256 of the **code** for `authorization_code`; it sits in front of `/token` only; a body it cannot read is bucketed, never skipped. The console's `client_id` is public, so a bucket on it would let anyone spamming `code=x` expire every operator's real code behind a `429`; a bad code now spends only its own bucket.
 - **Tokens carry no contract-lock protection and no response sealing**: the 426 for an op whose shape is gone applies to sealed callers only, and a token caller's answers are plain JSON.
 
-#### The bearer door (VSA-3b)
+#### The bearer door (VSA-3b, a person's token VSA-4b)
 
-The API accepts `Authorization: Bearer <access_token>` exactly when `machine_tokens` is served, beside the signed envelope (`sms_api::bearer`, `sms-gateway`'s `op_bearer.rs`). The envelope's mode follows the doors (§4.0); between it and the per-principal limiter sits `enforce_bearer_door`.
+The API accepts `Authorization: Bearer <access_token>` when `machine_tokens` **or** `human_login` is served, beside the signed envelope (`sms_api::bearer`, `sms-gateway`'s `op_bearer.rs`). A machine's token (`client_credentials`) is the VSA-3b realm; a person's (`authorization_code` after `POST /login`) is VSA-4b's, and each realm is served by its own method with no key of its own. The envelope's mode follows the doors (§4.0): any token served makes it `Optional` beside the keypair. Between it and the per-principal limiter sits `enforce_bearer_door`.
 
 ```mermaid
 sequenceDiagram
@@ -2121,10 +2121,10 @@ sequenceDiagram
     alt unknown kid
         V->>V: reload the key set once (single flight, 2 s deadline, at most every 5 s)
     end
-    V-->>B: client id + the scope it asks for, or a refusal
-    B->>D: bearer_standing: OauthClient active, AppClient live and the same client
-    D-->>B: App standing, scopes are the AppClient's that the OauthClient lists, narrowed by the claim, never console:pair
-    B->>R: VerifiedPrincipal client:id, BearerCaller
+    V-->>B: Machine(client id, scope) or Person(User.id, console id), or a refusal
+    B->>D: bearer_standing: machine, OauthClient active, AppClient live and the same client, and for a person the console client live and public, User and Role from the shared cache
+    D-->>B: App standing, scopes are the AppClient's that the OauthClient lists, narrowed by the claim, never console:pair, or User standing, never owner or admin (403 DEVICE_REQUIRED)
+    B->>R: VerifiedPrincipal client:id or user:id, BearerCaller
     R-->>C: plain JSON
 ```
 
@@ -2135,19 +2135,24 @@ stateDiagram-v2
     Signed --> [*]: Authorization present, 400
     Signed --> Admitted: otherwise
     Unsigned --> Refused: no bearer, wrong scheme, two headers
-    Unsigned --> Verified: signature, iss, exp, nbf, kid, aud contains sub, no identity, no cnf
-    Verified --> Refused: client inactive, no live AppClient, another client's
+    Unsigned --> Verified: signature, iss, exp, nbf, kid, no cnf, and per realm: a machine's aud contains sub; a person's aud is the console alone, sub is the identity's external_id, a scope and no nonce
+    Verified --> Refused: machine, client inactive, no live AppClient, another client's
+    Verified --> Refused: person, console not a live public unlinked client, user unknown or inactive, reserved role
+    Verified --> Forbidden: person is an owner or an admin
     Verified --> Admitted: standing read from rows
     Refused --> [*]: one 401, the layer's own body
-    Admitted --> [*]: client:id, one bucket, one idempotency namespace
+    Forbidden --> [*]: one 403, DEVICE_REQUIRED
+    Admitted --> [*]: client:id or user:id, one bucket, one idempotency namespace
 ```
 
-- **A token names a client and narrows; it never grants.** `iss` must be `op.issuer`, `exp` and `sub` are required, `nbf` is honoured, with 60 seconds of leeway; the header must carry a `kid` (never "the first key"); an `identity` claim (a person's token) is refused; a `cnf` claim (a token bound to a key, whose proof this door never checks) is refused; and `aud` must contain `sub` (owner decision: no fixed `vsms` audience, so SDKs that already talk to the provider keep working). The role, app and scopes come from `OauthClient` and `AppClient`: a token acts with the `AppClient`'s scopes that the `OauthClient` row also lists (`/token` checks only a *requested* scope against that row, so a token that asks for none would otherwise inherit a scope added to the `AppClient` alone), the token's `scope` claim is intersected with that when present, and `console:pair` is removed whatever any side says. `perms` are never read from a token.
+- **A token names a client and narrows; it never grants.** `iss` must be `op.issuer`, `exp` and `sub` are required, `nbf` is honoured, with 60 seconds of leeway; the header must carry a `kid` (never "the first key"); an `identity` claim (a person's token) is a `HumanToken` refusal where no person realm is served and the person realm's token otherwise, and no `identity` is a `MachineToken` refusal where only people are served; a `cnf` claim (a token bound to a key, whose proof this door never checks) is refused; and a machine's `aud` must contain `sub` (owner decision: no fixed `vsms` audience, so SDKs that already talk to the provider keep working). The role, app and scopes come from `OauthClient` and `AppClient`: a token acts with the `AppClient`'s scopes that the `OauthClient` row also lists (`/token` checks only a *requested* scope against that row, so a token that asks for none would otherwise inherit a scope added to the `AppClient` alone), the token's `scope` claim is intersected with that when present, and `console:pair` is removed whatever any side says. `perms` are never read from a token.
 - **Standing is read from rows on every request** (`OauthClient.active`, uncached: a switched-off client stops on the next call; the `AppClient` for 60 seconds, as the signed door's). A retired or inactive `AppClient`, a client with none and an `OauthClient` linked to another client's `AppClient` all have no standing.
 - **The keys are the provider's own, in process.** The verifier reads the keyring `/jwks.json` publishes from, under the same lock, so the two cannot disagree; there is no HTTP fetch of our own JWKS and no kid-less fallback. An unknown `kid` forces one reload of the key set, single flight, with a two-second deadline and at most once every five seconds, so a rotation another process ran is seen without waiting for the periodic refresh, a flood of invented `kid`s costs one read per interval and a database that stalls cannot park the requests behind it. The price is that a flood-triggered reload can leave a key another replica just rotated in refused for up to five seconds; it heals itself on the next reload.
-- **One principal.** Both doors record `client:<clientId>`, so a client that uses both shares one rate-limit bucket and one `Idempotency-Key` namespace. A refusal is one 401 with the layer's body, byte for byte, whatever failed (the reason is logged at `debug`).
+- **One principal.** Both doors record `client:<clientId>` for a machine and `user:<User.id>` for a person (their console key's name too), so a caller that uses both shares one rate-limit bucket and one `Idempotency-Key` namespace. A refusal is one 401 with the layer's body, byte for byte, whatever failed (the reason is logged at `debug`).
 - **A token caller gets plain JSON.** Unresolved routes stay `Required` (a route the layer cannot bind fails closed with a 500 in every mode), and an unsigned request's answer is never sealed, whatever its `Accept` says: no response seal and no contract-lock 426.
-- **`keypair` off.** `[machine_tokens]` alone sets the layer `Off`: a signed body is a 415, `registerAppClientKey` and `registerConsoleKey` are a 422 `auth_method_disabled` (`sms_api::keypair_gate`), and `register-client` and `pair-console-key` refuse the same way when given a configuration that omits `keypair`. Pairing a console is unavailable on such a deployment until VSA-5.
+- **A person's token** (VSA-4b). `human_login` served adds the person realm to the one verifier (`sms-gateway`'s `Realms`, built from what is served and from nothing else). A person's access token is the one `POST /token` mints after `POST /login`: `sub` is the `User.id`, `identity.external_id` is the same, `aud` is the console's `client_id` and nothing else (a list of one is the same; any other list is refused), `scope` is the console's `openid profile`. **The ID token beside it is refused** (`IdToken`): it has the same issuer, subject, audience, identity, key and lifetime and differs only by carrying no `scope` (and a `nonce` when the sign-in sent one), and it is the token the console hands to a browser and may log. `authkestra` stamps no `typ` or `token_use`, so the test is a heuristic (a non-blank `scope` and no `nonce`); the cost is that a sign-in that asks for no scope gets an access token the API refuses, and the console asks for `openid profile`. The standing is read from rows: the console `OauthClient` on every request (active, `tokenEndpointAuthMethod = none`, linked to no `AppClient`, so a machine client's id in the audience is refused), then the `User` and `Role` through the **same 60-second cache** a paired console key's owner is read through (a deactivation or a promotion takes effect within one window, the window a key has), with the same reserved-role refusal. The person acts with **the role's `perms` and no `scope`**, exactly as with their console key; the OIDC `scope` is never read as a permission. It is `VerifiedPrincipal("user:<User.id>")`, the name their console key gets, so token and key spend one bucket and one `Idempotency-Key` namespace.
+- **Owner and admin never act from a token** (VSA-4b). A `User` has one `roleKey` and `hasRole` matches one string, so a token cannot carry "the role minus the powerful part": a person whose role is in `DEVICE_ONLY_ROLES` (`owner`, `admin`) behind a person's token is `403 {"code":"FORBIDDEN","message":"this account's role acts only from a paired console key; a signed-in session cannot carry it"}` (`DEVICE_REQUIRED`, which names no role) and acts only from a paired console key, a device the server has seen. It is a 403 and not the coarse 401: the token and the account are real, and the answer is about what the token may do. `refuse_device_only_role` is one function called from two places, `SignerDirectory::bearer_standing` where the standing is built and `GatewayAuth::authenticate` on the standing the door recorded. The first runs after the standing-cache read, on the value just read, which is what covers the cache shared with the signed door (where an admin is legitimate); the second is a safety net that catches the first being moved into the cache loader, and any standing that reaches the provider another way. Keep both. The cap is keyed on the credential (a person's token), not on `provider_id`, so a future single sign-on token (VSA-4c) is capped the same.
+- **`keypair` off.** `[machine_tokens]` alone sets the layer `Off`: a signed body is a 415, `registerAppClientKey` and `registerConsoleKey` are a 422 `auth_method_disabled` (`sms_api::keypair_gate`), and `register-client` and `pair-console-key` refuse the same way when given a configuration that omits `keypair`. Pairing a console is unavailable on such a deployment until VSA-5, and so is `[machine_tokens, human_login]`'s owner and admin: they cannot pair a key, and a token cannot carry their role.
 
 #### The console sign-in (VSA-4a)
 
@@ -2218,7 +2223,7 @@ stateDiagram-v2
 - **No refresh token, three ways.** The console client is registered for `authorization_code` alone and `serve` refuses to start on a row that carries more; the gate answers a refresh request `unsupported_grant_type`; and the store's refresh slot (`RefusingRefreshStore`) cannot hold one. `offline_access` is not among the console's scopes, so `handle_authorize` refuses a request for it.
 - **`serve` checks the console client row at boot** (`sms_auth::console_client`): missing, a redirect URI list that differs from the configuration, a refresh grant, a key, an `AppClient` link or a missing PKCE requirement each stop the process with a message that names every difference and the command, `sms-gateway seed-console-client`, which reconciles the row (and says what was wrong). A fresh deployment runs `rotate-signing-key` and `seed-console-client` before `serve` (`run --rm`, never `exec`).
 - **Codes are in memory, so one replica.** An authorization code lives 60 seconds in the process that issued it (the chart pins `replicas: 1`); a code lost to a restart costs a person one more sign-in. Moving it to Postgres is a follow-up, not a precondition.
-- **What a password opens, today: nothing in the API.** The access token carries the person's `User.id` as `sub` and an `identity` claim, which the bearer door refuses (`HumanToken`) until VSA-4b adds the person's realm. Which roles a password session may carry is decided in VSA-4b; in this release a person's token is refused by the API whatever its roles. The console has no sign-in screen until VSA-5.
+- **What a password opens, since VSA-4b: everything the role admits, except `owner` and `admin`.** The access token carries the person's `User.id` as `sub` and an `identity` claim, which the bearer door accepts as that person with the role their row says (above). An `owner` or an `admin` is refused with `403 DEVICE_REQUIRED` and acts only from a paired console key. `bootstrap --owner-password-out` therefore yields a password that opens nothing at the API for the owner it creates; it signs the owner in to the provider, and the owner pairs a key by the command line (`pair-console-key`) to act. The console has no sign-in screen until VSA-5.
 
 ---
 
@@ -2298,16 +2303,18 @@ Service account scopes: `sms:send`, `sms:read`, `webhook:manage`, `optout:read`,
 
 ### 5.3 The principal
 
-There is no token to decode. For each request the signer directory (`backends/crates/sms-api/src/auth.rs`) turns the verified key into a `CratestackContext` that the policies and Layer 2 read:
+For each request the signer directory (`backends/crates/sms-api/src/auth.rs`) turns the verified credential into a `CratestackContext` that the policies and Layer 2 read. The credential is a verified key or, since VSA-3b/VSA-4b, a verified token whose standing is read from rows; **nothing is read from a token as a grant**:
 
-| Field   | User principal (a `ConsoleKey`) | App principal (a `ClientKey`)                        |
-| ------- | ------------------------------- | ---------------------------------------------------- |
-| `sub`   | `User.id`                       | `AppClient.clientId`                                 |
-| `kind`  | `user`                          | `app`                                                |
-| `role`  | the person's `Role.key`         | `app` (matches no `hasRole(...)` clause, on purpose) |
-| `appId` | empty                           | `AppClient.appId`                                    |
-| `perms` | `Role.permissions`, unpacked    | empty                                                |
-| `scope` | none                            | `AppClient.scopes`, as the packed string             |
+| Field   | User principal (a `ConsoleKey`, or a person's token) | App principal (a `ClientKey`, or a machine's token)  |
+| ------- | ---------------------------------------------------- | ---------------------------------------------------- |
+| `sub`   | `User.id`                                            | `AppClient.clientId`                                 |
+| `kind`  | `user`                                               | `app`                                                |
+| `role`  | the person's `Role.key`                              | `app` (matches no `hasRole(...)` clause, on purpose) |
+| `appId` | empty                                                | `AppClient.appId`                                    |
+| `perms` | `Role.permissions`, unpacked                         | empty                                                |
+| `scope` | none (a person's OIDC scope is never read)           | `AppClient.scopes`, as the packed string             |
+
+A person's token is the same user principal as their console key, with one difference: `DEVICE_ONLY_ROLES` (`owner`, `admin`) are refused behind a token (`403`, `DEVICE_REQUIRED`, §4.10) and act only from a paired key. Every other role acts through either.
 
 `kind` is what the schema's policies compare and `role` is what `hasRole(...)` compares; they are set together or a policy silently denies. `system` is never produced here: `system_context` (§5.2) is the only constructor.
 

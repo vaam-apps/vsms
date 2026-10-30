@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use cratestack::cose::{CoseAlg, CoseVerifierResolver, CoseVerifyKey};
 use cratestack::{CratestackContext, CratestackError, FilterExpr, VerifiedSigner};
 
-use crate::auth::{RESERVED_ROLE_KEYS, system_context};
+use crate::auth::{RESERVED_ROLE_KEYS, refuse_device_only_role, system_context};
 use crate::bearer::VerifiedBearer;
 use crate::cache::TtlCache;
 use crate::console_keys::names_pair_scope;
@@ -171,8 +171,9 @@ impl SignerDirectory {
 
     /// What a verified bearer token stands as: the other way into [`Standing`].
     ///
-    /// The token only **names** a client (`sub`); everything it may do is read
-    /// here, from rows, every time:
+    /// The token only **names** who it is for (a machine client's `sub`, or a
+    /// person's `User.id`); everything it may do is read here, from rows, every
+    /// time. A machine ([`VerifiedBearer::Machine`]):
     ///
     /// 1. the `OauthClient` with that `clientId` exists and is `active` (read on
     ///    every request, never cached, so deactivating a client ends its
@@ -187,31 +188,35 @@ impl SignerDirectory {
     ///
     /// Same [`Standing`] as a signed request from the same client, so
     /// [`crate::auth::GatewayAuth::context_for`] builds the same context and
-    /// every policy answers the same.
+    /// every policy answers the same. A person ([`VerifiedBearer::Person`]) is
+    /// [`Self::person_standing`].
     ///
     /// # Errors
     ///
     /// [`CratestackError::Unauthorized`] for an unknown or inactive client, one
-    /// with no `AppClient`, or a retired or inactive `AppClient`; any other
-    /// error is a database failure and surfaces as a 5xx.
+    /// with no `AppClient`, or a retired or inactive `AppClient`, and for a
+    /// person [`Self::person_standing`]'s; any other error is a database
+    /// failure and surfaces as a 5xx.
     pub async fn bearer_standing(
         &self,
         bearer: &VerifiedBearer,
     ) -> Result<Standing, CratestackError> {
-        let client = self
-            .db
-            .oauth_client()
-            .find_many()
-            .where_expr(
-                FilterExpr::from(oauth_client::clientId().eq(bearer.client_id.clone()))
-                    .and(oauth_client::active().is_true()),
-            )
-            .limit(1)
-            .run(&self.sys)
-            .await?
-            .into_iter()
-            .next()
-            .ok_or_else(unknown)?;
+        match bearer {
+            VerifiedBearer::Machine { client_id, scope } => {
+                self.machine_standing(client_id, scope.as_deref()).await
+            }
+            VerifiedBearer::Person { user_id, client_id } => {
+                self.person_standing(user_id, client_id).await
+            }
+        }
+    }
+
+    async fn machine_standing(
+        &self,
+        client_id: &str,
+        claimed: Option<&str>,
+    ) -> Result<Standing, CratestackError> {
+        let client = self.live_oauth_client(client_id).await?;
         let app_client_id = client.appClientId.ok_or_else(unknown)?;
         let app = self
             .apps
@@ -221,13 +226,82 @@ impl SignerDirectory {
                 async move { load_app(&db, &sys, &id).await }
             })
             .await?;
-        if app.client_id != bearer.client_id {
+        if app.client_id != client_id {
             return Err(unknown());
         }
         Ok(Standing::App(AppStanding {
-            scopes: effective_scopes(&app.scopes, &client.scopes, bearer.scope.as_deref()),
+            scopes: effective_scopes(&app.scopes, &client.scopes, claimed),
             ..app
         }))
+    }
+
+    /// What a person's access token stands as: the `User` it names, as a paired
+    /// console key's owner stands, **unless** their role acts only from a
+    /// device.
+    ///
+    /// 1. the token's audience is a real console: an `OauthClient` that exists,
+    ///    is `active`, is a public client (`tokenEndpointAuthMethod = none`,
+    ///    the only kind `human_login` registers) and is linked to **no**
+    ///    `AppClient`. Read on every request, never cached, like the machine
+    ///    path's. A machine client's id in that place is refused: the audience
+    ///    is a client the *sign-in* ran through, and a machine client has no
+    ///    sign-in;
+    /// 2. the `User` is `active` and has a role that exists and is not reserved
+    ///    ([`load_user`], read through the same [`STANDING_TTL`] cache a paired
+    ///    key's owner is, so a deactivation or a promotion takes effect within
+    ///    one TTL, the window a console key already has);
+    /// 3. the role is not one of [`crate::auth::DEVICE_ONLY_ROLES`]
+    ///    ([`refuse_device_only_role`]), checked **after** the cache read, on the
+    ///    value just read: the cache is shared with the signed door, where an
+    ///    `admin` is legitimate, so an `admin` standing a key has just cached
+    ///    must not be served to a token.
+    ///
+    /// # Errors
+    ///
+    /// [`CratestackError::Unauthorized`] for steps 1 and 2;
+    /// [`CratestackError::Forbidden`] ([`crate::auth::DEVICE_REQUIRED`]) for
+    /// step 3; any other error is a database failure and surfaces as a 5xx.
+    pub async fn person_standing(
+        &self,
+        user_id: &str,
+        client_id: &str,
+    ) -> Result<Standing, CratestackError> {
+        let console = self.live_oauth_client(client_id).await?;
+        if console.appClientId.is_some()
+            || console.tokenEndpointAuthMethod != schema::ClientAuthMethod::none
+        {
+            return Err(unknown());
+        }
+        let person = self
+            .users
+            .get_or_fetch(user_id.to_owned(), |id| {
+                let db = self.db.clone();
+                let sys = self.sys.clone();
+                async move { load_user(&db, &sys, &id).await }
+            })
+            .await?;
+        refuse_device_only_role(&person)?;
+        Ok(Standing::User(person))
+    }
+
+    /// The active `OauthClient` named `client_id`, read fresh.
+    async fn live_oauth_client(
+        &self,
+        client_id: &str,
+    ) -> Result<schema::OauthClient, CratestackError> {
+        self.db
+            .oauth_client()
+            .find_many()
+            .where_expr(
+                FilterExpr::from(oauth_client::clientId().eq(client_id.to_owned()))
+                    .and(oauth_client::active().is_true()),
+            )
+            .limit(1)
+            .run(&self.sys)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(unknown)
     }
 
     async fn live_client_key(

@@ -23,7 +23,8 @@ pub enum AuthMethod {
     HmacWebhooks,
     /// A person's password sign-in to the console, through the deployment's own
     /// `OpenID` Provider (`authorization_code` with PKCE). Restored by VSA-4a;
-    /// the API still refuses the token it mints until VSA-4b.
+    /// the API accepts the access token it mints (VSA-4b), never as an `owner` or
+    /// an `admin`.
     HumanLogin,
 }
 
@@ -297,8 +298,10 @@ mod tests {
     /// vpay's rule (R5): `human_login` signs a person in to the console and says
     /// nothing about who an API caller is. `resolve` refuses a list with no way
     /// in before it can be observed through a loaded document, so this builds the
-    /// sets directly. Until VSA-4b the API refuses a person's token, and after it
-    /// the rule still holds: a token is not the keypair or a machine's token.
+    /// sets directly. Since VSA-4b the API accepts a person's token, and the rule
+    /// still holds: a person's token is not a way in by itself. A list must still
+    /// permit the keypair or `machine_tokens`, and the person's token is one more
+    /// credential beside them, never what makes a deployment reachable.
     #[test]
     fn human_login_is_not_a_way_in_for_an_api_caller() {
         assert!(!permitting(&[AuthMethod::HumanLogin]).can_authenticate_a_caller());

@@ -354,11 +354,15 @@ impl PrincipalMapper for SignerPrincipal {
 
 /// The mode every op runs in, from the doors a deployment opened.
 ///
-/// | signed envelope | machine token | mode       | what the layer does                                          |
-/// | --------------- | ------------- | ---------- | ------------------------------------------------------------ |
-/// | on              | off           | `Required` | refuses anything unsigned with the coarse 401                |
-/// | on              | on            | `Optional` | opens a signed request; lets a plain one through to the door |
-/// | off             | on            | `Off`      | passes plain traffic; refuses a COSE body with the 415       |
+/// | signed envelope | a token served | mode       | what the layer does                                          |
+/// | --------------- | -------------- | ---------- | ------------------------------------------------------------ |
+/// | on              | off            | `Required` | refuses anything unsigned with the coarse 401                |
+/// | on              | on             | `Optional` | opens a signed request; lets a plain one through to the door |
+/// | off             | on             | `Off`      | passes plain traffic; refuses a COSE body with the 415       |
+///
+/// "A token served" is `machine_tokens` or `human_login` (a person's access
+/// token, VSA-4b): which realms the door accepts is the verifier's business, not
+/// the mode's.
 ///
 /// `Off` is what "keypair is off" has to mean: a request with a COSE body is
 /// never forwarded unverified, so a deployment that shut the signed door answers

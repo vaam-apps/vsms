@@ -11,6 +11,11 @@
 //! - **the standing is read from rows**: an inactive `OauthClient` (every
 //!   request), an inactive or retired `AppClient`, a client linked to another
 //!   `AppClient`, and a client with none are all the layer's own coarse 401;
+//! - **a person's token (VSA-4b)**: the same door admits the access token
+//!   `human_login` mints, as the `User` it names with the role their row says,
+//!   one bucket and one idempotency namespace with that person's console key,
+//!   and **never as an `owner` or an `admin`** (a 403, `DEVICE_REQUIRED`), the
+//!   two guards proven apart;
 //! - **what the doors do to the envelope**: signed beside `Authorization` is a
 //!   400, a token caller is never sealed and never earns a contract-lock 426,
 //!   `keypair` off refuses a signed body (415) and a key registration (422).
@@ -87,9 +92,22 @@ impl Table {
         let token = format!("tok-{}", suffix());
         self.0.lock().unwrap().insert(
             token.clone(),
-            Ok(VerifiedBearer {
+            Ok(VerifiedBearer::Machine {
                 client_id: client_id.to_owned(),
                 scope: scope.map(str::to_owned),
+            }),
+        );
+        token
+    }
+
+    /// A person's access token: `user_id` signed in through `console_id`.
+    fn person(&self, user_id: &str, console_id: &str) -> String {
+        let token = format!("tok-{}", suffix());
+        self.0.lock().unwrap().insert(
+            token.clone(),
+            Ok(VerifiedBearer::Person {
+                user_id: user_id.to_owned(),
+                client_id: console_id.to_owned(),
             }),
         );
         token
@@ -180,6 +198,78 @@ async fn link_oauth_client(
         .await
         .expect("seeding the oauth client")
         .id
+}
+
+/// The console's `OauthClient` the way `seed-console-client` writes it: public
+/// (`tokenEndpointAuthMethod = none`), linked to no `AppClient`, the code grant.
+async fn seed_console_with(
+    db: &Cratestack,
+    method: schema::ClientAuthMethod,
+    app_client_row: Option<String>,
+) -> (String, String) {
+    let client_id = format!("console_{}", suffix());
+    let row = db
+        .oauth_client()
+        .create(schema::CreateOauthClientInput {
+            clientId: client_id.clone(),
+            appClientId: app_client_row,
+            tokenEndpointAuthMethod: method,
+            // The table's CHECK: a key-authenticated client has a key set, a
+            // public one has none.
+            jwks: (method == schema::ClientAuthMethod::private_key_jwt)
+                .then(|| "{\"keys\":[{\"kty\":\"RSA\",\"n\":\"AQAB\",\"e\":\"AQAB\"}]}".to_owned()),
+            grantTypes: " authorization_code ".to_owned(),
+            scopes: " openid profile ".to_owned(),
+            redirectUris: " https://console.example/cb ".to_owned(),
+            requirePkce: true,
+        })
+        .run(&sys())
+        .await
+        .expect("seeding the console client")
+        .id;
+    (client_id, row)
+}
+
+async fn seed_console(db: &Cratestack) -> (String, String) {
+    seed_console_with(db, schema::ClientAuthMethod::none, None).await
+}
+
+/// A fresh active user in `role_key` with no key: a person who has only a
+/// password session.
+async fn seed_person(db: &Cratestack, role_key: &str) -> schema::User {
+    let tag = suffix();
+    db.user()
+        .create(schema::CreateUserInput {
+            subject: format!("pending-{tag}"),
+            email: format!("{tag}@fixture.invalid"),
+            displayName: "Bearer Door Person".to_owned(),
+            roleKey: role_key.to_owned(),
+            lastLoginAt: None,
+            deletedAt: None,
+        })
+        .run(&owner())
+        .await
+        .expect("seeding the person")
+}
+
+async fn set_role(db: &Cratestack, user_id: &str, role_key: &str) {
+    let current = db
+        .user()
+        .find_unique(user_id.to_owned())
+        .run(&sys())
+        .await
+        .unwrap()
+        .unwrap();
+    db.user()
+        .update(user_id.to_owned())
+        .set(schema::UpdateUserInput {
+            roleKey: Some(role_key.to_owned()),
+            ..Default::default()
+        })
+        .if_match(current.version)
+        .run(&owner())
+        .await
+        .expect("changing the person's role");
 }
 
 async fn set_oauth_active(db: &Cratestack, oauth_row: &str, active: bool) {
@@ -772,6 +862,9 @@ async fn every_verifier_refusal_is_the_layers_own_coarse_401() {
         BearerRefusal::Expired,
         BearerRefusal::NotYetValid,
         BearerRefusal::HumanToken,
+        BearerRefusal::MachineToken,
+        BearerRefusal::IdToken,
+        BearerRefusal::SenderConstrained,
     ] {
         assert_coarse_401(&rig, &rig.table.refused(refusal), &format!("{refusal:?}")).await;
     }
@@ -930,4 +1023,448 @@ async fn with_keypair_off_a_token_works_a_signature_is_a_415_and_a_key_registrat
         assert!(body.contains("auth_method_disabled"), "{procedure}: {body}");
         assert!(body.contains(mention), "{procedure}: {body}");
     }
+}
+
+// --- a person's token (VSA-4b) ----------------------------------------------
+
+const PREVIEW: &str = "/$procs/previewMessage";
+
+async fn preview(rig: &Rig, token: &str) -> (u16, String) {
+    let (status, body, _) = bearer_call(
+        rig,
+        reqwest::Method::POST,
+        PREVIEW,
+        token,
+        Some(&serde_json::json!({"args": {"body": "hello"}})),
+    )
+    .await;
+    (status, body)
+}
+
+async fn audit_log(rig: &Rig, token: &str) -> (u16, String) {
+    let (status, body, _) = bearer_call(
+        rig,
+        reqwest::Method::POST,
+        "/$procs/auditLog",
+        token,
+        Some(&serde_json::json!({"args": {}})),
+    )
+    .await;
+    (status, body)
+}
+
+fn device_required_body() -> String {
+    format!(
+        r#"{{"code":"FORBIDDEN","message":"{}","details":null}}"#,
+        sms_api::DEVICE_REQUIRED
+    )
+}
+
+/// An `operator` signed in with a password acts with exactly what the role
+/// admits: a procedure open to any caller (200), a generated read the role may
+/// make (200), and `auditLog`, which the role is not in (403). The same person
+/// through a paired console key gets the same three answers.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn a_persons_token_acts_with_their_role_as_their_console_key_does() {
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = rig().await;
+    let (console, _) = seed_console(&rig.db).await;
+    let key = TestKey::console();
+    let person = sealed_fixtures::seed_user_with_console_key(&rig.db, "operator", &key).await;
+    let token = rig.table.person(&person.id, &console);
+
+    let (status, body) = preview(&rig, &token).await;
+    assert_eq!(status, 200, "{body}");
+    let (status, body, content_type) =
+        bearer_call(&rig, reqwest::Method::GET, "/messages", &token, None).await;
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        content_type
+            .as_deref()
+            .unwrap_or_default()
+            .starts_with("application/json"),
+        "a person's token gets plain JSON, not {content_type:?}"
+    );
+    let (status, body) = audit_log(&rig, &token).await;
+    assert_eq!(status, 403, "operator is not an auditor: {body}");
+    assert!(
+        !body.contains("device") && !body.contains("paired console key"),
+        "an operator's 403 is the policy's, not the device cap's: {body}"
+    );
+
+    let api = client(&rig.base, &key);
+    let signed_preview = api
+        .request("POST", PREVIEW)
+        .json(&serde_json::json!({"args": {"body": "hello"}}))
+        .send()
+        .await;
+    let signed_messages = api.request("GET", "/messages").send().await;
+    let signed_audit = api
+        .request("POST", "/$procs/auditLog")
+        .json(&serde_json::json!({"args": {}}))
+        .send()
+        .await;
+    assert_eq!(
+        (
+            signed_preview.status,
+            signed_messages.status,
+            signed_audit.status
+        ),
+        (200, 200, 403),
+        "the console key answers the same: {}",
+        signed_audit.text()
+    );
+
+    // The roles that are not device-only keep their own answers: an auditor
+    // reads the audit log by token.
+    let auditor = seed_person(&rig.db, "auditor").await;
+    let token = rig.table.person(&auditor.id, &console);
+    let (status, body) = audit_log(&rig, &token).await;
+    assert_eq!(
+        status, 200,
+        "an auditor's token reads the audit log: {body}"
+    );
+}
+
+/// One person, one bucket and one idempotency namespace, across a token and the
+/// person's own console key: three calls in any mix spend a burst of three.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn a_persons_token_and_console_key_spend_one_bucket_and_one_idempotency_namespace() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let table = Arc::new(Table::default());
+    let doors = ApiDoors::new(true, Some(table.clone() as Arc<dyn BearerVerifier>)).unwrap();
+    let router = || {
+        sms_api::router(
+            db.clone(),
+            sealed_fixtures::server_keys().into_signer(),
+            sms_api::HashPepper::new(PEPPER).unwrap(),
+            sms_api::DEFAULT_IDEMPOTENCY_TTL,
+            cratestack::ratelimit::RateLimitConfig::new(3, 0.001),
+            sms_api::default_source_rate_limit_config(),
+            sms_api::ApiAuth {
+                hmac_webhooks: HmacWebhooks::Permitted,
+                doors: doors.clone(),
+            },
+        )
+        .expect("the envelope layer accepts its configuration")
+    };
+    let (console, _) = seed_console(&db).await;
+    let preview_body = serde_json::json!({"args": {"body": "hello"}});
+
+    for bearer_first in [true, false] {
+        let rig = Rig {
+            db: db.clone(),
+            table: table.clone(),
+            base: serve(router()).await,
+            sender: String::new(),
+        };
+        let key = TestKey::console();
+        let person = sealed_fixtures::seed_user_with_console_key(&db, "operator", &key).await;
+        let api = client(&rig.base, &key);
+        let token = table.person(&person.id, &console);
+        let mut statuses = Vec::new();
+        for turn in 0..4 {
+            let bearer = (turn % 2 == 0) == bearer_first;
+            statuses.push(if bearer {
+                preview(&rig, &token).await.0
+            } else {
+                api.request("POST", PREVIEW)
+                    .json(&preview_body)
+                    .send()
+                    .await
+                    .status
+            });
+        }
+        assert_eq!(
+            statuses,
+            [200, 200, 200, 429],
+            "bearer first: {bearer_first}: a person's two doors are one bucket"
+        );
+    }
+
+    // One Idempotency-Key, two doors. `sendMessage` serves machines only, so the
+    // probe is a key *reused for a different body*: the layer stores the first
+    // request under (principal, key), and a second request under the same
+    // principal with another body is refused as a reuse of the key. Were the
+    // two doors different principals the second would be a fresh 200.
+    let rig = Rig {
+        db: db.clone(),
+        table: table.clone(),
+        base: serve(api_router_doors(
+            &db,
+            PEPPER,
+            HmacWebhooks::Permitted,
+            doors.clone(),
+        ))
+        .await,
+        sender: String::new(),
+    };
+    let key = TestKey::console();
+    let person = sealed_fixtures::seed_user_with_console_key(&db, "operator", &key).await;
+    let token = table.person(&person.id, &console);
+    let idempotency_key = format!("person-idem-key-{}", suffix());
+    let first = client(&rig.base, &key)
+        .request("POST", PREVIEW)
+        .idempotency_key(&idempotency_key)
+        .json(&serde_json::json!({"args": {"body": "first body"}}))
+        .send()
+        .await;
+    assert_eq!(first.status, 200, "{}", first.text());
+    let other_body = |body: &str, idempotency_key: &str| {
+        let request = http()
+            .post(format!("{}{PREVIEW}", rig.base))
+            .bearer_auth(&token)
+            .header("accept", "application/json")
+            .header("content-type", "application/json")
+            .header("idempotency-key", idempotency_key)
+            .body(serde_json::to_vec(&serde_json::json!({"args": {"body": body}})).unwrap());
+        async move {
+            let response = request.send().await.expect("sending");
+            let status = response.status().as_u16();
+            (status, response.text().await.unwrap_or_default())
+        }
+    };
+    // The layer's exact answer for a key reused with another body: a 422 with the
+    // framework's `VALIDATION_ERROR` envelope and `idempotency_key_conflict`. Any
+    // other refusal (a 401 from a broken standing, a 429, a 5xx) is not it.
+    let (status, text) = other_body("a different body", &idempotency_key).await;
+    assert_eq!(
+        status, 422,
+        "the person's token shares the key's namespace: {text}"
+    );
+    assert!(text.contains(r#""code":"VALIDATION_ERROR""#), "{text}");
+    assert!(text.contains("idempotency_key_conflict"), "{text}");
+    let (fresh, text) = other_body("a different body", &format!("fresh-{}", suffix())).await;
+    assert_eq!(
+        fresh, 200,
+        "control: another key is a fresh request: {text}"
+    );
+}
+
+/// An `owner` or an `admin` behind a person's token is a 403 with the device
+/// text and nothing else, on every kind of route; the same account through a
+/// paired console key acts with the role.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn an_admin_or_owner_behind_a_persons_token_is_refused_and_behind_a_console_key_is_not() {
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = rig().await;
+    let (console, _) = seed_console(&rig.db).await;
+
+    for role in ["admin", "owner"] {
+        let key = TestKey::console();
+        let person = sealed_fixtures::seed_user_with_console_key(&rig.db, role, &key).await;
+        let token = rig.table.person(&person.id, &console);
+
+        // The same account, through a key a device holds, acts with the role. It
+        // goes **first**, on the router the token will use: the key warms the
+        // shared standing cache with the admin, and a token that read that
+        // cached value without the cap would be let in as one.
+        let api = client(&rig.base, &key);
+        let users = api.request("GET", "/users").send().await;
+        assert_eq!(users.status, 200, "{role} by key: {}", users.text());
+
+        for (method, path) in [
+            (reqwest::Method::GET, "/users".to_owned()),
+            (reqwest::Method::GET, "/messages".to_owned()),
+            (reqwest::Method::POST, PREVIEW.to_owned()),
+            (reqwest::Method::POST, "/$procs/auditLog".to_owned()),
+            // The promotion an admin could make to themselves: the door refuses
+            // it before the owner-grant guard or the policy is asked.
+            (reqwest::Method::PATCH, format!("/users/{}", person.id)),
+        ] {
+            let body = serde_json::json!({"args": {}, "roleKey": "owner"});
+            let (status, text, _) =
+                bearer_call(&rig, method.clone(), &path, &token, Some(&body)).await;
+            assert_eq!(status, 403, "{role} {method} {path}: {text}");
+            assert_eq!(text, device_required_body(), "{role} {method} {path}");
+        }
+
+        // And the key is unaffected by the refusals.
+        let users = api.request("GET", "/users").send().await;
+        assert_eq!(users.status, 200, "{role} by key, after: {}", users.text());
+    }
+}
+
+/// The two guards apart. The directory's own (`person_standing`) refuses an
+/// admin with no door and no provider in the way; and the provider's
+/// (`GatewayAuth::authenticate`) is proven in `sms_api::auth`'s unit test by
+/// handing it a standing the door never saw.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn the_directory_refuses_a_device_only_role_on_its_own() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let (console, _) = seed_console(&db).await;
+    let directory = sms_api::signers::SignerDirectory::new(db.clone());
+    for role in ["admin", "owner"] {
+        let person = seed_person(&db, role).await;
+        let refused = directory
+            .bearer_standing(&VerifiedBearer::Person {
+                user_id: person.id.clone(),
+                client_id: console.clone(),
+            })
+            .await
+            .expect_err("a device-only role has no standing behind a token");
+        assert!(
+            matches!(&refused, cratestack::CratestackError::Forbidden(text) if text == sms_api::DEVICE_REQUIRED),
+            "{role}: {refused:?}"
+        );
+    }
+    let operator = seed_person(&db, "operator").await;
+    let standing = directory
+        .bearer_standing(&VerifiedBearer::Person {
+            user_id: operator.id.clone(),
+            client_id: console.clone(),
+        })
+        .await
+        .expect("an operator stands");
+    assert_eq!(standing.principal(), format!("user:{}", operator.id));
+}
+
+/// The audience is a real console, read from the row on every request: an
+/// inactive client, one linked to an `AppClient`, one that authenticates with a
+/// key (`private_key_jwt`), none at all, and a machine client's id where the
+/// console's belongs, are each the coarse 401. A restored console works again
+/// at once.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn a_persons_token_needs_a_live_public_unlinked_console() {
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = rig().await;
+    let person = seed_person(&rig.db, "operator").await;
+
+    let (console, console_row) = seed_console(&rig.db).await;
+    let token = rig.table.person(&person.id, &console);
+    assert_eq!(preview(&rig, &token).await.0, 200, "a real console");
+    set_oauth_active(&rig.db, &console_row, false).await;
+    let (status, body) = preview(&rig, &token).await;
+    assert_eq!((status, body.as_str()), (401, COARSE_REFUSAL), "inactive");
+    set_oauth_active(&rig.db, &console_row, true).await;
+    assert_eq!(preview(&rig, &token).await.0, 200, "active again");
+
+    let seeded = seed(&rig.db, " sms:send ").await;
+    let (linked, _) = seed_console_with(
+        &rig.db,
+        schema::ClientAuthMethod::none,
+        Some(seeded.app_client_row.clone()),
+    )
+    .await;
+    let (keyed, _) =
+        seed_console_with(&rig.db, schema::ClientAuthMethod::private_key_jwt, None).await;
+    for (why, client_id) in [
+        ("linked to an AppClient", linked),
+        ("not a public client", keyed),
+        ("a machine client's id", seeded.client_id.clone()),
+        ("no such client", format!("console_nobody_{}", suffix())),
+    ] {
+        let (status, body) = preview(&rig, &rig.table.person(&person.id, &client_id)).await;
+        assert_eq!((status, body.as_str()), (401, COARSE_REFUSAL), "{why}");
+    }
+}
+
+/// The person is read from rows: an unknown or inactive user is the coarse 401.
+/// A deactivation takes effect within the standing cache's minute (a warm router
+/// still serves the person, a fresh one refuses), the window a console key has
+/// too; a promotion to a device-only role does the same, as a 403.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn a_persons_standing_is_read_from_rows_within_one_cache_window() {
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = rig().await;
+    let (console, _) = seed_console(&rig.db).await;
+
+    let (status, body) = preview(&rig, &rig.table.person("usr_nobody", &console)).await;
+    assert_eq!((status, body.as_str()), (401, COARSE_REFUSAL), "unknown");
+    let gone = seed_person(&rig.db, "operator").await;
+    sealed_fixtures::deactivate_user(&rig.db, &gone.id).await;
+    let (status, body) = preview(&rig, &rig.table.person(&gone.id, &console)).await;
+    assert_eq!((status, body.as_str()), (401, COARSE_REFUSAL), "inactive");
+
+    // Deactivated after the router served them: the cached standing outlives the
+    // change by at most the TTL, and a router that has not seen them refuses.
+    let doors = || ApiDoors::new(true, Some(rig.table.clone() as Arc<dyn BearerVerifier>)).unwrap();
+    let warm = Rig {
+        db: rig.db.clone(),
+        table: rig.table.clone(),
+        base: serve(api_router_doors(
+            &rig.db,
+            PEPPER,
+            HmacWebhooks::Permitted,
+            doors(),
+        ))
+        .await,
+        sender: String::new(),
+    };
+    let leaving = seed_person(&rig.db, "operator").await;
+    let token = rig.table.person(&leaving.id, &console);
+    assert_eq!(preview(&warm, &token).await.0, 200);
+    sealed_fixtures::deactivate_user(&rig.db, &leaving.id).await;
+    assert_eq!(
+        preview(&warm, &token).await.0,
+        200,
+        "inside the cache window the warm router still serves them"
+    );
+    let fresh = Rig {
+        db: rig.db.clone(),
+        table: rig.table.clone(),
+        base: serve(api_router_doors(
+            &rig.db,
+            PEPPER,
+            HmacWebhooks::Permitted,
+            doors(),
+        ))
+        .await,
+        sender: String::new(),
+    };
+    let (status, body) = preview(&fresh, &token).await;
+    assert_eq!(
+        (status, body.as_str()),
+        (401, COARSE_REFUSAL),
+        "fresh router"
+    );
+
+    // Promoted to admin: the same shape, a 403 and not a 401.
+    let rising = seed_person(&rig.db, "operator").await;
+    let token = rig.table.person(&rising.id, &console);
+    assert_eq!(preview(&warm, &token).await.0, 200);
+    set_role(&rig.db, &rising.id, "admin").await;
+    let fresh = Rig {
+        db: rig.db.clone(),
+        table: rig.table.clone(),
+        base: serve(api_router_doors(
+            &rig.db,
+            PEPPER,
+            HmacWebhooks::Permitted,
+            doors(),
+        ))
+        .await,
+        sender: String::new(),
+    };
+    let (status, body) = preview(&fresh, &token).await;
+    assert_eq!(status, 403, "{body}");
+    assert_eq!(body, device_required_body());
+}
+
+/// A person's token with `keypair` off (tokens alone): the same standing, and a
+/// signed body is still the layer's 415.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn a_persons_token_works_with_keypair_off_and_an_admin_is_still_refused() {
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = rig_with(false, true).await;
+    let (console, _) = seed_console(&rig.db).await;
+    let operator = seed_person(&rig.db, "operator").await;
+    assert_eq!(
+        preview(&rig, &rig.table.person(&operator.id, &console))
+            .await
+            .0,
+        200
+    );
+    let admin = seed_person(&rig.db, "admin").await;
+    let (status, body) = preview(&rig, &rig.table.person(&admin.id, &console)).await;
+    assert_eq!((status, body), (403, device_required_body()));
 }

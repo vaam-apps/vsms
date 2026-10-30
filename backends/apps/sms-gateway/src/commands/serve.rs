@@ -16,7 +16,7 @@ use sms_provider::SmsProvider;
 use tracing::{info, warn};
 
 use crate::commands::server_keys;
-use crate::op_bearer::{DbKeys, OpBearerVerifier};
+use crate::op_bearer::{DbKeys, OpBearerVerifier, Realms};
 use crate::{dlr, health, login, op, token_rate_limit};
 use sms_api::system_context;
 
@@ -427,7 +427,7 @@ async fn spawn_metrics_server(
 
 /// The provider's routes, when `machine_tokens` or `human_login` is served, and
 /// the doors the API opens: the signed envelope when `keypair` is permitted, a
-/// bearer token exactly when `machine_tokens` is served.
+/// bearer token exactly when `machine_tokens` or `human_login` is served.
 async fn build_op_and_doors(
     db: &Cratestack,
     config: &sms_config::Config,
@@ -436,18 +436,46 @@ async fn build_op_and_doors(
         Some((router, verifier)) => (Some(router), verifier),
         None => (None, None),
     };
-    let doors = sms_api::ApiDoors::new(config.auth_methods.permits(AuthMethod::Keypair), bearer)
-        .context("auth.methods opens no way into the API")?;
+    let doors = doors(
+        config.auth_methods.permits(AuthMethod::Keypair),
+        ServedGrants::from_methods(&config.auth_methods),
+        bearer,
+    )
+    .context("auth.methods opens no way into the API")?;
     Ok((op_router, doors))
+}
+
+/// The doors the API opens, with the one rule `ApiDoors::new` cannot know: a
+/// person's token is **not a way in on its own**. `ApiDoors::new` sees only a
+/// verifier, and a verifier holding the person realm alone would build a gateway
+/// reachable by people and nobody else (`Off`, no signed door). The
+/// configuration refuses that first (`ConfigError::NoWayIn`,
+/// `can_authenticate_a_caller`); this backs it up where the doors are built, so
+/// a future caller of `serve` that builds the sets some other way still cannot.
+///
+/// # Errors
+///
+/// [`sms_api::NoDoor`] when neither the keypair nor `machine_tokens` is open.
+fn doors(
+    keypair: bool,
+    served: ServedGrants,
+    bearer: Option<Arc<dyn BearerVerifier>>,
+) -> Result<sms_api::ApiDoors, sms_api::NoDoor> {
+    if !keypair && !served.machine_tokens {
+        return Err(sms_api::NoDoor);
+    }
+    sms_api::ApiDoors::new(keypair, bearer)
 }
 
 /// Loads the OP's signing keys, assembles its state, checks the console client
 /// and starts the background key refresh, **when either method that rides the
 /// provider is served**; `Ok(None)` mounts nothing.
 ///
-/// The verifier is `Some` only for `machine_tokens`: a person's token is not
-/// accepted by the API yet (VSA-4b), so `human_login` alone mounts `/token` and
-/// `/login` and opens no bearer door.
+/// The verifier is `Some` when either realm is served ([`realms`]): a machine's
+/// token for `machine_tokens`, a person's access token (addressed to the
+/// console, and never an `owner`'s or an `admin`'s: VSA-4b) for `human_login`.
+/// `human_login` alone is not a way in (`ConfigError::NoWayIn`), so it only ever
+/// reaches here beside the keypair or `machine_tokens`.
 ///
 /// Fails at process start if no active signing key exists, or the console client
 /// row is missing, differs from `human_login.console_client` or carries the
@@ -497,7 +525,14 @@ async fn build_op_router(
     );
     // Keeps a rotate-signing-key run against this already-running process
     // effective without a restart.
-    let verifier: Option<Arc<dyn BearerVerifier>> = served.machine_tokens.then(|| {
+    let verifier: Option<Arc<dyn BearerVerifier>> = realms(
+        served,
+        config
+            .human_login
+            .as_ref()
+            .filter(|_| config.auth_methods.human_login_served()),
+    )
+    .map(|realms| {
         Arc::new(OpBearerVerifier::new(
             state.keyring(),
             Arc::new(DbKeys {
@@ -506,6 +541,7 @@ async fn build_op_router(
                 issuer: op_config.issuer.clone(),
             }),
             &op_config.issuer,
+            realms,
         )) as Arc<dyn BearerVerifier>
     });
     op::spawn_key_refresh(
@@ -545,10 +581,26 @@ async fn build_op_router(
     if served.human_login {
         info!(
             "human_login is served: POST /login signs a person in and /token redeems the code; \
-             the API does not accept the person's token yet (VSA-4b)"
+             the API accepts the person's token; owner and admin act only from a paired console key"
         );
     }
     Ok(Some((router, verifier)))
+}
+
+/// The token realms the API accepts, from what is served: `None` when neither
+/// is, so no bearer door opens at all.
+///
+/// No YAML key of its own: the person realm is served exactly when
+/// `human_login` is, and it is addressed to the one console client that block
+/// registers. `human` is the block, passed only when `human_login` is served.
+fn realms(served: ServedGrants, human: Option<&sms_config::HumanLogin>) -> Option<Realms> {
+    let person = human
+        .filter(|_| served.human_login)
+        .map(|block| Arc::from(block.console_client.client_id.as_str()));
+    (served.machine_tokens || person.is_some()).then_some(Realms {
+        machine: served.machine_tokens,
+        person,
+    })
 }
 
 /// The boot line for `auth.methods` (VSA-1): which methods are permitted, which
@@ -602,6 +654,114 @@ async fn shutdown_signal() {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    fn human(client_id: &str) -> sms_config::HumanLogin {
+        let bucket = sms_config::Bucket {
+            burst: 5,
+            refill_per_second: 0.5,
+        };
+        sms_config::HumanLogin {
+            console_client: sms_config::ConsoleClient {
+                client_id: client_id.to_owned(),
+                redirect_uris: vec!["https://console.example/cb".to_owned()],
+            },
+            login_rate_limit: sms_config::LoginRateLimit {
+                per_email: bucket,
+                aggregate: bucket,
+            },
+        }
+    }
+
+    /// The table: for each combination of the grants served, the realms the
+    /// verifier is built with, and whether a bearer door opens at all (which is
+    /// what moves the envelope mode: `Required` without one, `Optional` with a
+    /// keypair beside it, `Off` without a keypair). No YAML key decides any of
+    /// it.
+    #[test]
+    fn the_realms_follow_the_grants_served_and_nothing_else() {
+        let block = human("console_client_1");
+        let console: Option<Arc<str>> = Some(Arc::from("console_client_1"));
+        let served = |machine_tokens, human_login| ServedGrants {
+            machine_tokens,
+            human_login,
+        };
+        // (machine_tokens, human_login) -> realms
+        assert_eq!(realms(served(false, false), None), None);
+        assert_eq!(
+            realms(served(true, false), None),
+            Some(Realms {
+                machine: true,
+                person: None
+            })
+        );
+        assert_eq!(
+            realms(served(false, true), Some(&block)),
+            Some(Realms {
+                machine: false,
+                person: console.clone()
+            })
+        );
+        assert_eq!(
+            realms(served(true, true), Some(&block)),
+            Some(Realms {
+                machine: true,
+                person: console
+            })
+        );
+        // The block alone does not serve the realm; `served` decides.
+        assert_eq!(realms(served(false, false), Some(&block)), None);
+        assert_eq!(
+            realms(served(true, false), Some(&block)),
+            Some(Realms {
+                machine: true,
+                person: None
+            })
+        );
+    }
+
+    /// The served sets through to the doors: a keypair beside a person realm
+    /// opens the bearer door (so the envelope is `Optional`, not `Required` as it
+    /// was before VSA-4b), and a person realm with neither the keypair nor
+    /// `machine_tokens` is refused here even though the config refuses it first
+    /// (`ConfigError::NoWayIn`): the doors layer backs it up.
+    #[test]
+    fn the_doors_follow_the_realms() {
+        let block = human("console_client_1");
+        let door = |keypair: bool, machine_tokens: bool, human_login: bool| {
+            let served = ServedGrants {
+                machine_tokens,
+                human_login,
+            };
+            let bearer = realms(served, human_login.then_some(&block)).map(|_| {
+                struct Never;
+                #[async_trait::async_trait]
+                impl BearerVerifier for Never {
+                    async fn verify(
+                        &self,
+                        _token: &str,
+                    ) -> Result<sms_api::VerifiedBearer, sms_api::BearerRefusal>
+                    {
+                        Err(sms_api::BearerRefusal::Malformed)
+                    }
+                }
+                Arc::new(Never) as Arc<dyn BearerVerifier>
+            });
+            doors(keypair, served, bearer).map(|doors| (doors.keypair(), doors.bearer()))
+        };
+        // K, K+M, K+H, K+M+H, M, M+H
+        assert_eq!(door(true, false, false), Ok((true, false)));
+        assert_eq!(door(true, true, false), Ok((true, true)));
+        assert_eq!(door(true, false, true), Ok((true, true)));
+        assert_eq!(door(true, true, true), Ok((true, true)));
+        assert_eq!(door(false, true, false), Ok((false, true)));
+        assert_eq!(door(false, true, true), Ok((false, true)));
+        // H alone: a person's token is not a way in by itself.
+        assert_eq!(door(false, false, true), Err(sms_api::NoDoor));
+        // Nothing served, nothing permitted.
+        assert_eq!(door(false, false, false), Err(sms_api::NoDoor));
+    }
+
     /// Not a test of a function in this file: the old defaults of the flags
     /// `serve` used to declare live in `sms_api`, and the base file must still
     /// state them. The same two numbers existed twice before VSC-1 (a clap

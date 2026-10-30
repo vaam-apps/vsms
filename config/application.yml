@@ -85,9 +85,10 @@ deployment:
 # console client row (`sms-gateway seed-console-client`, which registers exactly
 # this and which `serve` checks at boot) and a signing key. There is no secret in
 # this block: a person's password is typed at sign-in and kept as an Argon2id hash
-# (`provision-user --password --password-out <file>`). The API does not accept the
-# token this issues yet (VSA-4b), and the console has no sign-in screen until
-# VSA-5. Every key is required. docs/architecture.md, sections 4.9 and 4.10.
+# (`provision-user --password --password-out <file>`). The API accepts the
+# access token this issues as that person (VSA-4b), except as an owner or an
+# admin, which act only from a paired console key; the console has no sign-in
+# screen until VSA-5. Every key is required. docs/architecture.md, sections 4.9 and 4.10.
 #
 # human_login:
 #   console_client:

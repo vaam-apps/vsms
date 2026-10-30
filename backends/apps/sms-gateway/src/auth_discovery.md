@@ -13,8 +13,9 @@ vaam's `[keypair]` answers one. A console or an SDK reads
 this instead of a second switch that could disagree with the server's. Listing
 `machine_tokens` also means the API accepts the token it mints (VSA-3b). Listing
 `human_login` (VSA-4a) means `POST /login` and the `authorization_code` grant are
-mounted, **not** that the API accepts the person's token (VSA-4b); the shape of the
-document did not change.
+mounted, and (VSA-4b) that the API accepts the person's access token, as that
+person and never as an `owner` or an `admin`; the shape of the document did not
+change, and it does not say which roles a token may carry.
 
 - **Unauthenticated and outside the envelope**, like `/healthz` and `/readyz`:
   `serve` merges it beside them, after `sms_api::router` has applied its layers

@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use authkestra_engine::TokenManager;
-use authkestra_engine::token::Claims;
 use authkestra_engine::token::jwk::Jwk;
+use authkestra_engine::token::{Audience, Claims};
 use cratestack::CratestackContext;
 use jsonwebtoken::errors::ErrorKind;
 use jsonwebtoken::{Algorithm, Validation, decode, decode_header};
@@ -58,6 +58,21 @@ impl KeyReload for DbKeys {
     }
 }
 
+/// Which realms this process's verifier accepts a token for.
+///
+/// Realms live **inside** the one verifier and not in `ApiDoors`: the doors say
+/// whether a bearer is accepted at all (and so the envelope mode), the realms
+/// say whose. `machine` is `machine_tokens` served; `person` is the console's
+/// `client_id` exactly when `human_login` is served, the one audience a
+/// person's access token carries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Realms {
+    /// A `client_credentials` token is accepted.
+    pub(crate) machine: bool,
+    /// A person's access token is accepted, addressed to this console client.
+    pub(crate) person: Option<Arc<str>>,
+}
+
 /// Verifies the access tokens this process's own OP mints.
 ///
 /// The keys are the OP's: the keyring `/jwks.json` publishes from, read in
@@ -73,18 +88,26 @@ pub(crate) struct OpBearerVerifier {
     last_forced: tokio::sync::Mutex<Option<Instant>>,
     min_reload: Duration,
     validation: Validation,
+    realms: Realms,
 }
 
 impl OpBearerVerifier {
-    /// A verifier for tokens issued by `issuer`, using `keys`.
-    pub(crate) fn new(keys: Arc<OpKeyring>, reload: Arc<dyn KeyReload>, issuer: &str) -> Self {
-        Self::with_reload_interval(keys, reload, issuer, MIN_FORCED_RELOAD)
+    /// A verifier for tokens issued by `issuer`, using `keys`, accepting the
+    /// tokens of `realms`.
+    pub(crate) fn new(
+        keys: Arc<OpKeyring>,
+        reload: Arc<dyn KeyReload>,
+        issuer: &str,
+        realms: Realms,
+    ) -> Self {
+        Self::with_reload_interval(keys, reload, issuer, realms, MIN_FORCED_RELOAD)
     }
 
     pub(crate) fn with_reload_interval(
         keys: Arc<OpKeyring>,
         reload: Arc<dyn KeyReload>,
         issuer: &str,
+        realms: Realms,
         min_reload: Duration,
     ) -> Self {
         let mut validation = Validation::new(Algorithm::RS256);
@@ -109,6 +132,7 @@ impl OpBearerVerifier {
             last_forced: tokio::sync::Mutex::new(None),
             min_reload,
             validation,
+            realms,
         }
     }
 
@@ -178,18 +202,73 @@ impl BearerVerifier for OpBearerVerifier {
             .map_err(|error| refusal_of(&error))?
             .claims;
 
-        // A person's token is not a machine's: only `client_credentials` tokens
-        // have a door here, and those carry no identity.
-        if claims.identity.is_some() {
-            return Err(BearerRefusal::HumanToken);
-        }
         // A sender-constrained token (RFC 7800 `cnf`: a DPoP or mTLS binding) is
         // only good with the proof of the key it names. This door checks no
         // proof, so accepting it as a plain bearer would strip the constraint
         // from a token whose holder was promised there was one. Refused whatever
-        // the confirmation says.
+        // the confirmation says, and before the realm is looked at: it is true of
+        // both.
         if claims.extra.contains_key("cnf") {
             return Err(BearerRefusal::SenderConstrained);
+        }
+        // The realm is the token's own `identity`, never a guess from its
+        // `sub`: a person's token carries one and a `client_credentials` token
+        // never does, and each realm is served or it is not.
+        match claims.identity.as_ref() {
+            Some(identity) => self.person(&claims, identity),
+            None => self.machine(claims),
+        }
+    }
+}
+
+impl OpBearerVerifier {
+    /// A person's access token, if a person realm is served.
+    fn person(
+        &self,
+        claims: &Claims,
+        identity: &authkestra_engine::Identity,
+    ) -> Result<VerifiedBearer, BearerRefusal> {
+        let Some(console) = self.realms.person.as_deref() else {
+            return Err(BearerRefusal::HumanToken);
+        };
+        // The subject is the account, and the identity names the same account:
+        // the OP stamps `sub` from `identity.external_id`, so a token where they
+        // differ was not minted by it.
+        if claims.sub.is_empty() || identity.external_id != claims.sub {
+            return Err(BearerRefusal::Malformed);
+        }
+        // Addressed to the console and to nothing else. Exactly one audience:
+        // a list that merely *contains* the console also names another resource
+        // that would accept it, and a token for two is not a token for this API.
+        let single = match claims.aud.as_ref() {
+            Some(Audience::Single(aud)) => Some(aud.as_str()),
+            Some(Audience::Multiple(auds)) if auds.len() == 1 => auds.first().map(String::as_str),
+            _ => None,
+        };
+        if single != Some(console) {
+            return Err(BearerRefusal::Audience);
+        }
+        // An ID token is stamped with the same issuer, subject, audience,
+        // identity, key and lifetime as the access token, and differs only by
+        // carrying no scope (and a nonce when the sign-in sent one). The console
+        // hands that token to a browser and logs it; it must not open the API.
+        let has_scope = claims
+            .scope
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty());
+        if !has_scope || claims.extra.contains_key("nonce") {
+            return Err(BearerRefusal::IdToken);
+        }
+        Ok(VerifiedBearer::Person {
+            user_id: claims.sub.clone(),
+            client_id: console.to_owned(),
+        })
+    }
+
+    /// A `client_credentials` token, if a machine realm is served.
+    fn machine(&self, claims: Claims) -> Result<VerifiedBearer, BearerRefusal> {
+        if !self.realms.machine {
+            return Err(BearerRefusal::MachineToken);
         }
         // Addressed to its own client, and to nothing else that excludes it.
         if claims.sub.is_empty()
@@ -200,7 +279,7 @@ impl BearerVerifier for OpBearerVerifier {
         {
             return Err(BearerRefusal::Audience);
         }
-        Ok(VerifiedBearer {
+        Ok(VerifiedBearer::Machine {
             client_id: claims.sub,
             scope: claims.scope,
         })
@@ -222,6 +301,32 @@ mod tests {
 
     const ISSUER: &str = "https://sms.example.com";
     const CLIENT: &str = "appc_demo_client";
+    const CONSOLE: &str = "console_client_1";
+    const PERSON: &str = "usr_alice_1";
+
+    /// The machine realm alone: what `machine_tokens` without `human_login` serves.
+    fn machines() -> Realms {
+        Realms {
+            machine: true,
+            person: None,
+        }
+    }
+
+    /// The person realm alone: `human_login` served, `machine_tokens` not.
+    fn people() -> Realms {
+        Realms {
+            machine: false,
+            person: Some(Arc::from(CONSOLE)),
+        }
+    }
+
+    /// Both realms.
+    fn both() -> Realms {
+        Realms {
+            machine: true,
+            person: Some(Arc::from(CONSOLE)),
+        }
+    }
 
     /// One RSA key a test signs with, and the `TokenManager` the OP would hold
     /// for it. Generated here so no private key is committed.
@@ -336,7 +441,23 @@ mod tests {
         reload: Arc<Counting>,
         min_reload: Duration,
     ) -> OpBearerVerifier {
-        OpBearerVerifier::with_reload_interval(keyring(published), reload, ISSUER, min_reload)
+        OpBearerVerifier::with_reload_interval(
+            keyring(published),
+            reload,
+            ISSUER,
+            machines(),
+            min_reload,
+        )
+    }
+
+    fn realm(published: &[&Key], realms: Realms) -> OpBearerVerifier {
+        OpBearerVerifier::with_reload_interval(
+            keyring(published),
+            quiet(),
+            ISSUER,
+            realms,
+            MIN_FORCED_RELOAD,
+        )
     }
 
     fn quiet() -> Arc<Counting> {
@@ -364,14 +485,20 @@ mod tests {
         let verified = plain(&[a]).verify(&token).await.expect("verifies");
         assert_eq!(
             verified,
-            VerifiedBearer {
+            VerifiedBearer::Machine {
                 client_id: CLIENT.to_owned(),
                 scope: Some("sms:send sms:read".to_owned()),
             }
         );
         // No scope claim: the client's own scopes apply, decided downstream.
         let token = mint(a, Some(&a.kid), &claims(&json!({"scope": null})));
-        assert_eq!(plain(&[a]).verify(&token).await.unwrap().scope, None);
+        assert_eq!(
+            plain(&[a]).verify(&token).await.unwrap(),
+            VerifiedBearer::Machine {
+                client_id: CLIENT.to_owned(),
+                scope: None,
+            }
+        );
     }
 
     /// The token as the OP's own `TokenManager` issues it, not as these tests
@@ -390,8 +517,13 @@ mod tests {
             )
             .expect("issuing");
         let verified = plain(&[a]).verify(&token).await.expect("verifies");
-        assert_eq!(verified.client_id, CLIENT);
-        assert_eq!(verified.scope.as_deref(), Some("sms:send"));
+        assert_eq!(
+            verified,
+            VerifiedBearer::Machine {
+                client_id: CLIENT.to_owned(),
+                scope: Some("sms:send".to_owned()),
+            }
+        );
     }
 
     #[tokio::test]
@@ -623,9 +755,17 @@ mod tests {
         assert!(v.verify(&token).await.is_ok());
     }
 
+    /// Where no person realm is served (`machine_tokens` alone), a person's
+    /// token is refused as a person's, however well formed.
     #[tokio::test]
     async fn a_persons_token_is_not_a_machines() {
         let (a, _) = keys();
+        let token = person_access(a);
+        assert_eq!(
+            refusal(&plain(&[a]), &token).await,
+            BearerRefusal::HumanToken
+        );
+        // The hand-built shape the machine-era test used, too.
         let identity = json!({
             "provider_id": "console", "external_id": "usr1",
             "email": null, "username": null, "attributes": {}
@@ -635,6 +775,234 @@ mod tests {
             refusal(&plain(&[a]), &token).await,
             BearerRefusal::HumanToken
         );
+    }
+
+    fn identity(external_id: &str) -> authkestra_engine::Identity {
+        authkestra_engine::Identity {
+            provider_id: "sms-console".to_owned(),
+            external_id: external_id.to_owned(),
+            email: Some("alice@example.com".to_owned()),
+            username: None,
+            attributes: std::collections::HashMap::new(),
+        }
+    }
+
+    /// A person's access token as the OP's own `TokenManager` issues it after
+    /// `authorization_code`: scope `openid profile`, audience the console.
+    fn person_access(signer: &Key) -> String {
+        signer
+            .manager
+            .issue_user_token_with_extra(
+                identity(PERSON),
+                900,
+                Some("openid profile".to_owned()),
+                Some(CONSOLE.to_owned()),
+                std::collections::HashMap::new(),
+            )
+            .expect("issuing")
+    }
+
+    /// The ID token the same exchange returns beside it.
+    fn person_id_token(signer: &Key, nonce: Option<&str>) -> String {
+        signer
+            .manager
+            .issue_id_token(identity(PERSON), CONSOLE, nonce.map(str::to_owned), 900)
+            .expect("issuing")
+    }
+
+    /// Hand-built claims of a person's access token, each overridable by `patch`
+    /// (a `null` removes the claim).
+    fn person_claims(patch: &Value) -> Value {
+        let mut base = claims(&json!({
+            "sub": PERSON, "aud": CONSOLE, "scope": "openid profile",
+            "identity": {
+                "provider_id": "sms-console", "external_id": PERSON,
+                "email": null, "username": null, "attributes": {}
+            },
+        }));
+        for (name, value) in patch.as_object().expect("a patch is an object") {
+            if value.is_null() {
+                base.as_object_mut().unwrap().remove(name);
+            } else {
+                base[name] = value.clone();
+            }
+        }
+        base
+    }
+
+    #[tokio::test]
+    async fn a_persons_access_token_verifies_and_names_the_account_and_the_console() {
+        let (a, _) = keys();
+        for realms in [people(), both()] {
+            let verified = realm(&[a], realms)
+                .verify(&person_access(a))
+                .await
+                .expect("verifies");
+            assert_eq!(
+                verified,
+                VerifiedBearer::Person {
+                    user_id: PERSON.to_owned(),
+                    client_id: CONSOLE.to_owned(),
+                }
+            );
+        }
+        // Hand-built, the same shape: a list holding only the console is the
+        // same single audience.
+        let token = mint(a, Some(&a.kid), &person_claims(&json!({"aud": [CONSOLE]})));
+        assert!(realm(&[a], people()).verify(&token).await.is_ok());
+    }
+
+    /// Where only people are served, a machine's token has no door.
+    #[tokio::test]
+    async fn a_machines_token_is_not_a_persons() {
+        let (a, _) = keys();
+        let token = mint(a, Some(&a.kid), &claims(&json!({})));
+        assert_eq!(
+            refusal(&realm(&[a], people()), &token).await,
+            BearerRefusal::MachineToken
+        );
+        // Both served: it verifies, as a machine.
+        assert!(matches!(
+            realm(&[a], both()).verify(&token).await,
+            Ok(VerifiedBearer::Machine { .. })
+        ));
+    }
+
+    /// Both realms at once: each token lands in its own.
+    #[tokio::test]
+    async fn both_realms_verify_each_their_own() {
+        let (a, _) = keys();
+        let v = realm(&[a], both());
+        assert!(matches!(
+            v.verify(&person_access(a)).await,
+            Ok(VerifiedBearer::Person { .. })
+        ));
+        let machine = mint(a, Some(&a.kid), &claims(&json!({})));
+        assert!(matches!(
+            v.verify(&machine).await,
+            Ok(VerifiedBearer::Machine { .. })
+        ));
+    }
+
+    /// A person's token is for the console and for nothing else: another client,
+    /// no audience, a list holding the console among others, and the subject
+    /// itself as the audience (the shape that would pass the machine rule's
+    /// "aud contains sub") are all refused.
+    #[tokio::test]
+    async fn a_persons_token_is_addressed_to_the_console_alone() {
+        let (a, _) = keys();
+        let v = realm(&[a], people());
+        for aud in [
+            json!("another_client"),
+            json!(PERSON),
+            json!([CONSOLE, "another_client"]),
+            json!([CONSOLE, CONSOLE]),
+            json!([PERSON, CONSOLE]),
+            json!([]),
+            json!(["another_client"]),
+        ] {
+            let token = mint(a, Some(&a.kid), &person_claims(&json!({ "aud": aud })));
+            assert_eq!(refusal(&v, &token).await, BearerRefusal::Audience, "{aud}");
+        }
+        let token = mint(a, Some(&a.kid), &person_claims(&json!({"aud": null})));
+        assert_eq!(refusal(&v, &token).await, BearerRefusal::Audience, "no aud");
+    }
+
+    /// `sub` is the account and `identity` names the same account: a token where
+    /// they differ, or with no subject, was not minted by the OP.
+    #[tokio::test]
+    async fn a_persons_subject_is_the_identitys_external_id() {
+        let (a, _) = keys();
+        let v = realm(&[a], people());
+        let other = json!({
+            "provider_id": "sms-console", "external_id": "usr_someone_else",
+            "email": null, "username": null, "attributes": {}
+        });
+        let token = mint(a, Some(&a.kid), &person_claims(&json!({"identity": other})));
+        assert_eq!(refusal(&v, &token).await, BearerRefusal::Malformed);
+        let token = mint(a, Some(&a.kid), &person_claims(&json!({"sub": ""})));
+        assert_eq!(refusal(&v, &token).await, BearerRefusal::Malformed);
+    }
+
+    /// The ID token carries the same issuer, subject, audience, identity and key
+    /// as the access token, and is refused: no scope, or a nonce.
+    #[tokio::test]
+    async fn an_id_token_is_not_an_access_token() {
+        let (a, _) = keys();
+        let v = realm(&[a], people());
+        // Drawn at run time, never a literal: a fixed nonce in a test is the shape
+        // CodeQL's hard-coded-cryptographic-value query reports.
+        let nonce = format!("n-{}-{}", now(), std::process::id());
+        assert_eq!(
+            refusal(&v, &person_id_token(a, None)).await,
+            BearerRefusal::IdToken,
+            "no scope"
+        );
+        assert_eq!(
+            refusal(&v, &person_id_token(a, Some(nonce.as_str()))).await,
+            BearerRefusal::IdToken,
+            "no scope, with a nonce"
+        );
+        // An access token that somehow carries a nonce is the ID token's shape.
+        let token = mint(a, Some(&a.kid), &person_claims(&json!({ "nonce": nonce })));
+        assert_eq!(refusal(&v, &token).await, BearerRefusal::IdToken, "nonce");
+        // A blank scope is no scope.
+        for scope in [json!(""), json!("   "), json!(null)] {
+            let token = mint(a, Some(&a.kid), &person_claims(&json!({ "scope": scope })));
+            assert_eq!(
+                refusal(&v, &token).await,
+                BearerRefusal::IdToken,
+                "scope {scope}"
+            );
+        }
+    }
+
+    /// A key-bound token is refused in the person realm as in the machine one.
+    #[tokio::test]
+    async fn a_sender_constrained_persons_token_is_refused() {
+        let (a, _) = keys();
+        let v = realm(&[a], people());
+        let token = mint(
+            a,
+            Some(&a.kid),
+            &person_claims(&json!({"cnf": {"jkt": "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I"}})),
+        );
+        assert_eq!(refusal(&v, &token).await, BearerRefusal::SenderConstrained);
+        let token = a
+            .manager
+            .issue_user_token_with_extra(
+                identity(PERSON),
+                900,
+                Some("openid profile".to_owned()),
+                Some(CONSOLE.to_owned()),
+                std::collections::HashMap::from([("cnf".to_owned(), json!({"jkt": "abc"}))]),
+            )
+            .expect("issuing");
+        assert_eq!(
+            refusal(&v, &token).await,
+            BearerRefusal::SenderConstrained,
+            "issued with a cnf"
+        );
+    }
+
+    /// A person's token passes every check a machine's does first: another
+    /// issuer or an expired token is refused in the person realm too.
+    #[tokio::test]
+    async fn a_persons_token_meets_the_common_checks() {
+        let (a, _) = keys();
+        let v = realm(&[a], people());
+        let token = mint(
+            a,
+            Some(&a.kid),
+            &person_claims(&json!({"iss": "https://evil.example"})),
+        );
+        assert_eq!(refusal(&v, &token).await, BearerRefusal::Issuer);
+        let token = mint(
+            a,
+            Some(&a.kid),
+            &person_claims(&json!({"exp": now() - 3600})),
+        );
+        assert_eq!(refusal(&v, &token).await, BearerRefusal::Expired);
     }
 
     #[tokio::test]
@@ -785,6 +1153,7 @@ mod tests {
             keyring(&[a]),
             reload.clone(),
             ISSUER,
+            machines(),
             Duration::from_secs(60),
         ));
         let token = mint(b, Some(&b.kid), &claims(&json!({})));
@@ -828,6 +1197,7 @@ mod tests {
             keyring(&[a]),
             reload.clone(),
             ISSUER,
+            machines(),
             Duration::ZERO,
         );
         let token = mint(b, Some(&b.kid), &claims(&json!({})));

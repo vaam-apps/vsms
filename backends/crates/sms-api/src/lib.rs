@@ -52,7 +52,10 @@ pub mod webhooks;
 pub mod worker_locks;
 pub mod worker_roles;
 
-pub use auth::{GatewayAuth, Principal, PrincipalKind, system_context};
+pub use auth::{
+    DEVICE_ONLY_ROLES, DEVICE_REQUIRED, GatewayAuth, Principal, PrincipalKind,
+    refuse_device_only_role, system_context,
+};
 pub use bearer::{ApiDoors, BearerRefusal, BearerVerifier, NoDoor, VerifiedBearer};
 pub use errors::{is_illegal_transition, map_database_error};
 pub use hmac_gate::{AUTH_METHOD_DISABLED, HmacBoot, HmacWebhooks};

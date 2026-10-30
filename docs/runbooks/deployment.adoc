@@ -437,9 +437,16 @@ of asking for a token, and every deployment serves that.
 A person with a password can sign in to the console through the same provider
 (owner ruling R5; `docs/architecture.md`, section 4.10). It is off unless you write
 the `human_login:` block *and* `op:`, and vaam's `methods: [keypair]` keeps it off
-even then. *The API does not accept the token this sign-in issues yet* (VSA-4b), and
-the console has no sign-in screen until VSA-5: this release lets you stand the
-sign-in up and prove it, not use it.
+even then. *The API accepts the access token this sign-in issues* (VSA-4b), as that person with
+the role their row says, with one cap: an `owner` or an `admin` is refused with a
+`403` and the text "this account's role acts only from a paired console key", until
+a key is paired to that account (`pair-console-key`). Every other role acts. The
+console has no sign-in screen until VSA-5. This also holds on a deployment that
+serves `[keypair, human_login]`, where before VSA-4b a token could not be used and the
+API answered only signed requests; the API now also accepts the person's token
+there. A deployment on `[machine_tokens, human_login]` with `keypair` off cannot pair a
+console key (`registerConsoleKey` is refused), so its `owner` and `admin` have no way
+to act through the API at all: use the command line, or serve `keypair`.
 
 [,yaml]
 ----
