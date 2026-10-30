@@ -392,7 +392,7 @@ async fn an_account_with_no_password_is_refused_identically() {
     let suffix = unique_suffix();
     let account = seed_account(&db, &suffix, None, true).await;
 
-    let result = authenticate_user(&db, &account.email, &String::new()).await;
+    let result = authenticate_user(&db, &account.email, &generate_password(0)).await;
     let error = result.expect_err("an account with no credential cannot log in");
     assert!(matches!(error, LoginError::InvalidCredentials), "{error:?}");
     let result = authenticate_user(&db, &account.email, &test_password()).await;

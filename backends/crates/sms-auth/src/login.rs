@@ -305,6 +305,6 @@ mod tests {
         for _ in 0..3 {
             assert!(!verify_password(&generate_password(24), dummy_hash()));
         }
-        assert!(!verify_password(&String::new(), dummy_hash()));
+        assert!(!verify_password(&generate_password(0), dummy_hash()));
     }
 }

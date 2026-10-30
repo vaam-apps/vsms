@@ -1796,6 +1796,26 @@ async fn provision_user_writes_a_password_file_prints_nothing_secret_and_that_pa
     gateway.kill();
 }
 
+/// `provision-user --password` for `email`, writing the password to `out`; with
+/// `--reset` when `reset`.
+fn provision_with_password<'a>(email: &'a str, out: &'a str, reset: bool) -> Vec<&'a str> {
+    let mut args = vec![
+        "--email",
+        email,
+        "--display-name",
+        "Provisioned Person",
+        "--role-key",
+        "support",
+        "--password",
+        "--password-out",
+        out,
+    ];
+    if reset {
+        args.push("--reset");
+    }
+    args
+}
+
 /// An existing password is refused without `--reset`, and replaced with it: the new
 /// password works and the old one stops.
 #[tokio::test]
@@ -1809,17 +1829,7 @@ async fn an_existing_password_is_refused_without_reset_and_replaced_with_it() {
     let out_str = out.display().to_string();
     deployment.cli_ok(
         "provision-user",
-        &[
-            "--email",
-            email.as_str(),
-            "--display-name",
-            "Provisioned Person",
-            "--role-key",
-            "support",
-            "--password",
-            "--password-out",
-            out_str.as_str(),
-        ],
+        &provision_with_password(&email, out_str.as_str(), false),
     );
     let password = std::fs::read_to_string(&out).expect("the password file");
     let gateway = deployment.spawn().await;
@@ -1829,17 +1839,7 @@ async fn an_existing_password_is_refused_without_reset_and_replaced_with_it() {
     let other_str = other.display().to_string();
     let refused = deployment.cli(
         "provision-user",
-        &[
-            "--email",
-            email.as_str(),
-            "--display-name",
-            "Provisioned Person",
-            "--role-key",
-            "support",
-            "--password",
-            "--password-out",
-            other_str.as_str(),
-        ],
+        &provision_with_password(&email, other_str.as_str(), false),
     );
     assert!(!refused.status.success());
     assert!(stderr(&refused).contains("--reset"), "{}", stderr(&refused));
@@ -1869,18 +1869,7 @@ async fn an_existing_password_is_refused_without_reset_and_replaced_with_it() {
     // --reset replaces it: the new password works and the old one stops.
     let reset = deployment.cli(
         "provision-user",
-        &[
-            "--email",
-            email.as_str(),
-            "--display-name",
-            "Provisioned Person",
-            "--role-key",
-            "support",
-            "--password",
-            "--password-out",
-            other_str.as_str(),
-            "--reset",
-        ],
+        &provision_with_password(&email, other_str.as_str(), true),
     );
     assert!(reset.status.success(), "{}", stderr(&reset));
     let new_password = std::fs::read_to_string(&other).unwrap();
@@ -2053,27 +2042,9 @@ async fn preview_with(base_url: &str, token: &str) -> (u16, String) {
     )
 }
 
-/// **A person's token has no door even when the machine door is open.** With
-/// `machine_tokens` and `human_login` served together the API accepts a bearer,
-/// but only a machine's: the access token and the `id_token` of a completed
-/// sign-in are both refused, and the refusal is the `HumanToken` one, not the
-/// absence of a door.
-///
-/// Both halves are proven in the one running process. The reason is read where it
-/// is written, the door's own debug line (the response is the same coarse 401 for
-/// every refusal by design); and a machine token minted by the same provider
-/// beside them is accepted, which a missing door could not do.
-#[tokio::test]
-#[ignore = "needs a live, fully migrated Postgres - see module docs"]
-async fn a_persons_token_is_refused_as_a_persons_beside_an_open_machine_door() {
-    let _guard = TEST_MUTEX.lock().await;
-    let db = db().await;
-    let deployment = Deployment::new(Serves::Both, 100).await;
-    deployment.prepare().await;
-    let password = test_password();
-    let (_, email) = seed_account(&db, &unique_suffix(), Some(&password), true).await;
-
-    // A machine client of its own app.
+/// A machine client of a fresh app, provisioned the way an operator does it:
+/// `(client id, private key PEM)`.
+async fn provision_machine(db: &Cratestack, deployment: &Deployment) -> (String, String) {
     let app = db
         .app()
         .create(schema::CreateAppInput {
@@ -2106,13 +2077,67 @@ async fn a_persons_token_is_refused_as_a_persons_beside_an_open_machine_door() {
         ],
     );
     assert!(provisioned.status.success(), "{}", stderr(&provisioned));
-    let machine_id = stdout(&provisioned)
+    let client_id = stdout(&provisioned)
         .lines()
         .find_map(|line| line.strip_prefix("provisioned client: "))
         .expect("provision-client names the client")
         .trim()
         .to_owned();
-    let machine_pem = std::fs::read_to_string(&key_out).expect("the key file");
+    (
+        client_id,
+        std::fs::read_to_string(&key_out).expect("the key file"),
+    )
+}
+
+/// A real access token for the machine client, from the running provider.
+async fn mint_machine_token(base_url: &str, client_id: &str, pem: &str) -> String {
+    let minted = reqwest::Client::new()
+        .post(format!("{base_url}/token"))
+        .form(&[
+            ("grant_type", "client_credentials"),
+            ("client_id", client_id),
+            (
+                "client_assertion_type",
+                "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+            ),
+            (
+                "client_assertion",
+                sign_client_assertion(client_id, base_url, pem).as_str(),
+            ),
+            ("scope", "sms:send"),
+        ])
+        .send()
+        .await
+        .expect("POSTing to /token");
+    assert!(minted.status().is_success(), "{}", minted.status());
+    let minted: serde_json::Value = minted.json().await.expect("a token response");
+    minted["access_token"]
+        .as_str()
+        .expect("an access token")
+        .to_owned()
+}
+
+/// **A person's token has no door even when the machine door is open.** With
+/// `machine_tokens` and `human_login` served together the API accepts a bearer,
+/// but only a machine's: the access token and the `id_token` of a completed
+/// sign-in are both refused, and the refusal is the `HumanToken` one, not the
+/// absence of a door.
+///
+/// Both halves are proven in the one running process. The reason is read where it
+/// is written, the door's own debug line (the response is the same coarse 401 for
+/// every refusal by design); and a machine token minted by the same provider
+/// beside them is accepted, which a missing door could not do.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn a_persons_token_is_refused_as_a_persons_beside_an_open_machine_door() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let deployment = Deployment::new(Serves::Both, 100).await;
+    deployment.prepare().await;
+    let password = test_password();
+    let (_, email) = seed_account(&db, &unique_suffix(), Some(&password), true).await;
+
+    let (machine_id, machine_pem) = provision_machine(&db, &deployment).await;
 
     // A serve whose log we can read: the door explains each refusal at debug.
     let log_path = scratch_file("both-doors-serve.log");
@@ -2133,27 +2158,7 @@ async fn a_persons_token_is_refused_as_a_persons_beside_an_open_machine_door() {
     let base_url = gateway.base_url.clone();
 
     // The machine's token, from the same provider.
-    let minted = reqwest::Client::new()
-        .post(format!("{base_url}/token"))
-        .form(&[
-            ("grant_type", "client_credentials"),
-            ("client_id", machine_id.as_str()),
-            (
-                "client_assertion_type",
-                "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
-            ),
-            (
-                "client_assertion",
-                sign_client_assertion(&machine_id, &base_url, &machine_pem).as_str(),
-            ),
-            ("scope", "sms:send"),
-        ])
-        .send()
-        .await
-        .expect("POSTing to /token");
-    assert!(minted.status().is_success(), "{}", minted.status());
-    let minted: serde_json::Value = minted.json().await.expect("a token response");
-    let machine_token = minted["access_token"].as_str().expect("an access token");
+    let machine_token = mint_machine_token(&base_url, &machine_id, &machine_pem).await;
 
     // The person's tokens, from a real sign-in.
     let (code, verifier) = sign_in(&deployment, &base_url, &email, &password).await;
@@ -2162,7 +2167,7 @@ async fn a_persons_token_is_refused_as_a_persons_beside_an_open_machine_door() {
     let access_token = token.body["access_token"].as_str().expect("access token");
     let id_token = token.body["id_token"].as_str().expect("id_token");
 
-    let (status, body) = preview_with(&base_url, machine_token).await;
+    let (status, body) = preview_with(&base_url, &machine_token).await;
     assert_eq!(status, 200, "the machine door is open: {body}");
     for (name, bearer) in [("access token", access_token), ("id_token", id_token)] {
         let (status, body) = preview_with(&base_url, bearer).await;

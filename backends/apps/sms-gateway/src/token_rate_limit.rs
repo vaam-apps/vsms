@@ -126,10 +126,7 @@ const AUTHORIZATION_CODE: &str = "authorization_code";
 /// never the store's key itself.
 fn hex_sha256(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
-    Sha256::digest(bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    format!("{:x}", Sha256::digest(bytes))
 }
 
 fn throttled_response(retry_after_secs: u32) -> Response {
