@@ -211,6 +211,67 @@ const SENDER_AND_WEBHOOK_WRITE_ROUTES: &[RoutePermission] = &[
     },
 ];
 
+/// Reading a message needs `sms:read`, not just a signed-in person.
+///
+/// `Message`'s `list`/`detail` policy admits `auth().kind == "user"` with no
+/// role test, and `Role.permissions` cannot be written into a policy (`hasRole`
+/// takes one literal, there is no permissions predicate), so before this gate
+/// a person in *any* role — a custom role that held only `app:read` included —
+/// read every app's `msisdn` and, while it is kept, `body` (an OTP's code).
+/// This is Layer 2 narrowing a Layer 1 that stays as it was
+/// (`appId == auth().appId` for an app, any `user`, `system`), so the contract
+/// digest does not move and an app still reads only its own rows.
+///
+/// Six routes, not two, because the other four hand a message back by another
+/// door. `DeliveryReceipt` and `MessagePart` each carry `message`, and
+/// `GET /delivery_receipts?include=message` answers with the whole `Message`
+/// row, body and all, to a person `Message`'s own routes would refuse
+/// (`tests/message_read_live_postgres.rs` replays it: a custom role holding
+/// only `app:read` got a 200 and the OTP text before this gate). A relation filter
+/// (`?message.msisdn=…`) is an oracle on the same column. `DeliveryReceipt`
+/// also holds `rawPayload`, which `listMessageReceipts` deliberately leaves out.
+/// `App` has the reverse relation (`messages`), and is not listed: its read
+/// policy admits only built-in roles, all of which carry `sms:read`, so the
+/// gate would not change an answer; `docs/architecture.md` §5.2 states the
+/// residual.
+///
+/// An app key now needs the `sms:read` scope to read back its own messages
+/// (the console's scope list describes it as "Read messages and delivery
+/// receipts", and its default client scopes include it); a send-only key does
+/// not.
+const MESSAGE_READ_ROUTES: &[RoutePermission] = &[
+    RoutePermission {
+        method: Method::GET,
+        path: "/messages",
+        permission: "sms:read",
+    },
+    RoutePermission {
+        method: Method::GET,
+        path: "/messages/{id}",
+        permission: "sms:read",
+    },
+    RoutePermission {
+        method: Method::GET,
+        path: "/delivery_receipts",
+        permission: "sms:read",
+    },
+    RoutePermission {
+        method: Method::GET,
+        path: "/delivery_receipts/{id}",
+        permission: "sms:read",
+    },
+    RoutePermission {
+        method: Method::GET,
+        path: "/message_parts",
+        permission: "sms:read",
+    },
+    RoutePermission {
+        method: Method::GET,
+        path: "/message_parts/{id}",
+        permission: "sms:read",
+    },
+];
+
 /// #153: the TTL a cached `Idempotency-Key` response stays replayable —
 /// matches `docs/architecture.md` §4.5's own figure, 24 hours. Exposed so
 /// every construction site (the real `sms-gateway serve` command and the
@@ -492,6 +553,11 @@ pub fn router(
         auth: gateway_auth.clone(),
         requirements: SENDER_AND_WEBHOOK_WRITE_ROUTES,
     };
+    // Reading a message needs `sms:read`: a fifth, independent instance.
+    let message_read_rbac_state = RbacState {
+        auth: gateway_auth.clone(),
+        requirements: MESSAGE_READ_ROUTES,
+    };
     // Who may hand out `owner`: the write-path half of the guard whose
     // schema half is `User`'s `@@allow("create"/"update")` — see
     // `owner_grant.md`. Another independent layer, for the reason every
@@ -532,6 +598,10 @@ pub fn router(
     ))
     .layer(from_fn_with_state(
         sender_and_webhook_rbac_state,
+        enforce_route_permission,
+    ))
+    .layer(from_fn_with_state(
+        message_read_rbac_state,
         enforce_route_permission,
     ))
     .layer(from_fn_with_state(
@@ -593,6 +663,97 @@ mod tests {
         assert!(
             routes.iter().any(|(_, path)| path.contains("messages")),
             "expected a /messages path, got: {routes:?}"
+        );
+    }
+
+    #[test]
+    fn every_message_read_route_is_a_generated_route() {
+        // A gate on a path the emitter never produced gates nothing, and says
+        // nothing: the `pluralize()` trap again, this time as a silent hole.
+        let routes = route_table();
+        for requirement in MESSAGE_READ_ROUTES {
+            assert!(
+                routes.iter().any(|(method, path)| {
+                    *method == requirement.method.as_str() && *path == requirement.path
+                }),
+                "{} {} is gated on {} but is not a generated route: {routes:?}",
+                requirement.method,
+                requirement.path,
+                requirement.permission
+            );
+        }
+    }
+
+    /// The models whose rows hold a relation to `Message`, read out of the
+    /// schema the router is generated from. `include=message` on such a model's
+    /// read route answers with the whole `Message` row.
+    fn models_relating_to_message() -> std::collections::BTreeSet<String> {
+        let schema = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../schemas/vsms.cstack"
+        ));
+        let mut holders = std::collections::BTreeSet::new();
+        let mut current = None;
+        for line in schema.lines() {
+            let line = line.trim();
+            if let Some(rest) = line.strip_prefix("model ") {
+                current = rest.split_whitespace().next().map(str::to_owned);
+            } else if line == "}" {
+                current = None;
+            } else if let (Some(model), false) = (&current, line.starts_with("//")) {
+                let mut words = line.split_whitespace();
+                let _field = words.next();
+                let relates = words
+                    .next()
+                    .is_some_and(|ty| matches!(ty, "Message" | "Message[]" | "Message?"))
+                    && line.contains("@relation");
+                if relates {
+                    holders.insert(model.clone());
+                }
+            }
+        }
+        holders
+    }
+
+    #[test]
+    fn every_model_that_hands_a_message_back_is_gated_or_named() {
+        // `?include=message` reads the related row under `Message`'s own
+        // policy, which admits any person. So a model holding a relation to
+        // `Message` is a second way to read a message, and a new one must be
+        // gated on `sms:read` or named here with the reason it is not.
+        let holders = models_relating_to_message();
+        // `App.messages`: App's read policy admits only built-in roles, all of
+        // which carry `sms:read` (docs/architecture.md section 5.2).
+        let named_and_not_gated = ["App"];
+        for model in &holders {
+            if named_and_not_gated.contains(&model.as_str()) {
+                continue;
+            }
+            let snake: String = model
+                .chars()
+                .flat_map(|c| {
+                    if c.is_ascii_uppercase() {
+                        vec!['_', c.to_ascii_lowercase()]
+                    } else {
+                        vec![c]
+                    }
+                })
+                .collect();
+            let path = format!("/{}s", snake.trim_start_matches('_'));
+            assert!(
+                MESSAGE_READ_ROUTES.iter().any(|requirement| {
+                    requirement.method == Method::GET
+                        && requirement.path == path
+                        && requirement.permission == "sms:read"
+                }),
+                "{model} holds a relation to Message, so GET {path} can return a message with \
+                 ?include=message, but MESSAGE_READ_ROUTES does not gate it on sms:read: \
+                 {holders:?}"
+            );
+        }
+        assert!(
+            holders.contains("DeliveryReceipt") && holders.contains("MessagePart"),
+            "the scan found no holder it should have: the parser has drifted: {holders:?}"
         );
     }
 

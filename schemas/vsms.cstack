@@ -949,6 +949,15 @@ model Message {
   // the claim loop actually claims, which is why it was never caught by
   // any test that only checked those models: nothing exercised dispatch's
   // own query end to end against Postgres until now.
+  //
+  // `auth().kind == "user"` is any person in any role, and a policy cannot ask
+  // for a permission (`hasRole` takes one literal), so this clause is not what
+  // decides who may read a message: `sms:read` is, at Layer 2
+  // (`sms_api::router::MESSAGE_READ_ROUTES`, which also gates `DeliveryReceipt`
+  // and `MessagePart`, the two models whose `?include=message` returns this
+  // row). It is a Layer 2 gate on purpose: a policy-only change here would
+  // have to list roles and so lock out a custom role that holds the permission.
+  // docs/architecture.md section 5.2, "Implementation, message reads".
   @@audit
   @@paged
   @@retain(days: 90)
@@ -972,6 +981,9 @@ model MessagePart {
   submittedAt DateTime?
   deliveredAt DateTime?
 
+  // Any person at Layer 1; `GET /message_parts` needs `sms:read` at Layer 2
+  // (`MESSAGE_READ_ROUTES`), because `?include=message` returns the whole
+  // `Message` row under `Message`'s own, wider, policy.
   @@paged
   @@allow("list", auth().kind == "user")
   @@allow("detail", auth().kind == "user")
@@ -1005,6 +1017,9 @@ model DeliveryReceipt {
   // reconciliation job, or a test proving `dlr::ingest` actually wrote a
   // receipt, needs — silently returned zero rows instead of the rows that
   // really exist.
+  // Any person at Layer 1; `GET /delivery_receipts` needs `sms:read` at Layer 2
+  // (`MESSAGE_READ_ROUTES`): `rawPayload` is the provider's own callback, and
+  // `?include=message` returns the whole `Message` row.
   @@allow("list", auth().kind == "user" || hasRole('system'))
   @@allow("detail", auth().kind == "user" || hasRole('system'))
   @@allow("create", hasRole('system'))

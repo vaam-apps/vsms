@@ -41,6 +41,13 @@ then asks of them. The gate is no longer defense in depth for the `PATCH
 /providers/{id}` route: an `admin` who holds a role without the permission is
 refused here, which Layer 1 alone would let through.
 
+# Layer 2 is also the only place a permission can gate a read
+
+A policy lists roles (`hasRole` takes one literal) and cannot ask for a permission, so a read
+that must follow `Role.permissions` is a `RoutePermission` here. `router::MESSAGE_READ_ROUTES`
+is that for reading a message: `sms:read` on `GET /messages` and the receipt and part routes
+that can return one. Layer 1 stays as it was, so an app still reads only its own rows.
+
 # A second kind of Layer-2 middleware: guarding the *value* written
 
 `enforce_route_permission` asks "may this caller use this route at all". Some
