@@ -24,6 +24,9 @@ authkestra-engine.workspace = true
 authkestra-op.workspace = true
 # token_rate_limit.rs and grant_gate.rs read a field out of `/token`'s form body.
 form_urlencoded.workspace = true
+# token_rate_limit.rs keys an authorization-code request on the SHA-256 of its
+# code, so the credential is never a store key. (The live suites use it too.)
+sha2.workspace = true
 # login.rs tells a code redirect from an error redirect by its query.
 url.workspace = true
 # dlr.rs's real dependency: the SmsProvider trait (#34), and the concrete
@@ -85,8 +88,6 @@ rsa.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-# pair_console_key_cli_live_postgres.rs derives a distinct key per run.
-sha2.workspace = true
 # tests/m1_acceptance_gate_live_postgres.rs gets its DATABASE_URL from this
 # instead of the environment.
 sms-test-support.workspace = true

@@ -47,17 +47,89 @@ impl TokenRateLimitState {
     }
 }
 
-/// The `client_id` field out of a `application/x-www-form-urlencoded`
-/// body, exactly as `authkestra_axum::op::axum_token_handler`'s own `Form`
-/// extractor will parse it a moment later. `form_urlencoded::parse` never
-/// fails on malformed input (unlike `serde_urlencoded`, which would need a
-/// target struct); it just may not yield a `client_id` pair, which the
-/// caller treats the same as an empty one.
+/// The value of the one `name` field of a form body, exactly as
+/// `authkestra_axum::op::axum_token_handler`'s own `Form` extractor will parse it
+/// a moment later. `form_urlencoded::parse` never fails on malformed input
+/// (unlike `serde_urlencoded`, which would need a target struct).
+///
+/// [`Field::Absent`] for none (or an empty one), [`Field::Repeated`] for two or
+/// more: the handler's form parser refuses a repeated field, so such a request
+/// can only ever be refused, and it must not be keyed as though it carried a
+/// real value.
+fn form_field(bytes: &[u8], name: &str) -> Field {
+    let mut found = form_urlencoded::parse(bytes).filter(|(key, _)| key == name);
+    let Some((_, first)) = found.next() else {
+        return Field::Absent;
+    };
+    if found.next().is_some() {
+        return Field::Repeated;
+    }
+    if first.is_empty() {
+        Field::Absent
+    } else {
+        Field::One(first.into_owned())
+    }
+}
+
+enum Field {
+    Absent,
+    One(String),
+    Repeated,
+}
+
+/// The `client_id` field out of a form body: `None` when absent or empty. A
+/// repeated one is read as its first value, as this layer always has (the
+/// handler refuses the request either way).
 fn client_id_from_form_body(bytes: &[u8]) -> Option<String> {
     form_urlencoded::parse(bytes)
         .find(|(key, _)| key == "client_id")
         .map(|(_, value)| value.into_owned())
         .filter(|value| !value.is_empty())
+}
+
+/// The bucket a `/token` request draws on.
+///
+/// **An `authorization_code` request is keyed on its code, never on its
+/// `client_id`.** The only client that redeems a code is the console, a *public*
+/// client whose id is public: every operator's redemption would share one
+/// `client:sms-console` bucket, and anyone could empty it with
+/// `grant_type=authorization_code&client_id=sms-console&code=x` and make every
+/// real code (sixty seconds of life) expire behind a `429`. Keyed on the SHA-256
+/// of the code, a bad code spends only its own bucket: a real code is a
+/// different key, and a 32-byte random code is not something a retry loop guesses,
+/// so the per-code budget exists to stop the *same* code being hammered, not to
+/// stop the console. A request with no code, or two, shares one bucket per
+/// shape, and no real redemption ever lands there.
+///
+/// Every other grant (`client_credentials`) is keyed on its `client_id` as
+/// before, and a body with no readable `client_id` shares `no-client-id`.
+fn limit_key(bytes: &[u8]) -> String {
+    if let Field::One(grant) = form_field(bytes, "grant_type")
+        && grant == AUTHORIZATION_CODE
+    {
+        return match form_field(bytes, "code") {
+            Field::One(code) => format!("code:{}", hex_sha256(code.as_bytes())),
+            Field::Absent => "authorization-code:no-code".to_owned(),
+            Field::Repeated => "authorization-code:repeated-code".to_owned(),
+        };
+    }
+    client_id_from_form_body(bytes).map_or_else(
+        || "no-client-id".to_owned(),
+        |client_id| format!("client:{client_id}"),
+    )
+}
+
+/// The grant whose key is the code, not the client.
+const AUTHORIZATION_CODE: &str = "authorization_code";
+
+/// Lowercase hex SHA-256: a code is a credential for sixty seconds, so it is
+/// never the store's key itself.
+fn hex_sha256(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn throttled_response(retry_after_secs: u32) -> Response {
@@ -112,13 +184,7 @@ pub async fn enforce_token_client_rate_limit(
 ) -> Response {
     let (parts, body) = req.into_parts();
     let (key, rebuilt_body) = match to_bytes(body, MAX_TOKEN_BODY_BYTES).await {
-        Ok(bytes) => {
-            let key = client_id_from_form_body(&bytes).map_or_else(
-                || "no-client-id".to_owned(),
-                |client_id| format!("client:{client_id}"),
-            );
-            (key, Body::from(bytes))
-        }
+        Ok(bytes) => (limit_key(&bytes), Body::from(bytes)),
         Err(_) => ("oversized-or-unreadable-body".to_owned(), Body::empty()),
     };
 
@@ -285,5 +351,130 @@ mod tests {
             .await
             .expect("calling the test router");
         assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+    /// **The lockout this key exists to prevent.** The console's client id is
+    /// public, so if a code were limited per `client_id` one attacker spamming
+    /// bad codes would 429 every operator's real redemption for as long as they
+    /// kept at it. Keyed per code, the spam spends `x`'s bucket and nobody else's.
+    #[tokio::test]
+    async fn spamming_bad_codes_cannot_throttle_a_real_redemption() {
+        let router = test_router(RateLimitConfig::new(3, 0.001));
+        let mut spam = Vec::new();
+        for _ in 0..40 {
+            let response = router
+                .clone()
+                .oneshot(form_request(
+                    "grant_type=authorization_code&client_id=sms-console&code=x",
+                ))
+                .await
+                .expect("calling the test router");
+            spam.push(response.status());
+        }
+        assert_eq!(
+            spam.iter()
+                .filter(|status| **status == StatusCode::TOO_MANY_REQUESTS)
+                .count(),
+            37,
+            "the spammed code is throttled after its own burst of 3"
+        );
+        for real in ["a-real-code-one", "a-real-code-two"] {
+            let response = router
+                .clone()
+                .oneshot(form_request(&format!(
+                    "grant_type=authorization_code&client_id=sms-console&code={real}\
+                     &code_verifier=v&redirect_uri=r"
+                )))
+                .await
+                .expect("calling the test router");
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "{real}: a real code has its own bucket, whatever was sent for `x`"
+            );
+        }
+    }
+
+    /// Spamming **many** distinct bad codes is no better for the attacker: each
+    /// is its own bucket, so none of them touches the real one.
+    #[tokio::test]
+    async fn a_stream_of_distinct_bad_codes_does_not_touch_a_real_one() {
+        let router = test_router(RateLimitConfig::new(1, 0.001));
+        for index in 0..30 {
+            let response = router
+                .clone()
+                .oneshot(form_request(&format!(
+                    "grant_type=authorization_code&client_id=sms-console&code=bad-{index}"
+                )))
+                .await
+                .expect("calling the test router");
+            assert_eq!(response.status(), StatusCode::OK, "bad-{index}");
+        }
+        let real = router
+            .oneshot(form_request(
+                "grant_type=authorization_code&client_id=sms-console&code=the-real-one",
+            ))
+            .await
+            .expect("calling the test router");
+        assert_eq!(real.status(), StatusCode::OK);
+    }
+
+    /// The same bucket for the same code, however the body spells it, and the
+    /// client id plays no part in it.
+    #[test]
+    fn an_authorization_code_is_keyed_on_the_code_alone() {
+        let key = |body: &str| limit_key(body.as_bytes());
+        assert_eq!(
+            key("grant_type=authorization_code&client_id=sms-console&code=abc"),
+            key("code=abc&grant_type=authorization_code&client_id=another"),
+        );
+        assert_eq!(
+            key("grant_type=authorization_code&code=abc"),
+            key("grant_type=authorization_code&code=ab%63"),
+            "the percent-decoded value is what the handler reads"
+        );
+        assert_ne!(
+            key("grant_type=authorization_code&code=abc"),
+            key("grant_type=authorization_code&code=abd")
+        );
+        assert!(
+            !key("grant_type=authorization_code&code=abc").contains("abc"),
+            "the code itself is never the store's key"
+        );
+    }
+
+    /// A request with no code, or two, shares a bucket of its own shape, never
+    /// one a real redemption (exactly one code) can land in.
+    #[test]
+    fn a_missing_or_repeated_code_never_shares_a_real_codes_bucket() {
+        let key = |body: &str| limit_key(body.as_bytes());
+        let real = key("grant_type=authorization_code&code=abc");
+        for odd in [
+            "grant_type=authorization_code",
+            "grant_type=authorization_code&code=",
+            "grant_type=authorization_code&code=abc&code=abc",
+            "grant_type=authorization_code&code=abc&code=x",
+        ] {
+            assert_ne!(key(odd), real, "{odd}");
+            assert!(key(odd).starts_with("authorization-code:"), "{odd}");
+        }
+        assert_ne!(
+            key("grant_type=authorization_code"),
+            key("grant_type=authorization_code&code=a&code=b")
+        );
+    }
+
+    /// The machine grant is untouched: still one bucket per `client_id`.
+    #[test]
+    fn a_client_credentials_request_is_still_keyed_on_its_client_id() {
+        assert_eq!(
+            limit_key(b"grant_type=client_credentials&client_id=appc_a"),
+            "client:appc_a"
+        );
+        assert_eq!(limit_key(b"grant_type=client_credentials"), "no-client-id");
+        // A `code` beside another grant does not turn it into a code request.
+        assert_eq!(
+            limit_key(b"grant_type=client_credentials&client_id=appc_a&code=abc"),
+            "client:appc_a"
+        );
     }
 }

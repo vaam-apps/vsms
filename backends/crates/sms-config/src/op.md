@@ -38,7 +38,10 @@ shape error naming the missing keys, not an empty block.
   `https` with a real host (`ConfigError::InsecureHost`,
   `ConfigError::StubHostInLivemode`);
 - `op.token_rate_limit` is a bucket with a burst of at least 1 and a positive
-  refill, like the `api` buckets;
+  refill, like the `api` buckets. It is one bucket per `client_id` for
+  `client_credentials`, and one per **code** for `authorization_code` (the
+  console's `client_id` is public, so a bucket on it would be every operator's
+  to empty: `sms-gateway`'s `token_rate_limit.md`);
 - `op.signing_key.refresh_interval_secs` is at least 1;
 - `op.signing_key.rotation_overlap_secs` exceeds
   `op.signing_key.refresh_interval_secs` plus [`ACCESS_TOKEN_TTL_SECS`]

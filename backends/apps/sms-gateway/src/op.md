@@ -63,9 +63,10 @@ stay outside both doors, because they are how a caller gets a token.
 
 # The `/token` route's two layers (VSA-4a)
 
-The grant gate (`grant_gate.rs`) is **outermost**, the per-`client_id` bucket
-(`token_rate_limit.rs`) inside it: a request for a grant this deployment does not
-serve is refused before it takes a token from anyone's bucket. [`OpState::store`]
+The grant gate (`grant_gate.rs`) is **outermost**, the bucket
+(`token_rate_limit.rs`: per `client_id`, and per code for the `authorization_code`
+grant) inside it: a request for a grant this deployment does not serve is refused
+before it takes a token from anyone's bucket. [`OpState::store`]
 and [`OpState::config`] are what `login.rs` feeds `handle_authorize`; the store's
 clone shares the authorization-code `MemoryStore` with the `/token` handler's own,
 which is what lets a code issued by `POST /login` be redeemed at `/token`.
