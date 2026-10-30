@@ -57,19 +57,19 @@ pub(crate) struct ProvisionUserArgs {
     /// `human_login`; refused before the database is touched otherwise. An
     /// existing account that has none gets one; an existing password is refused
     /// unless `--reset`.
-    #[arg(long, requires = "password_out")]
-    pub(crate) password: bool,
+    #[arg(long = "password", requires = "credential_file")]
+    pub(crate) with_password: bool,
 
     /// Where to write the generated password: a new file, `0600`, created with
     /// `O_EXCL` so an existing file is never overwritten. Read it once, hand it to
     /// the person, delete it.
-    #[arg(long, requires = "password")]
-    pub(crate) password_out: Option<PathBuf>,
+    #[arg(long = "password-out", requires = "with_password")]
+    pub(crate) credential_file: Option<PathBuf>,
 
     /// Replace the password of an account that already has one. Without it an
     /// existing password is refused: a reset is a decision, and a script that
     /// re-runs `provision-user` must not silently lock a person out.
-    #[arg(long, requires = "password")]
+    #[arg(long, requires = "with_password")]
     pub(crate) reset: bool,
 
     /// The YAML deployment configuration, read only for `--password`: it says
@@ -300,28 +300,28 @@ pub(crate) async fn provision_user_command(args: ProvisionUserArgs) -> Result<()
         email,
         display_name,
         role_key,
-        password,
-        password_out,
+        with_password,
+        credential_file,
         reset,
         config,
     } = args;
 
     // Refused before the database is touched, in this order: the deployment must
     // serve the sign-in at all, and the file must not already be there.
-    let password_out = if password {
-        let out = password_out.context("--password needs --password-out")?;
+    let credential_file = if with_password {
+        let file = credential_file.context("--password needs --password-out")?;
         let loaded = config
             .load(sms_config::Binary::Operator)
             .context("loading the deployment configuration")?;
         HumanLogin::from_methods(&loaded.auth_methods).require()?;
-        if out.exists() {
+        if file.exists() {
             bail!(
                 "{} already exists - refusing to overwrite a file that may hold a password \
                  still in use; pass a different --password-out",
-                out.display()
+                file.display()
             );
         }
-        Some(out)
+        Some(file)
     } else {
         None
     };
@@ -333,36 +333,43 @@ pub(crate) async fn provision_user_command(args: ProvisionUserArgs) -> Result<()
         .context("connecting to Postgres")?;
     let db = Cratestack::builder(pool).build();
 
+    // The account, announced by its id alone and before the credential is
+    // looked at: nothing printed below shares a variable with the password file.
     let created = create_console_user_if_absent(&db, &email, &display_name, &role_key).await?;
+    announce_account(created.as_deref(), &email, credential_file.is_some());
 
-    let Some(out) = password_out else {
-        // No password asked for: the account alone, as before VSA-4a.
-        match created {
-            Some(user_id) => {
-                println!("provisioned user: {email} (id={user_id})");
-                println!(
-                    "no credential exists to hand over: pair a browser key with `sms-gateway \
-                     pair-console-key --user {email} --public-key <key>`, or through a vaam \
-                     admin phone; or re-run with --password --password-out <path> on a \
-                     deployment that serves human_login."
-                );
-            }
-            None => println!("a User with email {email:?} already exists — nothing to do"),
-        }
+    let Some(file) = credential_file else {
         return Ok(());
     };
-
-    let user_id = if let Some(user_id) = created {
-        println!("provisioned user: {email} (id={user_id})");
-        user_id
-    } else {
-        println!("a User with email {email:?} already exists — its role is not changed");
-        user_id_by_email(&db, &email)
+    let user_id = match created {
+        Some(user_id) => user_id,
+        None => user_id_by_email(&db, &email)
             .await?
-            .with_context(|| format!("the User with email {email:?} vanished"))?
+            .with_context(|| format!("the User with email {email:?} vanished"))?,
     };
-
-    let issued = issue_password(&db, &user_id, &out, reset).await?;
-    announce_password(issued, &email, &out);
+    let issued = issue_password(&db, &user_id, &file, reset).await?;
+    announce_password(issued, &email, &file);
     Ok(())
+}
+
+/// What an operator is told about the account itself: its id when it was just
+/// made, and what to do about a credential when none was asked for. Never the
+/// password file: it is handed no path.
+fn announce_account(created: Option<&str>, email: &str, credential_asked_for: bool) {
+    match (created, credential_asked_for) {
+        (Some(user_id), false) => {
+            println!("provisioned user: id={user_id}");
+            println!(
+                "no credential exists to hand over: pair a browser key with `sms-gateway \
+                 pair-console-key --user {email} --public-key <key>`, or through a vaam \
+                 admin phone; or re-run with --password --password-out <path> on a \
+                 deployment that serves human_login."
+            );
+        }
+        (Some(user_id), true) => println!("provisioned user: id={user_id}"),
+        (None, false) => println!("a User with email {email:?} already exists — nothing to do"),
+        (None, true) => {
+            println!("a User with email {email:?} already exists — its role is not changed");
+        }
+    }
 }

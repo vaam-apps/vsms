@@ -53,8 +53,8 @@ pub(crate) struct BootstrapArgs {
     /// deployment that serves `human_login`; refused before the database is
     /// touched otherwise. Without it `bootstrap` reads no configuration, as
     /// before.
-    #[arg(long, requires = "owner_email")]
-    pub(crate) owner_password_out: Option<PathBuf>,
+    #[arg(long = "owner-password-out", requires = "owner_email")]
+    pub(crate) owner_credential_file: Option<PathBuf>,
 
     /// The YAML deployment configuration, read only for `--owner-password-out`.
     #[command(flatten)]
@@ -107,44 +107,42 @@ async fn bootstrap_step_owner(
     owner_email: Option<&str>,
     owner_display_name: Option<&str>,
     owner_role_key: &str,
-    password_out: Option<&Path>,
+    credential_file: Option<&Path>,
 ) -> Result<()> {
     println!("== bootstrap: step 2/2 — first operator account ==");
     let (Some(email), Some(display_name)) = (owner_email, owner_display_name) else {
         println!("skipped — no --owner-email given (backend-only deployment)");
         return Ok(());
     };
+    // The account is announced by its id alone and before the credential is
+    // looked at, so nothing printed here shares a variable with the password
+    // file; the password's own line is `announce_password`'s.
     let created = create_console_user_if_absent(db, email, display_name, owner_role_key).await?;
-    match (&created, password_out) {
-        (Some(user_id), None) => {
-            println!("provisioned user: {email} (id={user_id})");
+    match created.as_deref() {
+        Some(user_id) => println!("provisioned user: id={user_id}"),
+        None => println!("a User with email {email:?} already exists — skipping provision-user"),
+    }
+    let Some(file) = credential_file else {
+        if created.is_some() {
             println!(
                 "no credential exists to hand over: pair a browser key with `sms-gateway \
                  pair-console-key --user {email} --public-key <key>`, or through a vaam admin \
                  phone."
             );
         }
-        (None, None) => {
-            println!("a User with email {email:?} already exists — skipping provision-user");
-        }
-        (Some(user_id), Some(out)) => {
-            println!("provisioned user: {email} (id={user_id})");
-            let issued = issue_password(db, user_id, out, false).await?;
-            announce_password(issued, email, out);
-        }
-        (None, Some(out)) => {
-            println!("a User with email {email:?} already exists — skipping provision-user");
-            // The account was made by an earlier run that gave it no password (or
-            // one that did): a password is set only where none exists, and an
-            // existing one is refused, never replaced by a re-run (that is
-            // `provision-user --reset`).
-            let user_id = crate::commands::provision_user::user_id_by_email(db, email)
-                .await?
-                .with_context(|| format!("the User with email {email:?} vanished"))?;
-            let issued = issue_password(db, &user_id, out, false).await?;
-            announce_password(issued, email, out);
-        }
-    }
+        return Ok(());
+    };
+    // A password is set only where none exists, and an existing one is refused,
+    // never replaced by a re-run (that is `provision-user --reset`): an account
+    // made by an earlier run that gave it no password gets one now.
+    let user_id = match created {
+        Some(user_id) => user_id,
+        None => crate::commands::provision_user::user_id_by_email(db, email)
+            .await?
+            .with_context(|| format!("the User with email {email:?} vanished"))?,
+    };
+    let issued = issue_password(db, &user_id, file, false).await?;
+    announce_password(issued, email, file);
     Ok(())
 }
 
@@ -164,7 +162,7 @@ pub(crate) async fn bootstrap_command(args: BootstrapArgs) -> Result<()> {
         owner_display_name,
         owner_role_key,
         skip_seed_dispatch,
-        owner_password_out,
+        owner_credential_file,
         config,
     } = args;
 
@@ -180,7 +178,7 @@ pub(crate) async fn bootstrap_command(args: BootstrapArgs) -> Result<()> {
 
     // The password path needs the deployment to serve the sign-in, and its file
     // not to exist: both refused before the database is touched.
-    let loaded = if let Some(out) = &owner_password_out {
+    let loaded = if let Some(out) = &owner_credential_file {
         let loaded = config
             .load(sms_config::Binary::Operator)
             .context("loading the deployment configuration")?;
@@ -228,7 +226,7 @@ pub(crate) async fn bootstrap_command(args: BootstrapArgs) -> Result<()> {
         owner_email.as_deref(),
         owner_display_name.as_deref(),
         &owner_role_key,
-        owner_password_out.as_deref(),
+        owner_credential_file.as_deref(),
     )
     .await?;
 
