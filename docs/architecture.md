@@ -2122,8 +2122,8 @@ sequenceDiagram
         V->>V: reload the key set once (single flight, 2 s deadline, at most every 5 s)
     end
     V-->>B: Machine(client id, scope) or Person(User.id, console id), or a refusal
-    B->>D: bearer_standing: machine, OauthClient active, AppClient live and the same client; person, console client live and public, User and Role from the shared cache
-    D-->>B: App standing, scopes are the AppClient's that the OauthClient lists, narrowed by the claim, never console:pair; or User standing, never owner or admin (403 DEVICE_REQUIRED)
+    B->>D: bearer_standing: machine, OauthClient active, AppClient live and the same client, and for a person the console client live and public, User and Role from the shared cache
+    D-->>B: App standing, scopes are the AppClient's that the OauthClient lists, narrowed by the claim, never console:pair, or User standing, never owner or admin (403 DEVICE_REQUIRED)
     B->>R: VerifiedPrincipal client:id or user:id, BearerCaller
     R-->>C: plain JSON
 ```
