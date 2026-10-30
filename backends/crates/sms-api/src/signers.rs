@@ -289,11 +289,7 @@ impl SignerDirectory {
 /// [`names_pair_scope`] does, ASCII case-insensitively.
 ///
 /// Returned in the packed, sentinel-delimited form `require_permission` reads.
-pub(crate) fn effective_scopes(
-    granted: &str,
-    registered: &str,
-    claimed: Option<&str>,
-) -> String {
+pub(crate) fn effective_scopes(granted: &str, registered: &str, claimed: Option<&str>) -> String {
     let registered = sms_core::unpack(registered);
     let kept = sms_core::unpack(granted).into_iter().filter(|scope| {
         !names_pair_scope(scope)

@@ -1335,7 +1335,11 @@ async fn an_app_client_scope_the_oauth_client_lacks_is_not_granted_to_a_minted_t
         status, 403,
         "job:read is on the AppClient only, so the token does not carry it: {body}"
     );
-    assert_eq!(preview_with(&issuer, &token).await.0, 200, "still a live token");
+    assert_eq!(
+        preview_with(&issuer, &token).await.0,
+        200,
+        "still a live token"
+    );
 
     // Listing it on the OauthClient row, which is read on every request, grants it.
     let oauth = db

@@ -150,8 +150,7 @@ async fn seed_split(db: &Cratestack, app_scopes: &str, oauth_scopes: &str) -> Se
         .run(&sys())
         .await
         .expect("seeding the app client");
-    let oauth =
-        link_oauth_client(db, &client_id, Some(app_client.id.clone()), oauth_scopes).await;
+    let oauth = link_oauth_client(db, &client_id, Some(app_client.id.clone()), oauth_scopes).await;
     Seeded {
         app_client_row: app_client.id,
         client_id,

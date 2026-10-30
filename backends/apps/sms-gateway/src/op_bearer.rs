@@ -546,10 +546,7 @@ mod tests {
             ),
             (
                 "PKCS#1 PEM",
-                public
-                    .to_pkcs1_pem(LineEnding::LF)
-                    .unwrap()
-                    .into_bytes(),
+                public.to_pkcs1_pem(LineEnding::LF).unwrap().into_bytes(),
             ),
             (
                 "PKCS#1 DER",
