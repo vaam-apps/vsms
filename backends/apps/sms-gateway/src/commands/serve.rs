@@ -530,10 +530,8 @@ async fn build_op_router(
             db.clone(),
             state,
             &human.console_client.client_id,
-            login::Limiter::new(cratestack::ratelimit::RateLimitConfig::new(
-                human.login_rate_limit.burst,
-                human.login_rate_limit.refill_per_second,
-            )),
+            &human.console_client.redirect_uris,
+            login::Limiter::new(&human.login_rate_limit),
         ));
     }
     info!(

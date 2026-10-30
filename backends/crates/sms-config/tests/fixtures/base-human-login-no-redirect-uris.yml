@@ -11,5 +11,9 @@ human_login:
     client_id: sms-console
     redirect_uris: []
   login_rate_limit:
-    burst: 5
-    refill_per_second: 0.1
+    per_email:
+      burst: 5
+      refill_per_second: 0.1
+    aggregate:
+      burst: 10
+      refill_per_second: 1.0

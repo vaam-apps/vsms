@@ -179,6 +179,7 @@ fn the_commented_op_and_human_login_examples_load_once_uncommented_and_serve_bot
     assert!(config.auth_methods.human_login_served(), "{overlay}");
     let human = config.human_login.expect("the block is read");
     assert_eq!(human.console_client.client_id, "sms-console");
-    assert_eq!(human.login_rate_limit.burst, 5);
+    assert_eq!(human.login_rate_limit.per_email.burst, 5);
+    assert_eq!(human.login_rate_limit.aggregate.burst, 10);
     std::fs::remove_dir_all(&dir).ok();
 }

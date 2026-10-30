@@ -19,9 +19,25 @@ pub const CLIENT_ID_LENGTH: std::ops::RangeInclusive<usize> = 8..=64;
 pub struct HumanLogin {
     /// The console, the one `OpenID` client a person signs in through.
     pub console_client: ConsoleClient,
-    /// The bucket in front of `POST /login`, applied twice: once per email
-    /// address and once per source address, both before any password is hashed.
-    pub login_rate_limit: Bucket,
+    /// The two buckets in front of `POST /login`, both taken before any password
+    /// is hashed.
+    pub login_rate_limit: LoginRateLimit,
+}
+
+/// `human_login.login_rate_limit:` - the buckets in front of the password check.
+///
+/// There is no per-source bucket, on purpose (`human_login.md`, "No bucket per
+/// source address"): behind the edge proxy and the console's own server the
+/// gateway sees one peer for everybody.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct LoginRateLimit {
+    /// One bucket per email address (trimmed, lowercased): what one account can
+    /// be tried with.
+    pub per_email: Bucket,
+    /// One bucket for every sign-in together: the most Argon2 work the process
+    /// can be asked for, whoever asks.
+    pub aggregate: Bucket,
 }
 
 /// `human_login.console_client:` - the public client the console is registered

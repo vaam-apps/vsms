@@ -361,7 +361,9 @@ fn validate_human_login(human_login: &HumanLogin, livemode: bool) -> Result<(), 
             return Err(invalid(&key, "is listed twice"));
         }
     }
-    validate_bucket("human_login.login_rate_limit", human_login.login_rate_limit)
+    let limits = &human_login.login_rate_limit;
+    validate_bucket("human_login.login_rate_limit.per_email", limits.per_email)?;
+    validate_bucket("human_login.login_rate_limit.aggregate", limits.aggregate)
 }
 
 /// The rules of `op:` (`op.md`).

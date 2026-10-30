@@ -1,12 +1,11 @@
 #![doc = include_str!("login.md")]
 
-use std::net::SocketAddr;
 use std::sync::Arc;
 
 use authkestra_engine::auth::state::Identity;
 use authkestra_op::handlers::authorize::{AuthorizeOutcome, AuthorizeRequest, handle_authorize};
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{ConnectInfo, DefaultBodyLimit, Extension, State};
+use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
@@ -16,7 +15,8 @@ use cratestack::ratelimit::{
 };
 use serde::{Deserialize, Serialize};
 use sms_api::schema::Cratestack;
-use sms_auth::login::{LoginError, authenticate_user};
+use sms_auth::login::{LoginError, authenticate_user, stamp_last_login};
+use sms_config::LoginRateLimit;
 
 use crate::op::OpState;
 
@@ -38,32 +38,58 @@ struct LoginState {
     op: OpState,
     /// `human_login.console_client.client_id`: the one id `POST /login` accepts.
     console_client_id: Arc<str>,
+    /// `human_login.console_client.redirect_uris`: the only places a code may be
+    /// sent, checked before the limiter and the password.
+    redirect_uris: Arc<[String]>,
     limiter: Limiter,
 }
 
-/// The two buckets in front of the password check: one per email address and one
-/// per source address, both from `human_login.login_rate_limit`.
+/// The two buckets in front of the password check, both from
+/// `human_login.login_rate_limit`: one per email address, and one for every
+/// sign-in together.
+///
+/// **There is no bucket per source address**, and that is deliberate (`login.md`,
+/// "No bucket per source address"): the only address this process can see is the
+/// TCP peer, and behind Caddy or the console's own server that is the same
+/// address for every person, so a "per source" bucket is a global one that one
+/// bad request every ten seconds keeps empty.
 #[derive(Clone)]
 pub struct Limiter {
     store: Arc<dyn RateLimitStore>,
-    config: RateLimitConfig,
+    per_email: RateLimitConfig,
+    aggregate: RateLimitConfig,
 }
 
 impl Limiter {
     /// A limiter with its own in-memory store (bounded and swept: cratestack's).
     /// One `serve` replica, like the codes the sign-in issues.
     #[must_use]
-    pub fn new(config: RateLimitConfig) -> Self {
+    pub fn new(limits: &LoginRateLimit) -> Self {
         Self {
             store: Arc::new(InMemoryRateLimitStore::new()),
-            config,
+            per_email: RateLimitConfig::new(
+                limits.per_email.burst,
+                limits.per_email.refill_per_second,
+            ),
+            aggregate: RateLimitConfig::new(
+                limits.aggregate.burst,
+                limits.aggregate.refill_per_second,
+            ),
         }
     }
 
-    /// Takes one token from `source`'s bucket, then one from `email`'s.
-    async fn admit(&self, source: &str, email: &str) -> Admission {
-        for key in [source_key(source), email_key(email)] {
-            match self.store.consume(&key, self.config).await {
+    /// Takes one token from `email`'s bucket, then one from the aggregate.
+    ///
+    /// **The email bucket is first, and that order is load-bearing.** A request
+    /// the email bucket refuses never reaches the aggregate, so hammering one
+    /// address spends only that address's tokens and cannot empty the bucket
+    /// every other person's sign-in draws on.
+    async fn admit(&self, email: &str) -> Admission {
+        for (key, config) in [
+            (email_key(email), self.per_email),
+            (AGGREGATE_KEY.to_owned(), self.aggregate),
+        ] {
+            match self.store.consume(&key, config).await {
                 Ok(RateLimitDecision::Allowed { .. }) => {}
                 Ok(RateLimitDecision::Throttled { retry_after_secs }) => {
                     return Admission::Throttled { retry_after_secs };
@@ -86,14 +112,8 @@ enum Admission {
     Unavailable,
 }
 
-/// The source bucket's key: the real TCP peer, as `sms_api::router`'s own
-/// source limiter keys (a forwarded-for header is attacker-controlled unless a
-/// proxy is trusted, and none is configured here). No peer at all (a server not
-/// built `with_connect_info`) shares one `unverified` bucket, which is stricter,
-/// not looser.
-fn source_key(source: &str) -> String {
-    format!("login-source:{source}")
-}
+/// The aggregate bucket's one key.
+const AGGREGATE_KEY: &str = "login-aggregate";
 
 /// The email bucket's key. Trimmed and lowercased so `Ana@x` and `ana@x ` share
 /// one bucket, and capped (see [`MAX_EMAIL_KEY_BYTES`]).
@@ -181,9 +201,37 @@ fn refused() -> Response {
     failure(StatusCode::UNAUTHORIZED, "invalid_credentials")
 }
 
+/// The shortest and longest `code_challenge` this route takes: RFC 7636, section
+/// 4.2 (43 to 128 characters), and a `S256` challenge is always the 43 of a
+/// base64url-encoded SHA-256.
+const CODE_CHALLENGE_LENGTH: std::ops::RangeInclusive<usize> = 43..=128;
+
+/// What the request alone proves wrong, before it costs a bucket token or an
+/// Argon2 hash: a challenge method other than `S256`, a challenge that is not 43
+/// to 128 base64url characters (the library accepts an empty one), and a
+/// `redirect_uri` the console is not registered with. Each is a malformed
+/// *request*, so each is the `400` the library's own refusal would be mapped to,
+/// never the person's `401`: nothing here depends on who the caller is.
+fn malformed(request: &LoginRequest, redirect_uris: &[String]) -> Option<&'static str> {
+    if request.code_challenge_method != "S256" {
+        return Some("code_challenge_method");
+    }
+    if !CODE_CHALLENGE_LENGTH.contains(&request.code_challenge.len())
+        || !request
+            .code_challenge
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        return Some("code_challenge");
+    }
+    if !redirect_uris.contains(&request.redirect_uri) {
+        return Some("redirect_uri");
+    }
+    None
+}
+
 async fn login_handler(
     State(state): State<LoginState>,
-    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     body: Result<Json<LoginRequest>, JsonRejection>,
 ) -> Response {
     let Ok(Json(request)) = body else {
@@ -197,13 +245,16 @@ async fn login_handler(
         return refused();
     }
 
+    // The checks that need no account and no secret, before the limiter and
+    // before any Argon2 work: a request that can never succeed spends nothing.
+    if let Some(field) = malformed(&request, &state.redirect_uris) {
+        tracing::warn!(field, "login: the request is malformed");
+        return failure(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+
     // Before any Argon2 work: the limiter exists to bound how many password
     // hashes a caller can make this process run.
-    let source = peer.map_or_else(
-        || "unverified".to_owned(),
-        |Extension(ConnectInfo(addr))| format!("ip:{}", addr.ip()),
-    );
-    match state.limiter.admit(&source, &request.email).await {
+    match state.limiter.admit(&request.email).await {
         Admission::Allowed => {}
         Admission::Throttled { retry_after_secs } => {
             let mut response = failure(StatusCode::TOO_MANY_REQUESTS, "rate_limited");
@@ -236,6 +287,7 @@ async fn login_handler(
     // Only what the code must carry to survive to token issuance. Role and
     // permissions are deliberately NOT stashed in `attributes`: the API resolves
     // them from rows per request.
+    let stamp = authenticated.last_login_stamp();
     let identity = Identity {
         provider_id: PROVIDER_ID.to_owned(),
         external_id: authenticated.subject,
@@ -267,6 +319,9 @@ async fn login_handler(
             failure(StatusCode::BAD_REQUEST, "invalid_request")
         }
         AuthorizeOutcome::Redirect(redirect) => {
+            // Only now, with a code issued: `lastLoginAt` says the person
+            // signed in, not that their password was once right.
+            stamp_last_login(&state.db, &stamp).await;
             let mut response = (StatusCode::OK, Json(LoginResponse { redirect })).into_response();
             response
                 .headers_mut()
@@ -302,7 +357,13 @@ fn redirect_carries_an_error(redirect: &str) -> bool {
 /// `console_client_id` is `human_login.console_client.client_id`. Mounted only
 /// when `human_login` is served.
 // No `#[must_use]`: axum's `Router` already carries one.
-pub fn router(db: Cratestack, op: OpState, console_client_id: &str, limiter: Limiter) -> Router {
+pub fn router(
+    db: Cratestack,
+    op: OpState,
+    console_client_id: &str,
+    redirect_uris: &[String],
+    limiter: Limiter,
+) -> Router {
     Router::new()
         .route("/login", post(login_handler))
         .layer(DefaultBodyLimit::max(MAX_LOGIN_BODY_BYTES))
@@ -310,6 +371,7 @@ pub fn router(db: Cratestack, op: OpState, console_client_id: &str, limiter: Lim
             db,
             op,
             console_client_id: Arc::from(console_client_id),
+            redirect_uris: redirect_uris.into(),
             limiter,
         })
 }
@@ -412,31 +474,163 @@ mod tests {
         assert!(email_key(&straddle).is_char_boundary(email_key(&straddle).len()));
     }
 
+    fn limits(per_email: u32, aggregate: u32) -> LoginRateLimit {
+        let bucket = |burst| sms_config::Bucket {
+            burst,
+            refill_per_second: 0.001,
+        };
+        LoginRateLimit {
+            per_email: bucket(per_email),
+            aggregate: bucket(aggregate),
+        }
+    }
+
+    /// The email bucket is one address's own: spending it never touches another
+    /// address, and case and surrounding space do not make a second one.
     #[tokio::test]
-    async fn the_limiter_takes_a_token_from_the_source_and_from_the_email() {
-        let limiter = Limiter::new(RateLimitConfig::new(2, 0.001));
-        // The same email from two sources: the email bucket (2) runs out first.
+    async fn the_email_bucket_is_one_addresses_own() {
+        let limiter = Limiter::new(&limits(2, 100));
         assert!(matches!(
-            limiter.admit("ip:1.1.1.1", "a@x.test").await,
+            limiter.admit("a@x.test").await,
             Admission::Allowed
         ));
         assert!(matches!(
-            limiter.admit("ip:2.2.2.2", "a@x.test").await,
+            limiter.admit("A@x.test ").await,
             Admission::Allowed
         ));
         assert!(matches!(
-            limiter.admit("ip:3.3.3.3", "A@x.test ").await,
+            limiter.admit("a@x.test").await,
             Admission::Throttled { .. }
         ));
-        // Another email from a source that has used one token: still admitted
-        // once, then the source bucket (2) is the limit.
+        assert!(
+            matches!(limiter.admit("b@x.test").await, Admission::Allowed),
+            "another address is untouched by a throttled one"
+        );
+    }
+
+    /// The aggregate bucket is every sign-in's together: distinct addresses spend
+    /// one shared budget, which is what bounds the Argon2 work whoever asks.
+    #[tokio::test]
+    async fn the_aggregate_bucket_is_shared_by_every_address() {
+        let limiter = Limiter::new(&limits(100, 3));
+        for email in ["a@x.test", "b@x.test", "c@x.test"] {
+            assert!(matches!(limiter.admit(email).await, Admission::Allowed));
+        }
+        assert!(
+            matches!(limiter.admit("d@x.test").await, Admission::Throttled { .. }),
+            "a fourth address finds the shared budget spent"
+        );
+    }
+
+    /// The order the doc on `admit` argues for, observed: an address the email
+    /// bucket refuses never reaches the aggregate, so hammering one address
+    /// cannot empty the bucket everyone else draws on.
+    #[tokio::test]
+    async fn a_throttled_address_does_not_spend_the_aggregate() {
+        let limiter = Limiter::new(&limits(1, 3));
         assert!(matches!(
-            limiter.admit("ip:1.1.1.1", "b@x.test").await,
+            limiter.admit("victim@x.test").await,
             Admission::Allowed
         ));
+        for _ in 0..50 {
+            assert!(matches!(
+                limiter.admit("victim@x.test").await,
+                Admission::Throttled { .. }
+            ));
+        }
+        // The aggregate holds 3: one went to the first request, so two are left.
         assert!(matches!(
-            limiter.admit("ip:1.1.1.1", "c@x.test").await,
-            Admission::Throttled { .. }
+            limiter.admit("other-1@x.test").await,
+            Admission::Allowed
         ));
+        assert!(
+            matches!(limiter.admit("other-2@x.test").await, Admission::Allowed),
+            "fifty refusals of one address must not have drained the aggregate"
+        );
+    }
+
+    fn registered() -> Vec<String> {
+        vec!["https://admin.example/api/auth/callback".to_owned()]
+    }
+
+    /// A request that is well formed for the three cheap checks.
+    fn well_formed() -> LoginRequest {
+        LoginRequest {
+            code_challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM".to_owned(),
+            redirect_uri: registered()[0].clone(),
+            ..request()
+        }
+    }
+
+    #[test]
+    fn a_well_formed_request_passes_the_cheap_checks() {
+        assert_eq!(malformed(&well_formed(), &registered()), None);
+    }
+
+    #[test]
+    fn a_challenge_method_other_than_s256_is_malformed() {
+        for method in ["plain", "s256", "", "S256 ", "S512"] {
+            let request = LoginRequest {
+                code_challenge_method: method.to_owned(),
+                ..well_formed()
+            };
+            assert_eq!(
+                malformed(&request, &registered()),
+                Some("code_challenge_method"),
+                "{method:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_challenge_must_be_43_to_128_base64url_characters() {
+        let with = |challenge: String| LoginRequest {
+            code_challenge: challenge,
+            ..well_formed()
+        };
+        for bad in [
+            String::new(),
+            "a".repeat(42),
+            "a".repeat(129),
+            format!("{}=", "a".repeat(43)),
+            format!("{}+", "a".repeat(43)),
+            format!("{}/", "a".repeat(43)),
+            format!("{} ", "a".repeat(43)),
+            format!("{}é", "a".repeat(42)),
+        ] {
+            assert_eq!(
+                malformed(&with(bad.clone()), &registered()),
+                Some("code_challenge"),
+                "{bad:?}"
+            );
+        }
+        for good in ["a".repeat(43), "A-_9".repeat(32)] {
+            assert_eq!(
+                malformed(&with(good.clone()), &registered()),
+                None,
+                "{good}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_redirect_uri_that_is_not_registered_is_malformed_whatever_it_resembles() {
+        for uri in [
+            "https://admin.example/api/auth/callback/",
+            "https://admin.example/api/auth/callback?x=1",
+            "HTTPS://admin.example/api/auth/callback",
+            "https://evil.example/api/auth/callback",
+            "",
+        ] {
+            let request = LoginRequest {
+                redirect_uri: uri.to_owned(),
+                ..well_formed()
+            };
+            assert_eq!(
+                malformed(&request, &registered()),
+                Some("redirect_uri"),
+                "{uri:?}"
+            );
+        }
     }
 }

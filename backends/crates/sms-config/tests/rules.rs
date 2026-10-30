@@ -706,7 +706,8 @@ fn the_absent_default_serves_human_login_exactly_when_both_blocks_are_written() 
         human.console_client.redirect_uris,
         ["https://admin.example.com/api/auth/callback"]
     );
-    assert_eq!(human.login_rate_limit.burst, 5);
+    assert_eq!(human.login_rate_limit.per_email.burst, 5);
+    assert_eq!(human.login_rate_limit.aggregate.burst, 10);
 }
 
 #[test]
@@ -830,16 +831,56 @@ fn the_redirect_uris_are_a_non_empty_list_of_clean_distinct_urls() {
 }
 
 #[test]
-fn the_login_bucket_is_range_checked() {
-    assert!(matches!(
-        refused("human-login-bucket-burst-zero"),
-        ConfigError::InvalidValue { key, .. } if key == "human_login.login_rate_limit.burst"
-    ));
-    assert!(matches!(
-        refused("human-login-bucket-refill-zero"),
-        ConfigError::InvalidValue { key, .. }
-            if key == "human_login.login_rate_limit.refill_per_second"
-    ));
+fn both_login_buckets_are_range_checked() {
+    for (fixture, key) in [
+        (
+            "human-login-bucket-burst-zero",
+            "human_login.login_rate_limit.per_email.burst",
+        ),
+        (
+            "human-login-bucket-refill-zero",
+            "human_login.login_rate_limit.per_email.refill_per_second",
+        ),
+        (
+            "human-login-per-email-refill-negative",
+            "human_login.login_rate_limit.per_email.refill_per_second",
+        ),
+        (
+            "human-login-aggregate-burst-zero",
+            "human_login.login_rate_limit.aggregate.burst",
+        ),
+        (
+            "human-login-aggregate-refill-zero",
+            "human_login.login_rate_limit.aggregate.refill_per_second",
+        ),
+        (
+            "human-login-aggregate-refill-negative",
+            "human_login.login_rate_limit.aggregate.refill_per_second",
+        ),
+        (
+            "human-login-aggregate-refill-nan",
+            "human_login.login_rate_limit.aggregate.refill_per_second",
+        ),
+    ] {
+        assert!(
+            matches!(
+                refused(fixture),
+                ConfigError::InvalidValue { key: got, .. } if got == key
+            ),
+            "{fixture} must be refused naming {key}"
+        );
+    }
+}
+
+/// The two buckets are separate keys: the old flat bucket (one rate for the
+/// email and the source alike) is a shape error, a bucket nobody asked for is
+/// refused rather than ignored, and both are required.
+#[test]
+fn the_login_rate_limit_names_exactly_its_two_buckets() {
+    let flat = shape_message("shape-login-rate-limit-flat");
+    assert!(flat.contains("per_email"), "{flat}");
+    assert!(shape_message("shape-login-rate-limit-unknown-key").contains("per_source"));
+    assert!(shape_message("shape-login-rate-limit-no-aggregate").contains("aggregate"));
 }
 
 #[test]

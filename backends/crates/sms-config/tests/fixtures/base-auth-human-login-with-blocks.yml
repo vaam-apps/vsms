@@ -14,5 +14,9 @@ human_login:
     redirect_uris:
       - https://admin.example.com/api/auth/callback
   login_rate_limit:
-    burst: 5
-    refill_per_second: 0.1
+    per_email:
+      burst: 5
+      refill_per_second: 0.1
+    aggregate:
+      burst: 10
+      refill_per_second: 1.0

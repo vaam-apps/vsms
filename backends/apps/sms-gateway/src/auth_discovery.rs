@@ -100,8 +100,9 @@ mod tests {
     const BLOCKS: &str = "op:\n  issuer: https://sms.example.org\n  token_rate_limit:\n    burst: 10\n    \
         refill_per_second: 0.3\n  signing_key:\n    refresh_interval_secs: 60\n    \
         rotation_overlap_secs: 1800\nhuman_login:\n  console_client:\n    client_id: sms-console\n    \
-        redirect_uris:\n      - https://admin.example.org/cb\n  login_rate_limit:\n    burst: 5\n    \
-        refill_per_second: 0.1\n";
+        redirect_uris:\n      - https://admin.example.org/cb\n  login_rate_limit:\n    per_email:\n      \
+        burst: 5\n      refill_per_second: 0.1\n    aggregate:\n      burst: 10\n      \
+        refill_per_second: 1.0\n";
 
     #[tokio::test]
     async fn human_login_is_listed_exactly_when_it_is_served() {

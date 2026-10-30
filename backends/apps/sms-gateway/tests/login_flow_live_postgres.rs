@@ -69,6 +69,17 @@ const REDIRECT_URI: &str = "http://127.0.0.1:1/callback";
 static TEST_PASSWORD: std::sync::LazyLock<String> =
     std::sync::LazyLock::new(|| sms_core::password::generate_password(32));
 
+/// A password drawn at run time, for a test that needs one more than
+/// [`TEST_PASSWORD`] (a wrong one, or a second account's). Never a literal.
+fn test_password() -> String {
+    sms_core::password::generate_password(32)
+}
+
+/// A throwaway `state` or `nonce`: random, so no test carries a fixed one.
+fn token() -> String {
+    sms_core::password::generate_password(16)
+}
+
 fn owner() -> CratestackContext {
     Principal {
         sub: "login-flow-gate-test-owner".to_owned(),
@@ -176,6 +187,29 @@ enum Serves {
     Both,
 }
 
+/// The buckets a test deployment is written with. The defaults are wide enough
+/// that a test not about limiting never meets one.
+#[derive(Clone, Copy)]
+struct Limits {
+    /// `human_login.login_rate_limit.per_email.burst`.
+    per_email: u32,
+    /// `human_login.login_rate_limit.aggregate.burst`.
+    aggregate: u32,
+    /// `op.token_rate_limit.burst`: per `client_id`, and per code for the
+    /// `authorization_code` grant.
+    token: u32,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            per_email: 100,
+            aggregate: 1000,
+            token: 1000,
+        }
+    }
+}
+
 /// One spawned-process deployment: its own console client id (so a test that
 /// breaks the row breaks nobody else's), its own configuration and key files.
 struct Deployment {
@@ -188,6 +222,17 @@ struct Deployment {
 
 impl Deployment {
     async fn new(serves: Serves, login_burst: u32) -> Self {
+        Self::with(
+            serves,
+            Limits {
+                per_email: login_burst,
+                ..Limits::default()
+            },
+        )
+        .await
+    }
+
+    async fn with(serves: Serves, limits: Limits) -> Self {
         let port = free_port();
         let console_client_id = format!("console-{}", unique_suffix());
         let issuer = format!("http://127.0.0.1:{port}");
@@ -197,14 +242,17 @@ impl Deployment {
             Serves::Both => "",
         };
         let op = format!(
-            "op:\n  issuer: {issuer}\n  token_rate_limit:\n    burst: 1000\n    \
-             refill_per_second: 100.0\n  signing_key:\n    refresh_interval_secs: 1\n    \
-             rotation_overlap_secs: 1800\n"
+            "op:\n  issuer: {issuer}\n  token_rate_limit:\n    burst: {}\n    \
+             refill_per_second: 0.001\n  signing_key:\n    refresh_interval_secs: 1\n    \
+             rotation_overlap_secs: 1800\n",
+            limits.token
         );
         let human = format!(
             "human_login:\n  console_client:\n    client_id: {console_client_id}\n    \
-             redirect_uris:\n      - {REDIRECT_URI}\n  login_rate_limit:\n    burst: {login_burst}\n    \
-             refill_per_second: 0.001\n"
+             redirect_uris:\n      - {REDIRECT_URI}\n  login_rate_limit:\n    per_email:\n      \
+             burst: {}\n      refill_per_second: 0.001\n    aggregate:\n      burst: {}\n      \
+             refill_per_second: 0.001\n",
+            limits.per_email, limits.aggregate
         );
         let blocks = match serves {
             Serves::Machines => op,
@@ -546,9 +594,7 @@ async fn sign_in(
     let (verifier, challenge) = pkce_pair();
     let answer = post_login(
         base_url,
-        &login_body(
-            deployment, email, password, "state-1", &challenge, "nonce-1",
-        ),
+        &login_body(deployment, email, password, &token(), &challenge, &token()),
     )
     .await;
     assert_eq!(answer.status, 200, "a good sign-in: {}", answer.body);
@@ -772,9 +818,9 @@ async fn only_s256_is_accepted_and_a_refusal_is_never_a_redirect() {
             &deployment,
             &email,
             TEST_PASSWORD.as_str(),
-            "s",
+            &token(),
             &challenge,
-            "n",
+            &token(),
         );
         body["code_challenge_method"] = method.into();
         // `plain` would let the challenge be the verifier itself.
@@ -808,9 +854,9 @@ async fn a_redirect_uri_the_console_is_not_registered_with_is_refused_and_never_
         &deployment,
         &email,
         TEST_PASSWORD.as_str(),
-        "s",
+        &token(),
         &challenge,
-        "n",
+        &token(),
     );
     body["redirect_uri"] = "https://attacker.example/callback".into();
     let answer = post_login(&gateway.base_url, &body).await;
@@ -827,9 +873,9 @@ async fn a_redirect_uri_the_console_is_not_registered_with_is_refused_and_never_
         &deployment,
         &email,
         TEST_PASSWORD.as_str(),
-        "s",
+        &token(),
         &challenge,
-        "n",
+        &token(),
     );
     body["scope"] = "openid profile offline_access".into();
     let answer = post_login(&gateway.base_url, &body).await;
@@ -863,8 +909,14 @@ async fn every_refusal_of_the_person_is_one_identical_401() {
     let (_, challenge) = pkce_pair();
 
     let mut answers = Vec::new();
+    let wrong_password = test_password();
     for (case, email, password, client_id) in [
-        ("wrong password", good.as_str(), "not the password", None),
+        (
+            "wrong password",
+            good.as_str(),
+            wrong_password.as_str(),
+            None,
+        ),
         (
             "unknown email",
             "nobody@example.test",
@@ -896,7 +948,7 @@ async fn every_refusal_of_the_person_is_one_identical_401() {
             Some("appc_0123456789abcdef"),
         ),
     ] {
-        let mut body = login_body(&deployment, email, password, "s", &challenge, "n");
+        let mut body = login_body(&deployment, email, password, &token(), &challenge, &token());
         if let Some(client_id) = client_id {
             body["client_id"] = client_id.into();
         }
@@ -944,10 +996,10 @@ async fn the_limiter_answers_before_the_password_is_looked_at() {
             &login_body(
                 &deployment,
                 &email,
-                "a wrong password",
-                "s",
+                &test_password(),
+                &token(),
                 &challenge,
-                "n",
+                &token(),
             ),
         )
         .await;
@@ -960,9 +1012,9 @@ async fn the_limiter_answers_before_the_password_is_looked_at() {
             &deployment,
             &email,
             TEST_PASSWORD.as_str(),
-            "s",
+            &token(),
             &challenge,
-            "n",
+            &token(),
         ),
     )
     .await;
@@ -990,18 +1042,357 @@ async fn the_limiter_answers_before_the_password_is_looked_at() {
         started.elapsed() < StdDuration::from_secs(2),
         "a throttled request is cheap"
     );
-    // The source bucket is the same one: another email from this machine waits too.
+    // There is no source bucket: another email from this same machine (the same
+    // TCP peer, which is everyone's behind the edge) is untouched by the
+    // throttled one, and is judged on its own password.
     let other = format!("someone-else-{}@example.test", unique_suffix());
     let answer = post_login(
         &gateway.base_url,
-        &login_body(&deployment, &other, "x", "s", &challenge, "n"),
+        &login_body(
+            &deployment,
+            &other,
+            &test_password(),
+            &token(),
+            &challenge,
+            &token(),
+        ),
     )
     .await;
     assert_eq!(
-        answer.status, 429,
-        "the source is throttled too: {}",
+        answer.status, 401,
+        "another address from the same peer is not throttled: {}",
         answer.body
     );
+    gateway.kill();
+}
+
+/// **The lockout this release closed.** The sign-in used to be limited per TCP
+/// peer, and behind Caddy (or the console's server) the peer is the same for
+/// every person, so one bad `/login` every ten seconds from anywhere kept every
+/// operator out. Here the "attacker" and the operator share a peer (loopback is
+/// every client's address in this test) and the attacker spends everything one
+/// email can spend; the operator, on another email, still signs in.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn one_address_hammering_the_sign_in_cannot_lock_other_operators_out() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let deployment = Deployment::new(Serves::People, 3).await;
+    deployment.prepare().await;
+    let suffix = unique_suffix();
+    let password = test_password();
+    let (_, operator) = seed_account(&db, &suffix, Some(&password), true).await;
+    let gateway = deployment.spawn().await;
+    let (verifier, challenge) = pkce_pair();
+
+    let attacked = format!("attacked-{suffix}@example.test");
+    let mut statuses = Vec::new();
+    for _ in 0..12 {
+        let wrong = test_password();
+        let answer = post_login(
+            &gateway.base_url,
+            &login_body(
+                &deployment,
+                &attacked,
+                &wrong,
+                &token(),
+                &challenge,
+                &token(),
+            ),
+        )
+        .await;
+        statuses.push(answer.status.as_u16());
+    }
+    assert_eq!(
+        statuses,
+        [401, 401, 401, 429, 429, 429, 429, 429, 429, 429, 429, 429],
+        "the attacked address runs out of its own three tries"
+    );
+
+    let signed_in = post_login(
+        &gateway.base_url,
+        &login_body(
+            &deployment,
+            &operator,
+            &password,
+            &token(),
+            &challenge,
+            &token(),
+        ),
+    )
+    .await;
+    assert_eq!(
+        signed_in.status, 200,
+        "an operator on another address, from the same peer, still signs in: {}",
+        signed_in.body
+    );
+    let (code, _) = parse_code_and_state(signed_in.body["redirect"].as_str().expect("redirect"));
+    let redeemed = post_token(&gateway.base_url, &exchange(&deployment, &code, &verifier)).await;
+    assert!(redeemed.status.is_success(), "{}", redeemed.body);
+    gateway.kill();
+}
+
+/// The aggregate bucket: every sign-in draws on one budget, the Argon2 CPU
+/// bound. Spent by distinct addresses, it refuses the next one with a `429` that
+/// never reached the password check.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn the_aggregate_bucket_bounds_the_hashing_whoever_asks() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let deployment = Deployment::with(
+        Serves::People,
+        Limits {
+            aggregate: 3,
+            ..Limits::default()
+        },
+    )
+    .await;
+    deployment.prepare().await;
+    let password = test_password();
+    let (user_id, email) = seed_account(&db, &unique_suffix(), Some(&password), true).await;
+    let gateway = deployment.spawn().await;
+    let (_, challenge) = pkce_pair();
+
+    for index in 0..3 {
+        let stranger = format!("stranger-{index}-{}@example.test", unique_suffix());
+        let answer = post_login(
+            &gateway.base_url,
+            &login_body(
+                &deployment,
+                &stranger,
+                &password,
+                &token(),
+                &challenge,
+                &token(),
+            ),
+        )
+        .await;
+        assert_eq!(answer.status, 401, "{index}: {}", answer.body);
+    }
+    let throttled = post_login(
+        &gateway.base_url,
+        &login_body(
+            &deployment,
+            &email,
+            &password,
+            &token(),
+            &challenge,
+            &token(),
+        ),
+    )
+    .await;
+    assert_eq!(
+        throttled.status, 429,
+        "the shared budget is spent, so even the right password waits: {}",
+        throttled.body
+    );
+    assert!(throttled.headers.contains_key("retry-after"));
+    let user = db
+        .user()
+        .find_unique(user_id)
+        .run(&sys())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        user.lastLoginAt, None,
+        "a throttled request authenticated nobody"
+    );
+    gateway.kill();
+}
+
+/// **Bad codes cannot throttle a real redemption.** `/token` used to limit the
+/// `authorization_code` grant per `client_id`, and the console's `client_id` is
+/// public: anyone spamming `code=x` for it emptied the one bucket every
+/// operator's real code (sixty seconds of life) needed. The grant is keyed on the
+/// code now.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn spamming_bad_codes_cannot_throttle_a_real_redemption() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let deployment = Deployment::with(
+        Serves::People,
+        Limits {
+            token: 3,
+            ..Limits::default()
+        },
+    )
+    .await;
+    deployment.prepare().await;
+    let password = test_password();
+    let (_, email) = seed_account(&db, &unique_suffix(), Some(&password), true).await;
+    let gateway = deployment.spawn().await;
+    let (code, verifier) = sign_in(&deployment, &gateway.base_url, &email, &password).await;
+
+    let mut statuses = Vec::new();
+    for _ in 0..15 {
+        let bad = post_token(&gateway.base_url, &exchange(&deployment, "x", &verifier)).await;
+        statuses.push(bad.status.as_u16());
+    }
+    assert_eq!(
+        statuses.iter().filter(|status| **status == 429).count(),
+        12,
+        "the spammed code is throttled after its own three tries: {statuses:?}"
+    );
+    assert!(
+        statuses.iter().take(3).all(|status| *status == 400),
+        "and until then it is an ordinary invalid_grant: {statuses:?}"
+    );
+
+    let real = post_token(&gateway.base_url, &exchange(&deployment, &code, &verifier)).await;
+    assert!(
+        real.status.is_success(),
+        "the real code has a bucket of its own: {} {}",
+        real.status,
+        real.body
+    );
+    gateway.kill();
+}
+
+/// What the request alone proves wrong is refused before the limiter and before
+/// any hashing, as the `400` of a malformed request and never as the person's
+/// `401`. With a per-email burst of **one**, a burst of such requests would
+/// throttle the address if any of them spent a token: none does, and the good
+/// request after them still signs in.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn a_request_that_can_never_succeed_spends_nothing_and_is_never_the_persons_401() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let deployment = Deployment::new(Serves::People, 1).await;
+    deployment.prepare().await;
+    let password = test_password();
+    let (user_id, email) = seed_account(&db, &unique_suffix(), Some(&password), true).await;
+    let gateway = deployment.spawn().await;
+    let (_, challenge) = pkce_pair();
+
+    let mutations: [(&str, &str, serde_json::Value); 9] = [
+        ("plain method", "code_challenge_method", "plain".into()),
+        ("lower-case method", "code_challenge_method", "s256".into()),
+        ("empty challenge", "code_challenge", "".into()),
+        ("short challenge", "code_challenge", "a".repeat(42).into()),
+        ("long challenge", "code_challenge", "a".repeat(129).into()),
+        (
+            "padded challenge",
+            "code_challenge",
+            format!("{challenge}=").into(),
+        ),
+        (
+            "unregistered redirect",
+            "redirect_uri",
+            "https://evil.example/cb".into(),
+        ),
+        (
+            "near-miss redirect",
+            "redirect_uri",
+            format!("{REDIRECT_URI}/").into(),
+        ),
+        ("empty redirect", "redirect_uri", "".into()),
+    ];
+    for (name, field, value) in mutations {
+        for attempt in 0..3 {
+            for (who, secret) in [("right", password.clone()), ("wrong", test_password())] {
+                let mut body =
+                    login_body(&deployment, &email, &secret, &token(), &challenge, &token());
+                body[field] = value.clone();
+                let answer = post_login(&gateway.base_url, &body).await;
+                assert_eq!(
+                    answer.status, 400,
+                    "{name} ({who} password, attempt {attempt}): never the person's 401, \
+                     never a 429: {}",
+                    answer.body
+                );
+                assert_eq!(answer.body["error"], "invalid_request", "{name}");
+            }
+        }
+    }
+    let user = db
+        .user()
+        .find_unique(user_id)
+        .run(&sys())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(user.lastLoginAt, None, "nothing signed in");
+
+    let good = post_login(
+        &gateway.base_url,
+        &login_body(
+            &deployment,
+            &email,
+            &password,
+            &token(),
+            &challenge,
+            &token(),
+        ),
+    )
+    .await;
+    assert_eq!(
+        good.status, 200,
+        "the one token the address has was never spent: {}",
+        good.body
+    );
+    gateway.kill();
+}
+
+/// `lastLoginAt` says a person signed in, so it is stamped when a code has been
+/// issued and not when the password was merely right: a correct password with a
+/// scope the console may not hold is refused by the library after the password
+/// check, and stamps nothing; the same login asking for a legal scope does.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn last_login_is_stamped_only_once_a_code_is_issued() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let deployment = Deployment::new(Serves::People, 100).await;
+    deployment.prepare().await;
+    let password = test_password();
+    let (user_id, email) = seed_account(&db, &unique_suffix(), Some(&password), true).await;
+    let gateway = deployment.spawn().await;
+    let (_, challenge) = pkce_pair();
+    let last_login = || async {
+        db.user()
+            .find_unique(user_id.clone())
+            .run(&sys())
+            .await
+            .unwrap()
+            .unwrap()
+            .lastLoginAt
+    };
+
+    let mut refused = login_body(
+        &deployment,
+        &email,
+        &password,
+        &token(),
+        &challenge,
+        &token(),
+    );
+    refused["scope"] = "openid profile offline_access".into();
+    let answer = post_login(&gateway.base_url, &refused).await;
+    assert_eq!(answer.status, 400, "{}", answer.body);
+    assert_eq!(
+        last_login().await,
+        None,
+        "the password was right and no code was issued: that is not a sign-in"
+    );
+
+    let good = post_login(
+        &gateway.base_url,
+        &login_body(
+            &deployment,
+            &email,
+            &password,
+            &token(),
+            &challenge,
+            &token(),
+        ),
+    )
+    .await;
+    assert_eq!(good.status, 200, "{}", good.body);
+    assert!(last_login().await.is_some(), "a code was issued");
     gateway.kill();
 }
 
@@ -1151,7 +1542,14 @@ async fn authorization_code_is_refused_and_login_is_not_a_route_when_only_machin
     // `POST /login` is not a route here: it is answered exactly as a path that
     // never existed is, whatever that answer is on this deployment's doors.
     let (_, challenge) = pkce_pair();
-    let body = login_body(&deployment, "x@example.test", "x", "s", &challenge, "n");
+    let body = login_body(
+        &deployment,
+        "x@example.test",
+        &test_password(),
+        &token(),
+        &challenge,
+        &token(),
+    );
     let login = post_login(&gateway.base_url, &body).await;
     let unknown = reqwest::Client::new()
         .post(format!("{}/no-such-route-at-all", gateway.base_url))
@@ -1267,6 +1665,71 @@ async fn serve_refuses_a_console_client_that_is_missing_or_wrong_and_seeding_rep
 // --- the operator commands --------------------------------------------------
 
 #[cfg(unix)]
+/// **A row that belongs to a machine is never taken over.** `seed-console-client`
+/// repairs a stale console row; a row with the console's id that holds a public
+/// key and authenticates with `private_key_jwt` is a service's, and rewriting it
+/// would cut that service off. The command refuses, naming the conflict, and
+/// leaves the row exactly as it was; `serve` refuses too, without offering the
+/// command that would refuse again.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn seeding_refuses_to_take_over_a_machine_clients_row() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    ensure_orange_cm_provider(&db).await;
+    let deployment = Deployment::new(Serves::People, 100).await;
+    deployment.cli_ok("rotate-signing-key", &[]);
+
+    let machine_jwks = r#"{"keys":[{"kty":"RSA","n":"AQAB","e":"AQAB","kid":"machine"}]}"#;
+    db.oauth_client()
+        .create(schema::CreateOauthClientInput {
+            clientId: deployment.console_client_id.clone(),
+            appClientId: None,
+            tokenEndpointAuthMethod: schema::ClientAuthMethod::private_key_jwt,
+            jwks: Some(machine_jwks.to_owned()),
+            grantTypes: " client_credentials ".to_owned(),
+            scopes: " sms:send ".to_owned(),
+            redirectUris: " ".to_owned(),
+            requirePkce: false,
+        })
+        .run(&sys())
+        .await
+        .expect("registering a machine client under the console's id");
+    let before = console_row(&db, &deployment.console_client_id).await;
+
+    let seeded = deployment.cli("seed-console-client", &[]);
+    assert!(
+        !seeded.status.success(),
+        "seeding must refuse a machine client's row: {}",
+        stdout(&seeded)
+    );
+    let refusal = stderr(&seeded);
+    assert!(refusal.contains("machine client"), "{refusal}");
+    assert!(refusal.contains("public key"), "{refusal}");
+    assert!(
+        refusal.contains("private_key_jwt") || refusal.contains("auth method"),
+        "{refusal}"
+    );
+    assert!(refusal.contains(&deployment.console_client_id), "{refusal}");
+
+    let after = console_row(&db, &deployment.console_client_id).await;
+    assert_eq!(
+        after.tokenEndpointAuthMethod,
+        before.tokenEndpointAuthMethod
+    );
+    assert_eq!(after.jwks, before.jwks);
+    assert_eq!(after.grantTypes, before.grantTypes);
+    assert_eq!(after.scopes, before.scopes);
+    assert_eq!(after.updatedAt, before.updatedAt, "the row was not written");
+
+    let boot = deployment.serve_refusal();
+    assert!(boot.contains("machine client"), "{boot}");
+    assert!(
+        !boot.contains("run `sms-gateway seed-console-client`"),
+        "serve must not offer the command that refuses this row: {boot}"
+    );
+}
+
 fn mode_of(path: &Path) -> u32 {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(path).unwrap().permissions().mode() & 0o777
@@ -1387,7 +1850,14 @@ async fn an_existing_password_is_refused_without_reset_and_replaced_with_it() {
     let (_, challenge) = pkce_pair();
     let still = post_login(
         &gateway.base_url,
-        &login_body(&deployment, &email, &password, "s", &challenge, "n"),
+        &login_body(
+            &deployment,
+            &email,
+            &password,
+            &token(),
+            &challenge,
+            &token(),
+        ),
     )
     .await;
     assert_eq!(
@@ -1415,15 +1885,42 @@ async fn an_existing_password_is_refused_without_reset_and_replaced_with_it() {
     assert!(reset.status.success(), "{}", stderr(&reset));
     let new_password = std::fs::read_to_string(&other).unwrap();
     assert_ne!(new_password, password);
+    // Neither the old password nor the one just written is on any stream of any of
+    // the runs: only the path they were written to, and the account's id and email.
+    for (run, output) in [("refused", &refused), ("reset", &reset)] {
+        for (stream, text) in [("stdout", stdout(output)), ("stderr", stderr(output))] {
+            for secret in [&password, &new_password] {
+                assert!(
+                    !text.contains(secret.as_str()),
+                    "the {run} run's {stream} carries a password: {text}"
+                );
+            }
+        }
+    }
+    assert!(stdout(&reset).contains(&other_str), "{}", stdout(&reset));
     let old = post_login(
         &gateway.base_url,
-        &login_body(&deployment, &email, &password, "s", &challenge, "n"),
+        &login_body(
+            &deployment,
+            &email,
+            &password,
+            &token(),
+            &challenge,
+            &token(),
+        ),
     )
     .await;
     assert_eq!(old.status, 401, "the replaced password must stop working");
     let new = post_login(
         &gateway.base_url,
-        &login_body(&deployment, &email, &new_password, "s", &challenge, "n"),
+        &login_body(
+            &deployment,
+            &email,
+            &new_password,
+            &token(),
+            &challenge,
+            &token(),
+        ),
     )
     .await;
     assert_eq!(new.status, 200, "{}", new.body);
@@ -1505,4 +2002,187 @@ async fn bootstrap_with_a_password_file_seeds_the_console_client_and_the_owner_s
     let token = post_token(&gateway.base_url, &exchange(&deployment, &code, &verifier)).await;
     assert!(token.status.is_success(), "{}", token.body);
     gateway.kill();
+}
+
+// --- both doors open --------------------------------------------------------
+
+#[derive(serde::Serialize)]
+struct AssertionClaims<'a> {
+    iss: &'a str,
+    sub: &'a str,
+    aud: &'a str,
+    jti: String,
+    exp: i64,
+}
+
+/// A `private_key_jwt` client assertion for `client_id`, signed with the PEM
+/// `provision-client` wrote.
+fn sign_client_assertion(client_id: &str, issuer: &str, private_key_pem: &str) -> String {
+    let key = jsonwebtoken::EncodingKey::from_rsa_pem(private_key_pem.as_bytes())
+        .expect("an EncodingKey from the PEM the CLI wrote");
+    let claims = AssertionClaims {
+        iss: client_id,
+        sub: client_id,
+        aud: issuer,
+        jti: unique_suffix(),
+        exp: chrono::Utc::now().timestamp() + 60,
+    };
+    jsonwebtoken::encode(
+        &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256),
+        &claims,
+        &key,
+    )
+    .expect("signing the client assertion")
+}
+
+/// `previewMessage` (a procedure that needs no scope, so only the credential
+/// decides) with `token` as a bearer: the status and the body.
+async fn preview_with(base_url: &str, token: &str) -> (u16, String) {
+    let response = reqwest::Client::new()
+        .post(format!("{base_url}/$procs/previewMessage"))
+        .bearer_auth(token)
+        .header("accept", "application/json")
+        .header("content-type", "application/json")
+        .body(r#"{"args":{"body":"hello"}}"#)
+        .send()
+        .await
+        .expect("calling the API with a bearer token");
+    (
+        response.status().as_u16(),
+        response.text().await.unwrap_or_default(),
+    )
+}
+
+/// **A person's token has no door even when the machine door is open.** With
+/// `machine_tokens` and `human_login` served together the API accepts a bearer,
+/// but only a machine's: the access token and the `id_token` of a completed
+/// sign-in are both refused, and the refusal is the `HumanToken` one, not the
+/// absence of a door.
+///
+/// Both halves are proven in the one running process. The reason is read where it
+/// is written, the door's own debug line (the response is the same coarse 401 for
+/// every refusal by design); and a machine token minted by the same provider
+/// beside them is accepted, which a missing door could not do.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn a_persons_token_is_refused_as_a_persons_beside_an_open_machine_door() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let deployment = Deployment::new(Serves::Both, 100).await;
+    deployment.prepare().await;
+    let password = test_password();
+    let (_, email) = seed_account(&db, &unique_suffix(), Some(&password), true).await;
+
+    // A machine client of its own app.
+    let app = db
+        .app()
+        .create(schema::CreateAppInput {
+            name: "login flow both doors app".to_owned(),
+            slug: format!("login-flow-both-{}", unique_suffix()),
+            description: None,
+            defaultSenderIdId: None,
+            monthlyQuota: 1000,
+            ipAllowlist: " ".to_owned(),
+            transliterateToGsm7: false,
+            deletedAt: None,
+        })
+        .run(&owner())
+        .await
+        .expect("seeding the app");
+    let key_out = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("login-flow-both-{}.pem", deployment.port));
+    let _ = std::fs::remove_file(&key_out);
+    let provisioned = deployment.cli(
+        "provision-client",
+        &[
+            "--app-id",
+            app.id.as_str(),
+            "--label",
+            "both doors probe",
+            "--key-out",
+            key_out.to_str().expect("utf-8 path"),
+            "--scope",
+            "sms:send",
+        ],
+    );
+    assert!(provisioned.status.success(), "{}", stderr(&provisioned));
+    let machine_id = stdout(&provisioned)
+        .lines()
+        .find_map(|line| line.strip_prefix("provisioned client: "))
+        .expect("provision-client names the client")
+        .trim()
+        .to_owned();
+    let machine_pem = std::fs::read_to_string(&key_out).expect("the key file");
+
+    // A serve whose log we can read: the door explains each refusal at debug.
+    let log_path = scratch_file("both-doors-serve.log");
+    let mut command = deployment.serve_command();
+    command
+        .env(
+            "RUST_LOG",
+            "sms_gateway=info,sms_api=info,cratestack=info,sms_api::bearer=debug",
+        )
+        .stdout(std::fs::File::create(&log_path).expect("the log file"))
+        .stderr(Stdio::inherit());
+    let mut child = command.spawn().expect("spawning sms-gateway serve");
+    wait_until_ready(&deployment.base_url(), &mut child).await;
+    let gateway = Gateway {
+        child,
+        base_url: deployment.base_url(),
+    };
+    let base_url = gateway.base_url.clone();
+
+    // The machine's token, from the same provider.
+    let minted = reqwest::Client::new()
+        .post(format!("{base_url}/token"))
+        .form(&[
+            ("grant_type", "client_credentials"),
+            ("client_id", machine_id.as_str()),
+            (
+                "client_assertion_type",
+                "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+            ),
+            (
+                "client_assertion",
+                sign_client_assertion(&machine_id, &base_url, &machine_pem).as_str(),
+            ),
+            ("scope", "sms:send"),
+        ])
+        .send()
+        .await
+        .expect("POSTing to /token");
+    assert!(minted.status().is_success(), "{}", minted.status());
+    let minted: serde_json::Value = minted.json().await.expect("a token response");
+    let machine_token = minted["access_token"].as_str().expect("an access token");
+
+    // The person's tokens, from a real sign-in.
+    let (code, verifier) = sign_in(&deployment, &base_url, &email, &password).await;
+    let token = post_token(&base_url, &exchange(&deployment, &code, &verifier)).await;
+    assert!(token.status.is_success(), "{} {}", token.status, token.body);
+    let access_token = token.body["access_token"].as_str().expect("access token");
+    let id_token = token.body["id_token"].as_str().expect("id_token");
+
+    let (status, body) = preview_with(&base_url, machine_token).await;
+    assert_eq!(status, 200, "the machine door is open: {body}");
+    for (name, bearer) in [("access token", access_token), ("id_token", id_token)] {
+        let (status, body) = preview_with(&base_url, bearer).await;
+        assert_eq!(status, 401, "a person's {name} has no door: {body}");
+        assert!(
+            body.contains("request could not be authenticated"),
+            "the coarse refusal, whatever the reason: {body}"
+        );
+    }
+    gateway.kill();
+
+    let log = std::fs::read_to_string(&log_path).expect("reading the serve log");
+    let refusals = log.matches("a bearer token was refused").count();
+    let human = log
+        .matches("the token belongs to a person, not a machine client")
+        .count();
+    assert_eq!(
+        (refusals, human),
+        (2, 2),
+        "exactly the two person tokens were refused, both as a person's, and the machine \
+         token was not refused at all:\n{log}"
+    );
 }
