@@ -60,8 +60,8 @@ sequenceDiagram
     K-->>V: none
     V->>V: lock; N loaded meanwhile? last reload under 5 s ago?
     alt allowed
-        V->>DB: load_signing_keys
-        DB-->>V: tokens + JWKS
+        V->>DB: load_signing_keys (2 s deadline)
+        DB-->>V: tokens + JWKS, or nothing in time
         V->>K: refresh (key set first)
     end
     V->>K: key for N?
@@ -72,6 +72,24 @@ The reload is **single flight and rate limited** ([`MIN_FORCED_RELOAD`], five
 seconds): the lock is held across the read, so concurrent unknown `kid`s wait for
 the one in flight, and a flood of invented `kid`s costs one database read per
 interval and not one each.
+
+It also has a **deadline** ([`RELOAD_TIMEOUT`], two seconds). The read runs
+under that lock, so a database that stalls instead of failing would otherwise
+park every request naming an unknown `kid` for as long as the stall lasts. On
+the deadline the read is dropped, the lock is released, a `warn` is logged (the
+deadline only, never the token) and the caller is refused as `UnknownKid`,
+which is the same coarse 401 as any other refusal. The attempt still counts as
+the interval's reload.
+
+That bounds the cost of a stall to one deadline per interval, and it has a
+price worth knowing: **an attacker who triggers a reload can leave a key that
+another replica just rotated in refused for up to five seconds.** The invented
+`kid` spends the interval's one reload (whether it succeeded, failed or timed
+out), and a real token naming the new key within that window finds the verifier
+unwilling to read again. It self-heals: the next unknown `kid` after the window
+reloads, and the periodic refresh (`op.signing_key.refresh_interval_secs`)
+reloads regardless. Nothing is accepted that should not be; a token is refused
+a little longer than it had to be, and the caller asks again.
 
 # What is deliberately not here
 

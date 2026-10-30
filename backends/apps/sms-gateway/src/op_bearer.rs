@@ -27,6 +27,14 @@ pub(crate) const LEEWAY_SECS: u64 = 60;
 /// are.
 pub(crate) const MIN_FORCED_RELOAD: Duration = Duration::from_secs(5);
 
+/// How long a forced reload may take before the caller that started it gives up.
+/// The reload runs under the lock every other unknown `kid` is queued behind, so
+/// without a deadline a stalled database parks all of them for as long as it
+/// stalls; with one, the worst a stall costs is this long, once per
+/// [`MIN_FORCED_RELOAD`]. Two seconds is well over a healthy read of a handful
+/// of rows and well under the time a client waits for an API answer.
+pub(crate) const RELOAD_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// Where a forced reload gets the key set from. A trait so the rate limit and the
 /// single flight are tested without a database; the production one is
 /// [`DbKeys`].
@@ -119,10 +127,22 @@ impl OpBearerVerifier {
             return None;
         }
         *last = Some(Instant::now());
-        match self.reload.reload().await {
-            Ok((tokens, jwks)) => self.keys.refresh(tokens, jwks),
-            Err(error) => {
+        // The lock is held across the read on purpose (single flight), so the
+        // read must not be able to hold it forever: on the deadline the future
+        // is dropped, the lock is released, and the caller is refused as if the
+        // reload had found nothing. The attempt still counts against
+        // `min_reload`, so a database that is down costs one deadline per
+        // interval, not one per request.
+        match tokio::time::timeout(RELOAD_TIMEOUT, self.reload.reload()).await {
+            Ok(Ok((tokens, jwks))) => self.keys.refresh(tokens, jwks),
+            Ok(Err(error)) => {
                 tracing::warn!(%error, "reloading the OP signing keys for an unknown kid failed");
+            }
+            Err(_elapsed) => {
+                tracing::warn!(
+                    timeout_ms = u64::try_from(RELOAD_TIMEOUT.as_millis()).unwrap_or(u64::MAX),
+                    "reloading the OP signing keys for an unknown kid timed out"
+                );
             }
         }
         self.keys.decoding_key(kid)
@@ -709,6 +729,119 @@ mod tests {
         assert_eq!(refusal(&v, &token).await, BearerRefusal::UnknownKid);
         tokio::time::sleep(Duration::from_millis(40)).await;
         assert_eq!(refusal(&v, &token).await, BearerRefusal::UnknownKid);
+        assert_eq!(reload.calls.load(Ordering::SeqCst), 2);
+    }
+
+    /// Stalls its first `stalls` calls forever, then answers like [`Counting`].
+    struct Stalling {
+        calls: AtomicUsize,
+        stalls: usize,
+        then: Mutex<Vec<(Arc<TokenManager>, Vec<Jwk>)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl KeyReload for Stalling {
+        async fn reload(&self) -> anyhow::Result<(Arc<TokenManager>, Vec<Jwk>)> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) < self.stalls {
+                std::future::pending::<()>().await;
+            }
+            self.then
+                .lock()
+                .unwrap()
+                .first()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("nothing to reload"))
+        }
+    }
+
+    fn stalling(stalls: usize, publishes: Option<&Key>) -> Arc<Stalling> {
+        let (a, _) = keys();
+        let then = publishes.map(|b| {
+            (
+                b.manager.clone(),
+                vec![
+                    a.manager.public_jwk().unwrap(),
+                    b.manager.public_jwk().unwrap(),
+                ],
+            )
+        });
+        Arc::new(Stalling {
+            calls: AtomicUsize::new(0),
+            stalls,
+            then: Mutex::new(then.into_iter().collect()),
+        })
+    }
+
+    /// The outer deadline is the test's own: with the clock paused it fires at
+    /// once (in virtual time) when the code under test parks, so the failure
+    /// mode of a missing timeout is a red test and not a hung one.
+    const TEST_HANG: Duration = Duration::from_secs(60);
+
+    /// A reload that never returns costs the callers behind it the deadline and
+    /// no more: they are refused as unknown, not parked on the lock for as long
+    /// as the database stalls.
+    #[tokio::test(start_paused = true)]
+    async fn a_reload_that_never_returns_is_refused_at_the_deadline() {
+        let (a, b) = keys();
+        let reload = stalling(usize::MAX, None);
+        let v = Arc::new(OpBearerVerifier::with_reload_interval(
+            keyring(&[a]),
+            reload.clone(),
+            ISSUER,
+            Duration::from_secs(60),
+        ));
+        let token = mint(b, Some(&b.kid), &claims(&json!({})));
+        let started = tokio::time::Instant::now();
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let (v, token) = (v.clone(), token.clone());
+            handles.push(tokio::spawn(async move { v.verify(&token).await }));
+        }
+        for handle in handles {
+            let verdict = tokio::time::timeout(TEST_HANG, handle)
+                .await
+                .expect("a stalled reload must not park the caller")
+                .unwrap();
+            assert_eq!(verdict.unwrap_err(), BearerRefusal::UnknownKid);
+        }
+        assert_eq!(
+            started.elapsed(),
+            RELOAD_TIMEOUT,
+            "all eight were refused when the one reload hit its deadline"
+        );
+        assert_eq!(reload.calls.load(Ordering::SeqCst), 1, "behind one read");
+
+        // The lock is free again: inside the interval the next caller is refused
+        // at once, without starting a second reload.
+        let next = tokio::time::timeout(TEST_HANG, v.verify(&token))
+            .await
+            .expect("the lock was released");
+        assert_eq!(next.unwrap_err(), BearerRefusal::UnknownKid);
+        assert_eq!(started.elapsed(), RELOAD_TIMEOUT, "no further wait");
+        assert_eq!(reload.calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// And it heals: once the interval allows another attempt, the next caller
+    /// reloads, gets the key and verifies; the earlier stall left nothing behind.
+    #[tokio::test(start_paused = true)]
+    async fn the_caller_after_a_stalled_reload_reloads_and_verifies() {
+        let (a, b) = keys();
+        let reload = stalling(1, Some(b));
+        let v = OpBearerVerifier::with_reload_interval(
+            keyring(&[a]),
+            reload.clone(),
+            ISSUER,
+            Duration::ZERO,
+        );
+        let token = mint(b, Some(&b.kid), &claims(&json!({})));
+        let first = tokio::time::timeout(TEST_HANG, v.verify(&token))
+            .await
+            .expect("the first caller is released at the deadline");
+        assert_eq!(first.unwrap_err(), BearerRefusal::UnknownKid);
+        let second = tokio::time::timeout(TEST_HANG, v.verify(&token))
+            .await
+            .expect("the second caller is not parked behind the first");
+        assert!(second.is_ok(), "the second reload answered: {second:?}");
         assert_eq!(reload.calls.load(Ordering::SeqCst), 2);
     }
 }

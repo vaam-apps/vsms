@@ -91,6 +91,9 @@ sms-test-support.workspace = true
 # dlr.rs's own unit tests drive its router via `tower::ServiceExt::oneshot`
 # against an in-process router.
 tower.workspace = true
+# op_bearer.rs's reload-deadline test pauses the clock (`start_paused`), so a
+# reload that never returns is refused after the deadline without a real wait.
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true
