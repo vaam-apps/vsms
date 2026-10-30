@@ -19,4 +19,14 @@ and nothing needs it until a console can ask for one).
 The scopes are checked the way `provisionAppClient` checks them: `console:pair`
 is refused (only `register-client` grants it), the app must exist and be active.
 
+**The app is read inside the transaction, and the transaction is serializable.**
+`provisionAppClient` was `@isolation("serializable")`, which wraps its whole body;
+this function is not a procedure, so it asks for the same thing with
+`cratestack::run_in_isolated_tx` (the helper `provision-user` already uses, with
+the same retry on `40001` and `40P01`). The active-app read and the two writes
+therefore see one snapshot: an app deactivated between the check and the writes
+makes one side retry instead of being handed a working client. A refusal
+(`AppNotFound`, `AppInactive`) leaves the transaction as its value, with nothing
+written.
+
 <!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->

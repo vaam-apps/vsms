@@ -83,21 +83,6 @@ pub async fn provision_token_client(
     sms_api::pair_scope::refuse_pair_scope(&scopes_packed)
         .map_err(|error| ProvisionError::PairScope(error.to_string()))?;
 
-    // The app must exist and be active before a client may speak for it.
-    let found = db
-        .app()
-        .find_many()
-        .where_expr(FilterExpr::from(app::id().eq(app_id.to_owned())))
-        .limit(1)
-        .run(sys)
-        .await?
-        .into_iter()
-        .next()
-        .ok_or_else(|| ProvisionError::AppNotFound(app_id.to_owned()))?;
-    if !found.active {
-        return Err(ProvisionError::AppInactive(found.id));
-    }
-
     // Caller-visible immediately (it is the token endpoint's `client_id` and the
     // assertion's `iss`/`sub`), so generated here rather than left to a default.
     let client_id = format!("appc_{}", cratestack::uuid::Uuid::new_v4().simple());
@@ -121,37 +106,74 @@ pub async fn provision_token_client(
     let grant_types =
         pack(["client_credentials"]).map_err(|error| ProvisionError::Scopes(error.to_string()))?;
 
-    db.transaction(async |tx| {
-        let app_client = db
-            .app_client()
-            .create(schema::CreateAppClientInput {
-                appId: found.id.clone(),
-                clientId: client_id.clone(),
-                label: label.to_owned(),
-                scopes: scopes_packed.clone(),
-                lastUsedAt: None,
-                retiredAt: None,
-            })
-            .run_in_tx(tx, sys)
-            .await?
-            .value;
+    // One serializable transaction, as `provisionAppClient`'s `@isolation` was at
+    // `29f93c4^`: the app is read **inside** it, so an app deactivated between the
+    // check and the writes cannot be provisioned a client (the check and the
+    // writes see one snapshot, and a concurrent deactivation makes one of them
+    // retry on `40001`). The app must exist and be active before a client may
+    // speak for it. A refusal is carried out as the body's value, not as its
+    // error: a `ProvisionError` is not a `CratestackError`, and the transaction
+    // wrote nothing yet when it ends.
+    let found_app_id = app_id.to_owned();
+    let outcome = cratestack::run_in_isolated_tx(
+        db.pool(),
+        cratestack::TransactionIsolation::Serializable,
+        |mut tx| {
+            let app_id = found_app_id.clone();
+            let client_id = client_id.clone();
+            let jwks = jwks.clone();
+            let grant_types = grant_types.clone();
+            let scopes_packed = scopes_packed.clone();
+            async move {
+                let Some(found) = db
+                    .app()
+                    .find_many()
+                    .where_expr(FilterExpr::from(app::id().eq(app_id.clone())))
+                    .limit(1)
+                    .run_in_tx(&mut tx, sys)
+                    .await?
+                    .into_iter()
+                    .next()
+                else {
+                    return Ok((Err(ProvisionError::AppNotFound(app_id)), tx));
+                };
+                if !found.active {
+                    return Ok((Err(ProvisionError::AppInactive(found.id)), tx));
+                }
 
-        db.oauth_client()
-            .create(schema::CreateOauthClientInput {
-                clientId: client_id.clone(),
-                appClientId: Some(app_client.id),
-                tokenEndpointAuthMethod: schema::ClientAuthMethod::private_key_jwt,
-                jwks: Some(jwks.clone()),
-                grantTypes: grant_types.clone(),
-                scopes: scopes_packed.clone(),
-                redirectUris: EMPTY.to_owned(),
-                requirePkce: false,
-            })
-            .run_in_tx(tx, sys)
-            .await?;
-        Ok(())
-    })
+                let app_client = db
+                    .app_client()
+                    .create(schema::CreateAppClientInput {
+                        appId: found.id,
+                        clientId: client_id.clone(),
+                        label: label.to_owned(),
+                        scopes: scopes_packed.clone(),
+                        lastUsedAt: None,
+                        retiredAt: None,
+                    })
+                    .run_in_tx(&mut tx, sys)
+                    .await?
+                    .value;
+
+                db.oauth_client()
+                    .create(schema::CreateOauthClientInput {
+                        clientId: client_id,
+                        appClientId: Some(app_client.id),
+                        tokenEndpointAuthMethod: schema::ClientAuthMethod::private_key_jwt,
+                        jwks: Some(jwks),
+                        grantTypes: grant_types,
+                        scopes: scopes_packed,
+                        redirectUris: EMPTY.to_owned(),
+                        requirePkce: false,
+                    })
+                    .run_in_tx(&mut tx, sys)
+                    .await?;
+                Ok((Ok(()), tx))
+            }
+        },
+    )
     .await?;
+    outcome?;
 
     Ok(ProvisionedClient {
         client_id,
