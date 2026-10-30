@@ -423,9 +423,10 @@ migration (`down.sql`) drops this index and nothing else.
 
 Migration `0009_drop_openid_provider` (VS-4) dropped five tables, and
 `0012_restore_openid_provider` (VSA-2, owner ruling R5: which ways in a deployment
-permits is configuration) creates them again, *empty*. A deployment that upgrades
-from a release before VS-4 to one that carries `0012` runs both in the one migrate
-Job, so the rows are gone when the new release starts:
+permits is configuration) creates them again, *empty*. `0009` is in no release tag:
+the latest, v0.9.0, predates it. So *every deployment on v0.9.0 or earlier* runs
+`0009` and `0012` together, in the one migrate Job of its next upgrade, and loses
+the rows before the new release starts:
 
 [cols="1,3"]
 |===
@@ -499,13 +500,44 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 <<'SQL'
 \copy user_credentials (created_at, updated_at, id, user_id, password_hash) FROM 'user_credentials.csv' WITH (FORMAT csv)
 SQL
 ----
-. Delete `op-export/`, and any copy of it.
+. Destroy `op-export/` and any copy of it. The files hold private signing keys and
+  Argon2id hashes, so a plain `rm` is not enough; overwrite them first:
++
+[,bash]
+----
+cd .. && find op-export -type f -exec shred -u {} + && rmdir op-export
+----
++
+`shred` is as good as the file system lets it be (a journaling, copy-on-write or
+SSD-backed volume may keep old blocks), so use the equivalent your platform
+offers, or keep the directory on an encrypted volume that is itself destroyed.
+Remember that *backups may hold copies*: a backup or snapshot of the machine, of the
+directory's volume or of the database taken while the files or the imported rows
+existed carries the same keys and hashes, and is as secret as they are.
+
+*After an import, an `oauth_clients` row blocks a hard delete of its AppClient.*
+`oauth_clients.app_client_id` is a plain `NO ACTION` foreign key (so is
+`user_credentials.user_id`, for a User), and nothing reads the imported rows until
+VSA-3 and VSA-4. Until then, deleting an AppClient from the console (or a User)
+fails with a foreign-key error naming `oauth_clients_app_client_id_fkey`
+(`user_credentials_user_id_fkey`). Remove the imported rows that name it first,
+then delete it again:
+
+[,sql]
+----
+DELETE FROM oauth_clients WHERE app_client_id = '<app client id>';
+DELETE FROM user_credentials WHERE user_id = '<user id>';
+----
+
+The client or the password that row stood for is gone with it; VSA-3 and VSA-4
+provision a new one.
 
 The statements above are the ones
 `a_provider_export_taken_before_0009_is_restored_after_0012`
 (`backends/crates/sms-api/tests/restore_openid_provider_live_postgres.rs`) reads out
 of this page and runs, against a database that stopped at `0008` with a row in each
-table. Rolling back `0012` (`down.sql`, which `sms-migrate` never runs) drops the
+table; `the_runbooks_cleanup_unblocks_a_hard_delete` runs the two `DELETE`s above
+against rows that refuse the delete of their AppClient and User. Rolling back `0012` (`down.sql`, which `sms-migrate` never runs) drops the
 five tables and refuses while any holds a row, naming the counts.
 
 == 2. Build and bring up Postgres + migrations first

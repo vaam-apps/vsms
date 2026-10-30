@@ -24,6 +24,10 @@
 
 BEGIN;
 
+-- Lock first, then count: without it a writer could insert a row between the
+-- count below and the drops, and the drop would delete it.
+LOCK TABLE oauth_clients, oauth_signing_keys, client_assertions, user_credentials, sso_transactions IN ACCESS EXCLUSIVE MODE;
+
 DO $$
 DECLARE
     clients BIGINT;

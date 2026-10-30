@@ -580,16 +580,96 @@ fn check_restoring_migrations(
         let text = up_sql(dir)?;
         let statements = executable_sql(&text);
         for table in &shared {
-            let drop = format!("DROP TABLE {table};");
-            if statements.lines().any(|line| line.trim() == drop) {
+            if drops_table(&statements, table) {
                 return Err(format!(
-                    "migrations-current: {dir}/up.sql contains `{drop}`, but ADDED_BY_LATER says it \
-                     creates {table}"
+                    "migrations-current: {dir}/up.sql drops {table} (a `DROP TABLE` statement that \
+                     names it, in any spelling), but ADDED_BY_LATER says it creates {table}"
                 ));
             }
         }
     }
     Ok(())
+}
+
+/// Whether `sql` (already [`executable_sql`]) has a statement that drops `table`,
+/// in any spelling Postgres accepts: any case, any whitespace (a newline
+/// included), `IF EXISTS`, a trailing `CASCADE` or `RESTRICT`, a `public.`
+/// prefix, a double-quoted name and a list (`DROP TABLE a, t;`). The text is
+/// split into statements outside strings, identifiers and dollar-quoted bodies,
+/// so a `;` or a `DROP TABLE` inside a literal is neither a statement nor a
+/// drop. A drop executed from inside a dollar-quoted body (`DO $$ ... $$`) is
+/// not seen: the file would have to build its SQL as text.
+fn drops_table(sql: &str, table: &str) -> bool {
+    split_statements(sql).iter().any(|statement| {
+        let words: Vec<String> = statement
+            .split(|c: char| c.is_whitespace() || c == ',')
+            .filter(|word| !word.is_empty())
+            .map(str::to_lowercase)
+            .collect();
+        if words.first().map(String::as_str) != Some("drop")
+            || words.get(1).map(String::as_str) != Some("table")
+        {
+            return false;
+        }
+        let mut names = &words[2..];
+        if let [first, second, rest @ ..] = names
+            && first == "if"
+            && second == "exists"
+        {
+            names = rest;
+        }
+        if let [rest @ .., last] = names
+            && (last == "cascade" || last == "restrict")
+        {
+            names = rest;
+        }
+        let table = table.to_lowercase();
+        names.iter().any(|name| {
+            let name = name.replace('"', "");
+            name.strip_prefix("public.").unwrap_or(&name) == table
+        })
+    })
+}
+
+/// `sql` cut at every `;` that is not inside a `'...'` literal, a `"..."`
+/// identifier or a dollar-quoted body. A trailing run with no `;` is a statement
+/// too.
+fn split_statements(sql: &str) -> Vec<String> {
+    let chars: Vec<char> = sql.chars().collect();
+    let mut statements = Vec::new();
+    let mut current = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            ';' => {
+                statements.push(std::mem::take(&mut current));
+                i += 1;
+            }
+            '\'' => {
+                let backslash_escapes = i > 0
+                    && matches!(chars[i - 1], 'E' | 'e')
+                    && (i < 2 || !(chars[i - 2].is_alphanumeric() || chars[i - 2] == '_'));
+                i = copy_quoted(&chars, i, '\'', backslash_escapes, &mut current);
+            }
+            '"' => i = copy_quoted(&chars, i, '"', false, &mut current),
+            '$' => {
+                if let Some(tag) = dollar_tag(&chars, i) {
+                    i = copy_dollar_quoted(&chars, i, &tag, &mut current);
+                } else {
+                    current.push('$');
+                    i += 1;
+                }
+            }
+            c => {
+                current.push(c);
+                i += 1;
+            }
+        }
+    }
+    if !current.trim().is_empty() {
+        statements.push(current);
+    }
+    statements
 }
 
 /// The committed `0001_init`'s `f`.sql, minus the dropped tables'
@@ -1122,7 +1202,7 @@ mod tests {
         let drops = |_: &str| Ok("CREATE TABLE t (id TEXT);\nDROP TABLE t;\n".to_owned());
         let error =
             check_restoring_migrations("migrations/0009_drop", &["t"], &added, drops).unwrap_err();
-        assert!(error.contains("DROP TABLE t;"), "{error}");
+        assert!(error.contains("drops t"), "{error}");
         // A drop in a comment is a comment.
         let commented = |_: &str| Ok("-- DROP TABLE t;\nCREATE TABLE t (id TEXT);\n".to_owned());
         assert!(
@@ -1133,6 +1213,60 @@ mod tests {
         assert!(
             check_restoring_migrations("migrations/0009_drop", &["t"], &added, unreadable).is_err()
         );
+    }
+
+    #[test]
+    fn a_restoring_migration_may_not_drop_in_any_spelling() {
+        let added = [("migrations/0012_restore", &["t", "u"][..])];
+        for drop in [
+            "DROP TABLE t;",
+            "drop table t;",
+            "Drop Table T;",
+            "DROP TABLE IF EXISTS t;",
+            "drop table if exists t;",
+            "DROP TABLE t CASCADE;",
+            "drop table t cascade;",
+            "DROP TABLE IF EXISTS t CASCADE;",
+            "DROP TABLE t RESTRICT;",
+            "DROP TABLE public.t;",
+            "DROP TABLE IF EXISTS public.t CASCADE;",
+            "DROP TABLE \"t\";",
+            "DROP TABLE a, t;",
+            "DROP TABLE t, a CASCADE;",
+            "DROP\n  TABLE\n  IF EXISTS\n  t\n  CASCADE\n;",
+            "CREATE TABLE t (id TEXT); DROP TABLE t",
+            "  DROP TABLE t ;",
+        ] {
+            let text = format!("CREATE TABLE u (id TEXT);\n{drop}\n");
+            let up = move |_: &str| Ok(text.clone());
+            let result = check_restoring_migrations("migrations/0009_drop", &["t"], &added, up);
+            assert!(
+                result.is_err(),
+                "{drop:?} is a drop of t and must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn a_restoring_migration_may_drop_what_it_does_not_restore() {
+        let added = [("migrations/0012_restore", &["t", "u"][..])];
+        for fine in [
+            "DROP TABLE other;",
+            "DROP TABLE IF EXISTS tt CASCADE;",
+            "DROP TABLE public.t2;",
+            "DROP INDEX t;",
+            "ALTER TABLE t DROP COLUMN c;",
+            "COMMENT ON TABLE t IS 'DROP TABLE t;';",
+            "INSERT INTO log VALUES ('x; DROP TABLE t');",
+            "-- DROP TABLE IF EXISTS t CASCADE;",
+            "/* drop table t; */",
+            "CREATE TABLE t2 (id TEXT);",
+        ] {
+            let text = format!("CREATE TABLE u (id TEXT);\n{fine}\n");
+            let up = move |_: &str| Ok(text.clone());
+            let result = check_restoring_migrations("migrations/0009_drop", &["t"], &added, up);
+            assert!(result.is_ok(), "{fine:?} does not drop t: {result:?}");
+        }
     }
 
     #[test]

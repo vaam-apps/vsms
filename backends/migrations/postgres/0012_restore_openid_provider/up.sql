@@ -14,10 +14,12 @@
 --
 -- PERSISTENCE ONLY. Nothing reads or writes these tables yet: the OP and the
 -- bearer realm come back in VSA-3, the login and the SSO broker in VSA-4. Until
--- then the tables are empty and unreachable: every model carries
+-- then nothing reads them and they are unreachable: every model carries
 -- `@@internal("all")` (no generated route, RPC arm or client stub) on top of
 -- policies that admit only the internal `hasRole('system')` context, which no
--- HTTP caller can hold.
+-- HTTP caller can hold. They are empty unless an operator imported rows by the
+-- runbook below; if one did, they hold private signing keys and Argon2id
+-- hashes, and nothing reads those either until VSA-3 and VSA-4.
 --
 -- WHY A NEW MIGRATION AND NOT AN EDIT OF 0009. Migrations are forward-only
 -- (owner ruling R5). 0009 has run in deployments and `sms-migrate` records
@@ -26,7 +28,10 @@
 -- has just created and dropped them), and puts them back.
 --
 -- WHAT A DEPLOYMENT THAT UPGRADES THROUGH 0009 AND THIS FILE LOSES, AND DOES NOT
--- GET BACK. 0009 deleted the rows, and nothing here can restore what it deleted:
+-- GET BACK. 0009 (VS-4) is in no release tag: the latest, v0.9.0, predates it.
+-- So EVERY DEPLOYMENT ON v0.9.0 OR EARLIER runs 0009 and this file together, in
+-- one migrate Job, on its next upgrade, and loses the rows. 0009 deleted them,
+-- and nothing here can restore what it deleted:
 --
 --   * every OAuth client (`oauth_clients`): each machine client is provisioned
 --     again once VSA-3 lands, with a new keypair;

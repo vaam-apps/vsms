@@ -213,7 +213,10 @@ fn table_list() -> String {
 /// Everything the catalogs say about the five tables, one line each: the tables
 /// themselves, every column (position, type, nullability, default), every
 /// constraint (primary key, unique, check, foreign key, with its definition),
-/// every index and every non-internal trigger. Two databases with equal
+/// every index and every non-internal trigger. Also the table's privileges
+/// (`relacl`, null until a `GRANT`/`REVOKE`), whether row-level security is on
+/// (`relrowsecurity`) and whether each trigger is enabled (`tgenabled`), so an
+/// extra `GRANT`, `ENABLE ROW LEVEL SECURITY` or `DISABLE TRIGGER` fails it. Two databases with equal
 /// fingerprints have the same tables.
 fn fingerprint(url: &str) -> String {
     let tables = table_list();
@@ -223,7 +226,8 @@ fn fingerprint(url: &str) -> String {
             "-c",
             &format!(
                 "SELECT line FROM (
-                   SELECT format('rel|%s|%s', c.relname, c.relkind) AS line
+                   SELECT format('rel|%s|%s|acl=%s|rls=%s', c.relname, c.relkind,
+                                 coalesce(c.relacl::text, ''), c.relrowsecurity) AS line
                      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
                     WHERE n.nspname = 'public' AND c.relname IN ({tables})
                    UNION ALL
@@ -247,7 +251,8 @@ fn fingerprint(url: &str) -> String {
                      FROM pg_indexes
                     WHERE schemaname = 'public' AND tablename IN ({tables})
                    UNION ALL
-                   SELECT format('trg|%s|%s|%s', c.relname, t.tgname, pg_get_triggerdef(t.oid))
+                   SELECT format('trg|%s|%s|enabled=%s|%s', c.relname, t.tgname, t.tgenabled,
+                                 pg_get_triggerdef(t.oid))
                      FROM pg_trigger t
                      JOIN pg_class c ON c.oid = t.tgrelid
                      JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -318,8 +323,8 @@ async fn the_shape_before_0009(name: &str) -> String {
 /// the foreign keys.
 fn assert_fingerprint_is_not_vacuous(shape: &str) {
     for needle in [
-        "rel|oauth_clients|r",
-        "rel|sso_transactions|r",
+        "rel|oauth_clients|r|acl=|rls=f",
+        "rel|sso_transactions|r|acl=|rls=f",
         "col|oauth_clients|6|token_endpoint_auth_method|text|t|",
         "col|oauth_clients|8|grant_types|text|t|' '::text",
         "col|user_credentials|3|id|text|t|cs_cuid()",
@@ -333,8 +338,8 @@ fn assert_fingerprint_is_not_vacuous(shape: &str) {
         "idx|client_assertions|client_assertions_expiry_idx|",
         "idx|sso_transactions|sso_transactions_expiry_idx|",
         "idx|sso_transactions|sso_transactions_state_hash_key|CREATE UNIQUE INDEX",
-        "trg|oauth_clients|oauth_clients_touch|",
-        "trg|user_credentials|user_credentials_touch|",
+        "trg|oauth_clients|oauth_clients_touch|enabled=O|",
+        "trg|user_credentials|user_credentials_touch|enabled=O|",
     ] {
         assert!(shape.contains(needle), "the fingerprint lacks `{needle}`");
     }
@@ -1024,4 +1029,67 @@ async fn a_provider_export_taken_before_0009_is_restored_after_0012() {
         );
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The runbook's cleanup unblocks what an import blocks: with a row of
+/// `oauth_clients` and one of `user_credentials` naming them, the `AppClient` and
+/// the User cannot be deleted (a plain `NO ACTION` foreign key); after the page's
+/// own `DELETE` statements, with its placeholders filled in, both can.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn the_runbooks_cleanup_unblocks_a_hard_delete() {
+    let start = RUNBOOK
+        .find(RUNBOOK_HEADING)
+        .expect("docs/runbooks/deployment.adoc no longer has the section this test runs");
+    let section = &RUNBOOK[start + RUNBOOK_HEADING.len()..];
+    let end = section
+        .find("\n== ")
+        .into_iter()
+        .chain(section.find("\n=== "))
+        .min()
+        .unwrap_or(section.len());
+    let cleanup: Vec<String> = section[..end]
+        .lines()
+        .filter(|l| l.starts_with("DELETE FROM "))
+        .map(|l| {
+            l.replace("<app client id>", "apc1")
+                .replace("<user id>", "usr1")
+        })
+        .collect();
+    assert_eq!(cleanup.len(), 2, "the page gives two DELETE statements");
+
+    let db = Scratch::through("cleanup", "0012").await;
+    seed_parents(&db.url);
+    must(
+        &db.url,
+        &[
+            "-c",
+            &insert_client("client-001", "'apc1'", "private_key_jwt", JWKS, false),
+        ],
+    );
+    must(
+        &db.url,
+        &[
+            "-c",
+            "INSERT INTO user_credentials (user_id, password_hash) VALUES ('usr1', 'h')",
+        ],
+    );
+    let error = refused(&db.url, "DELETE FROM app_clients WHERE id = 'apc1'");
+    assert!(
+        error.contains("oauth_clients_app_client_id_fkey"),
+        "{error}"
+    );
+    let error = refused(&db.url, "DELETE FROM users WHERE id = 'usr1'");
+    assert!(error.contains("user_credentials_user_id_fkey"), "{error}");
+
+    for statement in &cleanup {
+        must(&db.url, &["-c", statement]);
+    }
+    assert_eq!(row_count(&db.url, "oauth_clients"), 0);
+    assert_eq!(row_count(&db.url, "user_credentials"), 0);
+    must(
+        &db.url,
+        &["-c", "DELETE FROM app_clients WHERE id = 'apc1'"],
+    );
+    must(&db.url, &["-c", "DELETE FROM users WHERE id = 'usr1'"]);
 }
