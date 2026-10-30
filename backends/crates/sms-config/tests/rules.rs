@@ -615,10 +615,25 @@ fn machine_tokens_named_without_the_op_block_is_refused() {
         refused("auth-machine-tokens"),
         not_configured(AuthMethod::MachineTokens)
     );
-    assert_eq!(
-        refused("auth-machine-tokens-alone"),
-        not_configured(AuthMethod::MachineTokens),
-        "[machine_tokens] is a legal list (vpay's NoWayIn), and still needs its block"
+}
+
+/// `[machine_tokens]` alone is refused until VSA-3b: the API accepts no bearer
+/// yet, so such a gateway would answer every API call with the unsigned 401.
+/// VSA-3b makes `machine_tokens` a way in; then the first profile is
+/// `not_configured` again (it names the method without its block) and the second
+/// loads, and this test is the one to rewrite.
+#[test]
+fn machine_tokens_alone_is_refused_until_vsa_3b_with_or_without_its_block() {
+    for profile in [
+        "auth-machine-tokens-alone",
+        "auth-machine-tokens-alone-with-op",
+    ] {
+        assert_eq!(refused(profile), ConfigError::NoWayIn, "{profile}");
+    }
+    let message = ConfigError::NoWayIn.to_string();
+    assert!(
+        message.contains("VSA-3b") && message.contains("Add keypair"),
+        "{message}"
     );
 }
 
@@ -659,13 +674,6 @@ fn a_list_naming_machine_tokens_with_its_block_serves_it() {
     let config = load("auth-machine-tokens-with-op").unwrap();
     assert_eq!(permitted(&config), ["keypair", "machine_tokens"]);
     assert_eq!(served(&config), ["keypair", "machine_tokens"]);
-}
-
-#[test]
-fn machine_tokens_alone_with_its_block_is_a_legal_list() {
-    let config = load("auth-machine-tokens-alone-with-op").unwrap();
-    assert_eq!(permitted(&config), ["machine_tokens"]);
-    assert!(config.auth_methods.machine_tokens_served());
 }
 
 #[test]
@@ -719,12 +727,42 @@ fn the_op_buckets_and_timings_are_range_checked() {
             "op-overlap-not-above-token-ttl",
             "op.signing_key.rotation_overlap_secs",
         ),
+        // 1800 clears the 900-second lifetime alone and not refresh (3600) + 900:
+        // the last token a running serve signs under the old key outlives it.
+        (
+            "op-overlap-not-above-refresh-plus-token-ttl",
+            "op.signing_key.rotation_overlap_secs",
+        ),
+        // The boundary is exclusive: 60 + 900 = 960 is refused, 961 loads below.
+        (
+            "op-overlap-at-refresh-plus-token-ttl",
+            "op.signing_key.rotation_overlap_secs",
+        ),
     ] {
         assert!(
             matches!(refused(profile), ConfigError::InvalidValue { key: got, .. } if got == key),
             "{profile}"
         );
     }
+}
+
+#[test]
+fn the_overlap_rule_names_the_refresh_interval_and_has_an_exclusive_boundary() {
+    let ConfigError::InvalidValue { reason, .. } =
+        refused("op-overlap-not-above-refresh-plus-token-ttl")
+    else {
+        panic!("expected InvalidValue");
+    };
+    assert!(
+        reason.contains("refresh_interval_secs (3600)") && reason.contains("4500"),
+        "{reason}"
+    );
+    let config = load("op-overlap-just-above-refresh-plus-token-ttl")
+        .expect("one second above refresh + token lifetime is fine");
+    assert_eq!(
+        config.op.expect("block").signing_key.rotation_overlap_secs,
+        961
+    );
 }
 
 #[test]

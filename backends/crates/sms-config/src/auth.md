@@ -49,13 +49,14 @@ One [`ConfigError`] variant each:
 3. a duplicate, [`ConfigError::DuplicateAuthMethod`];
 4. `human_login` named explicitly, [`ConfigError::AuthMethodUnavailable`];
 5. nothing permitted can authenticate a caller of the API,
-   [`ConfigError::NoWayIn`]: vpay's rule exactly, `!keypair && !machine_tokens`
-   (R5 holds the two repositories to one rule), so `human_login` is not a way in
-   for an API caller, and `[machine_tokens]` alone is a legal list. `[hmac_webhooks]`
-   alone is refused: a gateway that would answer every request with the unsigned
-   401. **Until VSA-3b the API does not accept a token, so `[machine_tokens]`
-   alone boots a gateway that mints tokens and answers every API call with the
-   401; `serve` says so in its boot line.**
+   [`ConfigError::NoWayIn`]: vpay's rule is `!keypair && !machine_tokens` (R5
+   holds the two repositories to one rule) and `human_login` is not a way in for
+   an API caller. **Until VSA-3b the API does not accept a token, so only
+   `keypair` counts here:** `[machine_tokens]` alone, with or without its `op:`
+   block, would boot a gateway that mints tokens and answers every API call with
+   the unsigned 401, and is refused like `[hmac_webhooks]` alone. Once the API
+   accepts a bearer (VSA-3b) `machine_tokens` counts and `[machine_tokens]` alone
+   becomes a legal list. `[keypair, machine_tokens]` boots and serves `/token`.
 6. `machine_tokens` named explicitly with no `op:` block,
    [`ConfigError::AuthMethodNotConfigured`] (the absent default never raises it);
 7. an `op:` block on a list that does not permit `machine_tokens`,

@@ -237,11 +237,12 @@ fn serve_refuses_an_op_block_the_methods_do_not_permit() {
 #[test]
 fn serve_with_an_op_block_gets_past_the_loader() {
     // The control: the same document with the method permitted loads, and stops
-    // at the key files. `[machine_tokens]` alone is a legal list.
+    // at the key files. (`[machine_tokens]` alone is refused until VSA-3b, so the
+    // control names `keypair` too.)
     let config = overlay_config(
         "op-ok",
         &format!(
-            "{}auth:\n  methods: [machine_tokens]\n{OP_BLOCK}",
+            "{}auth:\n  methods: [keypair, machine_tokens]\n{OP_BLOCK}",
             config::no_providers_overlay()
         ),
     );

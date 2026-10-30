@@ -15,7 +15,8 @@ pub enum AuthMethod {
     Keypair,
     /// A bearer token the deployment's own `OpenID` Provider minted from a
     /// `private_key_jwt` assertion. The provider is back (VSA-3a); the API
-    /// accepting the token is VSA-3b.
+    /// accepting the token is VSA-3b, and until then a list naming this method
+    /// without `keypair` is refused as [`ConfigError::NoWayIn`].
     MachineTokens,
     /// A webhook endpoint delivered with `X-Sms-Signature`, a signature keyed by
     /// a secret both sides hold (`WebhookEndpoint.deliveryMode = hmac`).
@@ -228,13 +229,19 @@ impl AuthMethods {
     }
 
     /// Whether something permitted can authenticate a caller of the API's `/v1`
-    /// surface: a signed request or a token. vpay's `NoWayIn` is exactly
-    /// `!keypair && !machine_tokens` and R5 holds the two repositories to the same
-    /// rule, so `human_login` does not count: it signs a person in to the console,
-    /// it does not authenticate an API caller. `hmac_webhooks` cannot either; it
-    /// authenticates what vsms sends, never who is asking.
+    /// surface. vpay's `NoWayIn` is `!keypair && !machine_tokens` and R5 holds the
+    /// two repositories to that rule once the API accepts a token; **until VSA-3b
+    /// it does not, so only `keypair` counts**: a `[machine_tokens]` list would boot
+    /// a gateway that mints tokens and answers every API call with the unsigned
+    /// 401, which is exactly what `NoWayIn` exists to refuse. VSA-3b adds
+    /// `AuthMethod::MachineTokens` back to the list below (and flips
+    /// `machine_tokens_alone_is_refused_until_vsa_3b`). `human_login` does not
+    /// count: it signs a person in to the console, it does not authenticate an API
+    /// caller. `hmac_webhooks` cannot either; it authenticates what vsms sends,
+    /// never who is asking.
     fn can_authenticate_a_caller(&self) -> bool {
-        [AuthMethod::Keypair, AuthMethod::MachineTokens]
+        // VSA-3b: add `AuthMethod::MachineTokens` here when the API accepts a bearer.
+        [AuthMethod::Keypair]
             .into_iter()
             .any(|method| self.permits(method))
     }
@@ -267,8 +274,20 @@ mod tests {
     }
 
     #[test]
-    fn a_keypair_or_a_machine_token_is_a_way_in() {
+    fn a_keypair_is_a_way_in() {
         assert!(permitting(&[AuthMethod::Keypair]).can_authenticate_a_caller());
-        assert!(permitting(&[AuthMethod::MachineTokens]).can_authenticate_a_caller());
+        assert!(
+            permitting(&[AuthMethod::Keypair, AuthMethod::MachineTokens])
+                .can_authenticate_a_caller()
+        );
+    }
+
+    /// VSA-3b flips this: once the API accepts a bearer, a machine token is a way
+    /// in and this assertion becomes `assert!`. Until then a list of machine
+    /// tokens alone would boot a gateway that answers every API call with the
+    /// unsigned 401.
+    #[test]
+    fn machine_tokens_alone_is_refused_until_vsa_3b() {
+        assert!(!permitting(&[AuthMethod::MachineTokens]).can_authenticate_a_caller());
     }
 }

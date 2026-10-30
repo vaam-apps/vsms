@@ -1,3 +1,5 @@
+# Refused as NoWayIn until VSA-3b: the API accepts no bearer yet, so machine_tokens is not a
+# way in on its own. VSA-3b is the change that flips this back to a legal list.
 auth:
   methods: [machine_tokens]
 op:
