@@ -6,14 +6,24 @@ reads `role`; `auth().kind == "app"` reads `kind`; `appId == auth().appId`
 reads `appId`. [`Principal::into_context`] is the single place those names
 are produced, so a rename in the schema breaks exactly one function.
 
-# VS-3: the only credential is the key that signed the request
+# VS-3, VSA-3b: two ways in, each verified before this runs
 
-[`GatewayAuth`] is the generated router's one `AuthProvider`. The envelope
-layer (`crate::envelope`) opens the `COSE_Sign1` message, checks the signature
-and records a `VerifiedSigner` in the request's extensions; [`GatewayAuth`]
-maps that signer through `crate::signers::SignerDirectory` and reads nothing
-else. There is no token to validate, no JWKS to fetch, and an `Authorization`
-header is refused with a 400 rather than ignored.
+[`GatewayAuth`] is the generated router's one `AuthProvider`. It verifies
+nothing itself: a layer above has already, and recorded the fact in the
+request's extensions.
+
+- the envelope layer (`crate::envelope`) opens the `COSE_Sign1` message, checks
+  the signature and records a `VerifiedSigner`; [`GatewayAuth`] maps that signer
+  through `crate::signers::SignerDirectory`;
+- the bearer door (`crate::bearer`, VSA-3b, only when `machine_tokens` is served)
+  verifies a machine token, resolves its client **from rows**, and records a
+  `BearerCaller` holding the same `Standing`.
+
+Both end in one `GatewayAuth::context_for`, so no policy can tell the doors
+apart. There is no JWKS to fetch here and the header is never read as an
+identity: an `Authorization` header beside a verified signature is a 400, and one
+the door did not record authenticates nobody. A request that carries both a
+signer and a bearer caller is refused as well.
 
 ```mermaid
 sequenceDiagram
@@ -37,7 +47,7 @@ sequenceDiagram
 ```mermaid
 stateDiagram-v2
     [*] --> Unsigned: no COSE body
-    Unsigned --> [*]: 401, unsigned
+    Unsigned --> [*]: 401, unsigned, unless the bearer door admits it (bearer.md)
     [*] --> Opened: signature verifies, nonce unseen
     Opened --> Refused: key revoked or expired, client or user inactive
     Refused --> [*]: 401, unsigned

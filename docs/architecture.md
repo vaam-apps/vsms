@@ -1722,7 +1722,7 @@ Operator inference is a **hint in a database table, never a hardcoded match**. B
 
 ### 4.0 The signed transport (VS-3)
 
-Every route the generated router serves is wrapped in cratestack's `EnvelopeLayer` in `Required` mode, as the router's last layer (the coarse per-source rate limiter sits outside it). A request is a COSE_Sign1 message; there is no bearer token on this surface, and an `Authorization` header is refused even beside a good signature.
+Every route the generated router serves is wrapped in cratestack's `EnvelopeLayer`, as the router's last layer (the coarse per-source rate limiter sits outside it). Its mode follows the ways in the deployment opened (`auth.methods`, §4.9): **`Required`** when the signed envelope is the only one (the default, and vaam), so a request is a COSE_Sign1 message and nothing unsigned reaches the router; **`Optional`** when `machine_tokens` is served too, so a signed request is opened and sealed as ever and an unsigned one reaches the bearer door (§4.10); **`Off`** when `keypair` is off and tokens are the only way in, so a request with a COSE body is refused with a 415 and never forwarded. An `Authorization` header beside a good signature is refused with a 400 in every mode.
 
 ```mermaid
 sequenceDiagram
@@ -1749,9 +1749,9 @@ sequenceDiagram
 - **Two signer kinds.** An Ed25519 `ClientKey` of an active, unretired `AppClient` is an *app* principal (`sub = clientId`, scopes from `AppClient.scopes`). An ESP256 `ConsoleKey`, not revoked and not expired, of an active `User` whose role is not reserved, is a *user* principal. Key rows are read on every request, so a revocation or expiry takes effect on the next call on every replica; only the owning client's or person's standing is cached, for 60 seconds.
 - **Every refusal of a signature is one unsigned 401** (unknown, revoked, expired, forged, replayed, inactive owner). A holder of a dead key learns nothing from the answer. A payload that is not `application/json` is an unsigned 415 before any key is looked up.
 - **Replay protection is a table, not a cache.** `EnvelopeNonce` (forward migration `0008`) holds one row per accepted `cti`, behind a unique index, so two replicas receiving one request record it once between them. An expired row that has not been swept yet is deleted and the insert retried once; the worker's `sweep_envelope_nonces` job deletes expired rows in bounded batches.
-- **The server holds two Ed25519 keys**, `--envelope-signing-key-file` (signs every answer) and `--envelope-next-signing-key-file` (promoted by the next rotation), both PKCS#8 PEM and both required; the same key twice is refused and `serve` does not boot without them. They are the only keys it needs: it takes no issuer and no signing key of an identity provider (VS-4). `sms-gateway server-keys` prints the two public keys a client pins, so a rotation is: check that clients already pin today's `next` (the key being promoted), promote it, hand out the newly minted `next`, retire the old key. There is no unsigned or "optional" mode.
-- **Outside the layer:** `/dlr/*` (provider callbacks, which authenticate themselves), `/healthz` and `/readyz`, `GET /.well-known/vsms-auth` (§4.9) and, only when `machine_tokens` is served (§4.10), the OpenID Provider's `/token`, `/jwks.json` and `/.well-known/openid-configuration`. With the method off those three are the router's 404, like `/login` and `/login/sso/*` (deleted in VS-4, back with VSA-4): `the_deleted_openid_provider_routes_are_not_served` and `with_the_method_off_nothing_is_mounted_and_the_commands_refuse` request each from a real `sms-gateway serve`. A bearer token is **not** yet a credential of the layer's routes (VSA-3b).
-- **Layer order, outside in:** per-source rate limit, envelope, per-principal rate limit (charged to `client:<id>` or `user:<id>`), idempotency (fingerprinted on the verified principal), the owner-grant guard, the four RBAC layers, the `hmac_webhooks` gate (§4.9), the generated router. Beside the router, outside the envelope: `/dlr/*`, `/healthz`, `/readyz` and `GET /.well-known/vsms-auth` (§4.9).
+- **The server holds two Ed25519 keys**, `--envelope-signing-key-file` (signs every answer) and `--envelope-next-signing-key-file` (promoted by the next rotation), both PKCS#8 PEM and both required; the same key twice is refused and `serve` does not boot without them. They are the only keys it needs: it takes no issuer and no signing key of an identity provider (VS-4). `sms-gateway server-keys` prints the two public keys a client pins, so a rotation is: check that clients already pin today's `next` (the key being promoted), promote it, hand out the newly minted `next`, retire the old key. Whatever the mode, the keys are required: `serve` does not boot without them.
+- **Outside the layer:** `/dlr/*` (provider callbacks, which authenticate themselves), `/healthz` and `/readyz`, `GET /.well-known/vsms-auth` (§4.9) and, only when `machine_tokens` is served (§4.10), the OpenID Provider's `/token`, `/jwks.json` and `/.well-known/openid-configuration`. With the method off those three are the router's 404, like `/login` and `/login/sso/*` (deleted in VS-4, back with VSA-4): `the_deleted_openid_provider_routes_are_not_served` and `with_the_method_off_nothing_is_mounted_and_the_commands_refuse` request each from a real `sms-gateway serve`. A machine token is a credential of the layer's routes, through the bearer door (§4.10), only when `machine_tokens` is served.
+- **Layer order, outside in:** per-source rate limit, envelope, the bearer door (§4.10), per-principal rate limit (charged to `client:<id>` or `user:<id>`), idempotency (fingerprinted on the verified principal), the owner-grant guard, the four RBAC layers, the `keypair` gate and the `hmac_webhooks` gate (§4.9), the generated router. Beside the router, outside the envelope: `/dlr/*`, `/healthz`, `/readyz` and `GET /.well-known/vsms-auth` (§4.9).
 
 
 ### 4.1 Transport
@@ -1974,8 +1974,8 @@ auth:
 
 | Method           | What it permits                                                                                   | State in this release                                                                                         |
 | ---------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `keypair`        | requests signed by a registered key and the sealed answers (§4.0, §4.2, §4.3)                     | served; the envelope layer stays `Required`                                                                   |
-| `machine_tokens` | `Authorization: Bearer` from the deployment's own OpenID Provider                                 | the provider is served when `op:` is written (VSA-3a, §4.10); the API does not accept its tokens yet (VSA-3b) |
+| `keypair`        | requests signed by a registered key and the sealed answers (§4.0, §4.2, §4.3)                     | served; the envelope is `Required` alone, `Optional` beside tokens, and when off a signed body is a 415       |
+| `machine_tokens` | `Authorization: Bearer` from the deployment's own OpenID Provider                                 | served when `op:` is written (VSA-3a, §4.10), and the API accepts its tokens beside the envelope (VSA-3b)     |
 | `hmac_webhooks`  | webhook endpoints delivered with `X-Sms-Signature` (`deliveryMode: hmac`, §4.4) and their secrets | served, and gated by this switch                                                                              |
 | `human_login`    | a person's password or SSO sign-in to the console                                                 | **not restored** (VSA-4): permitted by the default, served by nothing                                         |
 
@@ -1985,7 +1985,7 @@ auth:
 2. an unknown name is refused (`UnknownAuthMethod`);
 3. a duplicate is refused (`DuplicateAuthMethod`);
 4. naming `human_login` is refused (`AuthMethodUnavailable`): it is not restored, and a list that names it promises a door that is not there. VSA-4 changes one function (`AuthMethod::is_restored`) and the rule goes with it. (`machine_tokens` was in this rule until VSA-3a restored it);
-5. a list that permits nothing able to authenticate a caller is refused (`NoWayIn`): vpay's rule is neither `keypair` nor `machine_tokens`, but until VSA-3b the API accepts no token, so only `keypair` counts (`human_login` signs a person in to the console and does not count). `[hmac_webhooks]` alone, and `[machine_tokens]` alone with or without its `op:` block, would be a gateway that answers every API call with the unsigned 401, and are refused; VSA-3b makes `machine_tokens` a way in. `[keypair, machine_tokens]` boots and serves `/token` (`serve` warns at boot that the API does not accept the token yet);
+5. a list that permits nothing able to authenticate a caller is refused (`NoWayIn`): vpay's rule is neither `keypair` nor `machine_tokens` (`human_login` signs a person in to the console and does not count). `[hmac_webhooks]` alone would be a gateway that answers every API call with the unsigned 401, and is refused. Since VSA-3b the API accepts a token, so `machine_tokens` is a way in and `[machine_tokens]` alone, with its `op:` block, boots; a deployment on it has **no signed way in**, so a signed request is a 415 and registering a key or pairing a console is a 422 `auth_method_disabled` (§4.10, `keypair_gate.md`), pairing a console until VSA-5. `[keypair, machine_tokens]` boots and serves `/token`;
 6. `machine_tokens` named explicitly with no `op:` block is refused (`AuthMethodNotConfigured`). The absent default never raises it: it permits the method and serves it only where its block is;
 7. an `op:` block on a list that does not permit `machine_tokens` is refused (`AuthMethodDisabled`), naming both ways out: dormant configuration is how an operator comes to believe a door is shut that is open.
 
@@ -2035,7 +2035,7 @@ sequenceDiagram
 
 ### 4.10 The OpenID Provider and machine tokens (VSA-3a)
 
-Owner ruling R5 (2026-10-27) restored the machine half of the provider that #446 deleted, behind `auth.methods` and a YAML block. **This section is the provider and its two commands only. A token it mints is not yet accepted by the API: the bearer realm in `GatewayAuth` and the `Optional` envelope mode are VSA-3b.** Until then a token is verifiable against `/jwks.json` and credits its holder with nothing; `a_minted_token_is_not_yet_accepted_by_the_api` pins that, so it fails the day VSA-3b lands and says to rewrite it.
+Owner ruling R5 (2026-10-27) restored the machine half of the provider that #446 deleted, behind `auth.methods` and a YAML block. VSA-3a restored the provider and its two commands; VSA-3b makes the API accept what the provider mints, as a second way in beside the signed envelope (end of this section).
 
 ```yaml
 op:
@@ -2086,9 +2086,57 @@ stateDiagram-v2
 - **The tables are reached through delegates under the `system` context.** `OauthClient`, `OauthSigningKey` and `ClientAssertion` stay `@@internal("all")`, which removes routes and not the in-process delegates, so `db.oauth_signing_key()` and the rest exist and every call is `sms_api::system_context(..)`, the only context their policies admit. No raw SQL, no new route, no schema change; `provider_models_are_unreachable.rs` stays green unchanged and `the_restored_tables_answer_the_system_context_and_refuse_everyone_else` runs the policy against the database.
 - **`serve` fails at start with no active signing key**, not on the first `/token`. A fresh deployment runs `rotate-signing-key` once first (`run --rm`, never `exec`: waiting for health before rotating deadlocks).
 - **Rotation reaches a live process.** A running `serve` reloads the keys every `refresh_interval_secs`; the previous key keeps publishing in `/jwks.json` for `rotation_overlap_secs`, which must exceed `refresh_interval_secs` plus the 15-minute access-token lifetime (`sms_config` refuses a smaller value): a running `serve` keeps signing with the old key until its next refresh, so the last old-key token is issued as late as T + `refresh_interval_secs` and lives until T + `refresh_interval_secs` + 900 s, and the old key stops being published at T + `rotation_overlap_secs`.
-- **`aud` is not validated** for these tokens (`aud == sub == client_id`, so there is nothing fixed to check); VSA-3b's bearer realm checks `iss`, `exp` and the signature.
+- **`aud` is `client_id` unless the client asks for another audience** (`allowed_audiences`), which is why the bearer door requires it to contain `sub` rather than a fixed name (below).
 - **The `/token` bucket** is keyed on `client_id`, the dimension the edge cannot read from a form body, and sits in front of `/token` only; a body it cannot read is bucketed, never skipped.
-- **Tokens carry no contract-lock protection and no response sealing** once VSA-3b accepts them: the 426 for an op whose shape is gone applies to sealed callers only, and a token caller's answers are plain JSON.
+- **Tokens carry no contract-lock protection and no response sealing**: the 426 for an op whose shape is gone applies to sealed callers only, and a token caller's answers are plain JSON.
+
+#### The bearer door (VSA-3b)
+
+The API accepts `Authorization: Bearer <access_token>` exactly when `machine_tokens` is served, beside the signed envelope (`sms_api::bearer`, `sms-gateway`'s `op_bearer.rs`). The envelope's mode follows the doors (§4.0); between it and the per-principal limiter sits `enforce_bearer_door`.
+
+```mermaid
+sequenceDiagram
+    participant C as Caller
+    participant E as EnvelopeLayer (Optional)
+    participant B as Bearer door
+    participant V as OpBearerVerifier
+    participant K as OP keyring (same one /jwks.json serves)
+    participant D as SignerDirectory
+    participant R as Limits, idempotency, RBAC, policies, handler
+    C->>E: POST /$procs/sendMessage, Authorization: Bearer
+    E->>B: unsigned request (never sealed, no contract lock)
+    B->>V: verify(token)
+    V->>K: key for the header's kid
+    alt unknown kid
+        V->>V: reload the key set once (single flight, at most every 5 s)
+    end
+    V-->>B: client id + the scope it asks for, or a refusal
+    B->>D: bearer_standing: OauthClient active, AppClient live and the same client
+    D-->>B: App standing, scopes narrowed by the claim, never console:pair
+    B->>R: VerifiedPrincipal client:id, BearerCaller
+    R-->>C: plain JSON
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> Signed: COSE body
+    [*] --> Unsigned: no COSE body
+    Signed --> [*]: Authorization present, 400
+    Signed --> Admitted: otherwise
+    Unsigned --> Refused: no bearer, wrong scheme, two headers
+    Unsigned --> Verified: signature, iss, exp, nbf, kid, aud contains sub, no identity
+    Verified --> Refused: client inactive, no live AppClient, another client's
+    Verified --> Admitted: standing read from rows
+    Refused --> [*]: one 401, the layer's own body
+    Admitted --> [*]: client:id, one bucket, one idempotency namespace
+```
+
+- **A token names a client and narrows; it never grants.** `iss` must be `op.issuer`, `exp` and `sub` are required, `nbf` is honoured, with 60 seconds of leeway; the header must carry a `kid` (never "the first key"); an `identity` claim (a person's token) is refused; and `aud` must contain `sub` (owner decision: no fixed `vsms` audience, so SDKs that already talk to the provider keep working). The role, app and scopes come from `OauthClient` and `AppClient`; the token's `scope` claim is intersected with the client's and `console:pair` is removed whatever either says. `perms` are never read from a token.
+- **Standing is read from rows on every request** (`OauthClient.active`, uncached: a switched-off client stops on the next call; the `AppClient` for 60 seconds, as the signed door's). A retired or inactive `AppClient`, a client with none and an `OauthClient` linked to another client's `AppClient` all have no standing.
+- **The keys are the provider's own, in process.** The verifier reads the keyring `/jwks.json` publishes from, under the same lock, so the two cannot disagree; there is no HTTP fetch of our own JWKS and no kid-less fallback. An unknown `kid` forces one reload of the key set, single flight and at most once every five seconds, so a rotation another process ran is seen without waiting for the periodic refresh and a flood of invented `kid`s costs one read per interval.
+- **One principal.** Both doors record `client:<clientId>`, so a client that uses both shares one rate-limit bucket and one `Idempotency-Key` namespace. A refusal is one 401 with the layer's body, byte for byte, whatever failed (the reason is logged at `debug`).
+- **A token caller gets plain JSON.** Unresolved routes stay `Required` (a route the layer cannot bind fails closed with a 500 in every mode), and an unsigned request's answer is never sealed, whatever its `Accept` says: no response seal and no contract-lock 426.
+- **`keypair` off.** `[machine_tokens]` alone sets the layer `Off`: a signed body is a 415, `registerAppClientKey` and `registerConsoleKey` are a 422 `auth_method_disabled` (`sms_api::keypair_gate`), and `register-client` and `pair-console-key` refuse the same way when given a configuration that omits `keypair`. Pairing a console is unavailable on such a deployment until VSA-5.
 
 ---
 
