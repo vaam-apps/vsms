@@ -8,17 +8,17 @@ is `sms_api`'s to decide, from rows (`docs/architecture.md` section 4.9).
 
 # What it checks
 
-| Check                       | Refusal                      | How                                                                                          |
-| --------------------------- | ---------------------------- | -------------------------------------------------------------------------------------------- |
-| three segments, RS256       | `Malformed`                  | `decode_header`; any other algorithm is refused before a key is looked up                    |
-| a `kid`                     | `MissingKid`                 | never the first key of the set: during a rotation two keys are published                     |
-| a key for that `kid`        | `UnknownKid`                 | the OP's own keyring, then one forced reload ([below](#an-unknown-kid-forces-one-reload))    |
-| the signature               | `Signature`                  | RSA, under that key                                                                          |
-| `iss` is `op.issuer`        | `Issuer`                     | required, exact                                                                              |
-| `exp`, `nbf`                | `Expired`, `NotYetValid`     | 60 seconds of leeway ([`LEEWAY_SECS`]); `exp` required                                       |
-| no `identity`               | `HumanToken`                 | a person's token has no door here (VSA-4b)                                                    |
-| no `cnf`                    | `SenderConstrained`          | a token bound to a key needs that key's proof, which this door never checks                  |
-| `aud` contains `sub`        | `Audience`                   | by hand, after the signature: authkestra stamps `aud = client_id`                            |
+| Check                 | Refusal                  | How                                                                                       |
+| --------------------- | ------------------------ | ----------------------------------------------------------------------------------------- |
+| three segments, RS256 | `Malformed`              | `decode_header`; any other algorithm is refused before a key is looked up                 |
+| a `kid`               | `MissingKid`             | never the first key of the set: during a rotation two keys are published                  |
+| a key for that `kid`  | `UnknownKid`             | the OP's own keyring, then one forced reload ([below](#an-unknown-kid-forces-one-reload)) |
+| the signature         | `Signature`              | RSA, under that key                                                                       |
+| `iss` is `op.issuer`  | `Issuer`                 | required, exact                                                                           |
+| `exp`, `nbf`          | `Expired`, `NotYetValid` | 60 seconds of leeway ([`LEEWAY_SECS`]); `exp` required                                    |
+| no `identity`         | `HumanToken`             | a person's token has no door here (VSA-4b)                                                |
+| no `cnf`              | `SenderConstrained`      | a token bound to a key needs that key's proof, which this door never checks               |
+| `aud` contains `sub`  | `Audience`               | by hand, after the signature: authkestra stamps `aud = client_id`                         |
 
 The audience rule is "contains `sub`", not "equals `vsms`": a token is addressed
 to its own client by default, which is what keeps the SDKs that already speak to

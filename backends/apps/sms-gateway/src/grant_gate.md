@@ -8,11 +8,11 @@ list (that list only feeds the discovery document). So on its own it would run
 sign-in, and `authorization_code` on one that serves only machines, whatever the
 discovery document said. This middleware makes the list true:
 
-| `grant_type`                                     | Served when                           |
-| ------------------------------------------------ | ------------------------------------- |
-| `client_credentials`                             | `machine_tokens` is served            |
-| `authorization_code`                             | `human_login` is served               |
-| `refresh_token`, `device_code`, token exchange, any other | **never**                    |
+| `grant_type`                                              | Served when                |
+| --------------------------------------------------------- | -------------------------- |
+| `client_credentials`                                      | `machine_tokens` is served |
+| `authorization_code`                                      | `human_login` is served    |
+| `refresh_token`, `device_code`, token exchange, any other | **never**                  |
 
 A grant that is not served is `400 {"error": "unsupported_grant_type"}` (RFC 6749,
 section 5.2), `Cache-Control: no-store`. The refresh grant is the one the owner
