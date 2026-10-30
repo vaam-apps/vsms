@@ -22,12 +22,18 @@ use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::{CratestackContext, FilterExpr};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{self, Cratestack};
-use sms_auth::login::{LoginError, authenticate_user};
-use sms_core::password::hash_password;
+use sms_auth::login::{LoginError, authenticate_user, stamp_last_login};
+use sms_core::password::{generate_password, hash_password};
 
 /// Same reasoning as every other live suite's own copy of this mutex - #102.
 static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+/// A password drawn at run time: no test carries a fixed one, and a wrong one is
+/// derived from the right one or drawn again.
+fn test_password() -> String {
+    generate_password(32)
+}
 
 fn owner() -> CratestackContext {
     Principal {
@@ -163,9 +169,10 @@ async fn a_correct_password_against_an_active_account_authenticates() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let suffix = unique_suffix();
-    let account = seed_account(&db, &suffix, Some("correct horse battery staple"), true).await;
+    let password = test_password();
+    let account = seed_account(&db, &suffix, Some(&password), true).await;
 
-    let authenticated = authenticate_user(&db, &account.email, "correct horse battery staple")
+    let authenticated = authenticate_user(&db, &account.email, &password)
         .await
         .expect("a correct password against an active account must succeed");
 
@@ -181,9 +188,10 @@ async fn the_wrong_password_against_a_real_active_account_is_refused() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let suffix = unique_suffix();
-    let account = seed_account(&db, &suffix, Some("correct horse battery staple"), true).await;
+    let password = test_password();
+    let account = seed_account(&db, &suffix, Some(&password), true).await;
 
-    let result = authenticate_user(&db, &account.email, "totally the wrong password").await;
+    let result = authenticate_user(&db, &account.email, &format!("{password}-not-it")).await;
 
     assert!(
         matches!(result, Err(LoginError::InvalidCredentials)),
@@ -197,8 +205,7 @@ async fn an_email_with_no_matching_user_is_refused_identically_to_a_wrong_passwo
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
 
-    let result =
-        authenticate_user(&db, "no-such-account@example.test", "any password at all").await;
+    let result = authenticate_user(&db, "no-such-account@example.test", &test_password()).await;
 
     // Same variant, same message, as a wrong password: see login.md on why a
     // caller must not be able to tell "no such account" from "wrong password".
@@ -219,9 +226,10 @@ async fn a_correct_password_against_a_deactivated_account_is_refused() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let suffix = unique_suffix();
-    let account = seed_account(&db, &suffix, Some("correct horse battery staple"), false).await;
+    let password = test_password();
+    let account = seed_account(&db, &suffix, Some(&password), false).await;
 
-    let result = authenticate_user(&db, &account.email, "correct horse battery staple").await;
+    let result = authenticate_user(&db, &account.email, &password).await;
 
     assert!(
         matches!(result, Err(LoginError::InvalidCredentials)),
@@ -248,7 +256,8 @@ async fn removing_the_active_filter_would_let_a_deactivated_account_log_in() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let suffix = unique_suffix();
-    let account = seed_account(&db, &suffix, Some("correct horse battery staple"), false).await;
+    let password = test_password();
+    let account = seed_account(&db, &suffix, Some(&password), false).await;
 
     // The exact query find_active_user runs, minus `.and(user::active().is_true())`.
     let found = db
@@ -336,14 +345,15 @@ async fn a_role_keyed_app_is_also_rejected_by_the_database_check() {
 /// login still succeeds, which is why only a read-back can see it).
 #[tokio::test]
 #[ignore = "needs a live, migrated Postgres - see module docs"]
-async fn a_good_login_stamps_last_login_at_and_a_refused_one_does_not() {
+async fn authenticating_stamps_nothing_and_stamp_last_login_stamps_the_signed_in_person() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let suffix = unique_suffix();
-    let account = seed_account(&db, &suffix, Some("correct horse battery staple"), true).await;
+    let password = test_password();
+    let account = seed_account(&db, &suffix, Some(&password), true).await;
     assert_eq!(last_login_at(&db, &account.user_id).await, None);
 
-    authenticate_user(&db, &account.email, "not the password")
+    authenticate_user(&db, &account.email, &format!("{password}-not-it"))
         .await
         .expect_err("refused");
     assert_eq!(
@@ -352,13 +362,22 @@ async fn a_good_login_stamps_last_login_at_and_a_refused_one_does_not() {
         "a wrong password stamps nothing"
     );
 
-    let before = chrono::Utc::now() - chrono::Duration::seconds(5);
-    authenticate_user(&db, &account.email, "correct horse battery staple")
+    // A right password is not yet a sign-in: the caller still has an
+    // authorization request to satisfy, and stamps only once a code is issued.
+    let authenticated = authenticate_user(&db, &account.email, &password)
         .await
         .expect("a correct password");
+    assert_eq!(
+        last_login_at(&db, &account.user_id).await,
+        None,
+        "a correct password alone stamps nothing: the code has not been issued"
+    );
+
+    let before = chrono::Utc::now() - chrono::Duration::seconds(5);
+    stamp_last_login(&db, &authenticated.last_login_stamp()).await;
     let stamped = last_login_at(&db, &account.user_id)
         .await
-        .expect("lastLoginAt must be stamped by a successful login");
+        .expect("lastLoginAt must be stamped once the caller says a code was issued");
     assert!(
         stamped > before && stamped <= chrono::Utc::now(),
         "{stamped} is not now"
@@ -373,10 +392,10 @@ async fn an_account_with_no_password_is_refused_identically() {
     let suffix = unique_suffix();
     let account = seed_account(&db, &suffix, None, true).await;
 
-    let result = authenticate_user(&db, &account.email, "").await;
+    let result = authenticate_user(&db, &account.email, &String::new()).await;
     let error = result.expect_err("an account with no credential cannot log in");
     assert!(matches!(error, LoginError::InvalidCredentials), "{error:?}");
-    let result = authenticate_user(&db, &account.email, "anything").await;
+    let result = authenticate_user(&db, &account.email, &test_password()).await;
     assert!(matches!(result, Err(LoginError::InvalidCredentials)));
 }
 
@@ -386,7 +405,8 @@ async fn a_soft_deleted_account_is_refused_with_the_right_password() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let suffix = unique_suffix();
-    let account = seed_account(&db, &suffix, Some("correct horse battery staple"), true).await;
+    let password = test_password();
+    let account = seed_account(&db, &suffix, Some(&password), true).await;
 
     let version = db
         .user()
@@ -404,7 +424,7 @@ async fn a_soft_deleted_account_is_refused_with_the_right_password() {
         .await
         .expect("soft-deleting the User");
 
-    let result = authenticate_user(&db, &account.email, "correct horse battery staple").await;
+    let result = authenticate_user(&db, &account.email, &password).await;
     assert!(
         matches!(result, Err(LoginError::InvalidCredentials)),
         "{result:?}"
@@ -412,11 +432,11 @@ async fn a_soft_deleted_account_is_refused_with_the_right_password() {
 }
 
 /// The median time of `attempts` refused logins for `email`.
-async fn median(db: &Cratestack, email: &str, attempts: usize) -> Duration {
+async fn median(db: &Cratestack, email: &str, wrong: &str, attempts: usize) -> Duration {
     let mut taken = Vec::new();
     for _ in 0..attempts {
         let started = Instant::now();
-        authenticate_user(db, email, "a wrong password")
+        authenticate_user(db, email, wrong)
             .await
             .expect_err("refused");
         taken.push(started.elapsed());
@@ -437,14 +457,16 @@ async fn an_unknown_email_takes_as_long_as_a_wrong_password() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let suffix = unique_suffix();
-    let account = seed_account(&db, &suffix, Some("correct horse battery staple"), true).await;
+    let password = test_password();
+    let account = seed_account(&db, &suffix, Some(&password), true).await;
 
     // One of each first, so the dummy hash and the pool are warm.
-    authenticate_user(&db, "warm-up@example.test", "x")
+    let not_it = test_password();
+    authenticate_user(&db, "warm-up@example.test", &not_it)
         .await
         .expect_err("refused");
-    let wrong = median(&db, &account.email, 5).await;
-    let unknown = median(&db, "nobody-at-all@example.test", 5).await;
+    let wrong = median(&db, &account.email, &not_it, 5).await;
+    let unknown = median(&db, "nobody-at-all@example.test", &not_it, 5).await;
     assert!(
         wrong >= Duration::from_millis(5),
         "a real Argon2 verification takes longer than {wrong:?}; is the test measuring it?"
@@ -453,4 +475,72 @@ async fn an_unknown_email_takes_as_long_as_a_wrong_password() {
         unknown * 2 >= wrong,
         "an unknown email ({unknown:?}) must cost about what a wrong password ({wrong:?}) does"
     );
+}
+
+/// Counts the statements sqlx sends: one `sqlx::query` event each.
+struct CountStatements(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CountStatements {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _context: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        if event.metadata().target() == "sqlx::query" {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
+/// How many statements one refused sign-in sends.
+async fn statements_of_a_refusal(db: &Cratestack, email: &str, password: &str) -> usize {
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let counted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let subscriber = tracing_subscriber::registry().with(CountStatements(counted.clone()));
+    let _installed = tracing::subscriber::set_default(subscriber);
+    authenticate_user(db, email, password)
+        .await
+        .expect_err("refused");
+    counted.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// **An existing account costs the database no more than a missing one.** The
+/// hashing is equal (above), and the other thing that told them apart was the
+/// round trip an existing account added for its credential. Every refusal sends
+/// the same statements now, so the account's existence is not a latency signal in
+/// the database either. Counted, not timed: a number of statements does not wobble
+/// on a loaded machine.
+#[tokio::test]
+#[ignore = "needs a live, migrated Postgres - see module docs"]
+async fn an_unknown_email_sends_the_same_statements_as_every_other_refusal() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let password = test_password();
+    let active = seed_account(&db, &unique_suffix(), Some(&password), true).await;
+    let inactive = seed_account(&db, &unique_suffix(), Some(&password), false).await;
+    let without_password = seed_account(&db, &unique_suffix(), None, true).await;
+    let wrong = test_password();
+
+    // One of each first, so lazy initialisation is not counted.
+    authenticate_user(&db, "warm-up@example.test", &wrong)
+        .await
+        .expect_err("refused");
+
+    let unknown = statements_of_a_refusal(&db, "nobody-at-all@example.test", &wrong).await;
+    assert!(
+        unknown >= 2,
+        "the count must see the statements at all ({unknown}): is sqlx logging them?"
+    );
+    for (name, email) in [
+        ("a wrong password", &active.email),
+        ("an inactive account", &inactive.email),
+        ("an account with no password", &without_password.email),
+    ] {
+        assert_eq!(
+            statements_of_a_refusal(&db, email, &wrong).await,
+            unknown,
+            "{name} must send exactly the statements an unknown email does"
+        );
+    }
 }

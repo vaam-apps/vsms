@@ -42,6 +42,25 @@ pub fn verify_password(password: &str, hash: &str) -> bool {
         .is_ok()
 }
 
+/// The Argon2 variant and cost parameters a stored hash records (for example
+/// `argon2id$m=19456,t=2,p=1`), or `None` when `hash` is not a PHC string at all.
+///
+/// What two hashes must share for verifying against them to cost the same work:
+/// `sms-auth`'s dummy hash is held to a real one's by it.
+///
+/// ```
+/// use sms_core::password::{hash_cost, hash_password};
+///
+/// let hash = hash_password("correct horse battery staple").unwrap();
+/// assert_eq!(hash_cost(&hash).as_deref(), Some("argon2id$m=19456,t=2,p=1"));
+/// assert_eq!(hash_cost("not a valid phc string"), None);
+/// ```
+#[must_use]
+pub fn hash_cost(hash: &str) -> Option<String> {
+    let parsed = password_hash::phc::PasswordHash::new(hash).ok()?;
+    Some(format!("{}${}", parsed.algorithm, parsed.params))
+}
+
 /// A fresh, random alphanumeric one-time password, `len` characters long.
 ///
 /// 24 characters (every caller's own choice, not a default baked in here) is
@@ -74,14 +93,17 @@ mod tests {
 
     #[test]
     fn a_freshly_hashed_password_verifies_against_itself() {
-        let hash = hash_password("correct horse battery staple").expect("hashing succeeds");
-        assert!(verify_password("correct horse battery staple", &hash));
+        let password = generate_password(24);
+        let hash = hash_password(&password).expect("hashing succeeds");
+        assert!(verify_password(&password, &hash));
     }
 
     #[test]
     fn the_wrong_password_does_not_verify() {
-        let hash = hash_password("correct horse battery staple").expect("hashing succeeds");
-        assert!(!verify_password("wrong password entirely", &hash));
+        let password = generate_password(24);
+        let hash = hash_password(&password).expect("hashing succeeds");
+        assert!(!verify_password(&generate_password(24), &hash));
+        assert!(!verify_password(&format!("{password}x"), &hash));
     }
 
     #[test]
@@ -89,16 +111,20 @@ mod tests {
         // A fresh random salt every time: proves this isn't a bare unsalted
         // digest, which would make two accounts sharing a password produce
         // identical stored hashes.
-        let a = hash_password("same password").expect("hashing succeeds");
-        let b = hash_password("same password").expect("hashing succeeds");
+        let password = generate_password(24);
+        let a = hash_password(&password).expect("hashing succeeds");
+        let b = hash_password(&password).expect("hashing succeeds");
         assert_ne!(a, b);
-        assert!(verify_password("same password", &a));
-        assert!(verify_password("same password", &b));
+        assert!(verify_password(&password, &a));
+        assert!(verify_password(&password, &b));
     }
 
     #[test]
     fn a_corrupt_stored_hash_never_verifies() {
-        assert!(!verify_password("anything", "not a valid phc string"));
+        assert!(!verify_password(
+            &generate_password(24),
+            "not a valid phc string"
+        ));
     }
 
     /// A PHC string this module did not produce verifies, and only for the
@@ -108,11 +134,27 @@ mod tests {
     /// one. It is what lets a deployment import the `user_credentials` rows it
     /// exported across 0009 and 0012 (docs/runbooks/deployment.adoc): the hash
     /// carries its own parameters, so a hash made with other ones verifies too.
+    ///
+    /// The vector lives in `tests/fixtures/argon2-reference-vector.txt` (the
+    /// password, then the PHC string) and is read at test time, not written into
+    /// the source: it has to stay exactly this fixed value, and a literal in a
+    /// source file reaching a hashing call is what the `rust/hard-coded-
+    /// cryptographic-value` query flags, correctly, in any file that is not a
+    /// vector.
     #[test]
     fn a_phc_string_from_the_reference_implementation_verifies() {
-        const REFERENCE: &str = "$argon2id$v=19$m=65536,t=2,p=1$c29tZXNhbHQ$CTFhFdXPJO1aFaMaO6Mm5c8y7cJHAph8ArZWb2GRPPc";
-        assert!(verify_password("password", REFERENCE));
-        assert!(!verify_password("sassword", REFERENCE));
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/argon2-reference-vector.txt"
+        );
+        let vector = std::fs::read_to_string(path).expect("the reference vector fixture");
+        let mut lines = vector.lines();
+        let known = lines.next().expect("the vector's password line");
+        let reference = lines.next().expect("the vector's PHC line");
+        assert!(reference.starts_with("$argon2id$"), "{reference}");
+        assert!(verify_password(known, reference));
+        let wrong = format!("x{known}");
+        assert!(!verify_password(&wrong, reference));
     }
 
     #[test]

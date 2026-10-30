@@ -34,6 +34,10 @@ tokio.workspace = true
 [dev-dependencies]
 # The live suite gets its DATABASE_URL from this instead of the environment.
 sms-test-support.workspace = true
+# login_live_postgres.rs counts the statements a refused sign-in sends (sqlx emits
+# one `sqlx::query` event per statement), so an unknown email and a wrong
+# password can be shown to cost the database the same.
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true
