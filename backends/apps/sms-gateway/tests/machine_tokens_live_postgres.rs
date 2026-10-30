@@ -779,6 +779,15 @@ async fn a_served_provider_mints_a_verifiable_token_with_no_refresh_and_follows_
         (400..500).contains(&refresh_status) && refresh_body.get("access_token").is_none(),
         "the refresh grant is refused: {refresh_status} {refresh_body}"
     );
+    // Refused because the CLIENT may not use the grant (authkestra-op 0.8.0's
+    // `default_handle_refresh_token` checks `allows_grant_type` first and answers
+    // `unauthorized_client`), not because the refresh token is unknown, which is
+    // `invalid_grant` and what `post_token`'s made-up token would earn from a
+    // client that was allowed the grant.
+    assert_eq!(
+        refresh_body["error"], "unauthorized_client",
+        "the grant is refused for the client, not for the token: {refresh_body}"
+    );
 
     // 7. A rotation reaches the running process within the refresh interval, the
     //    previous key keeps publishing, and a new token is signed by the new key.
