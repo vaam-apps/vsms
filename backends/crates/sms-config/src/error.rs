@@ -189,7 +189,7 @@ pub enum ConfigError {
     #[error(
         "auth.methods is present and empty (or null: `methods:` with every item commented \
          out); a deployment that permits no way of authenticating is a misconfiguration. Name \
-         one or more of: keypair, hmac_webhooks (or delete the key to permit every method)"
+         one or more of: keypair, machine_tokens, hmac_webhooks (or delete the key to permit every method)"
     )]
     NoAuthMethods,
 
@@ -206,20 +206,50 @@ pub enum ConfigError {
     DuplicateAuthMethod(AuthMethod),
 
     /// `auth.methods` names a method this release has no code for
-    /// (`machine_tokens`, restored by VSA-3; `human_login`, VSA-4). Listing it
-    /// would promise a door that is not there. Delete it from the list.
+    /// (`human_login`, restored by VSA-4). Listing it would promise a door that
+    /// is not there. Delete it from the list.
     #[error(
         "auth.methods names {0}, which is not available in this release; delete it from the \
          list (an absent auth.methods permits it without serving it)"
     )]
     AuthMethodUnavailable(AuthMethod),
 
+    /// `auth.methods` names a method explicitly and the block that makes it run
+    /// is missing: `machine_tokens` without `op:`. An absent `auth.methods` never
+    /// raises this: it permits the method and serves it only where its block is,
+    /// so a deployment that never wrote the block keeps booting.
+    #[error(
+        "auth.methods names {method} but {key} is not configured; add it, or delete {method} \
+         from auth.methods"
+    )]
+    AuthMethodNotConfigured {
+        /// The method named.
+        method: AuthMethod,
+        /// The configuration it needs.
+        key: String,
+    },
+
+    /// A block is present for a method `auth.methods` does not permit: `op:` on
+    /// a list without `machine_tokens`. Dormant configuration is refused so that
+    /// a door an operator believes is shut cannot be one that is only unwatched.
+    #[error(
+        "{key} is configured but auth.methods does not permit {method}; delete {key}, or add \
+         {method} to auth.methods"
+    )]
+    AuthMethodDisabled {
+        /// The method that is not permitted.
+        method: AuthMethod,
+        /// The configuration that belongs to it.
+        key: String,
+    },
+
     /// `auth.methods` permits nothing that can authenticate a caller of the API,
-    /// so the gateway would answer every request with the unsigned 401. Today
-    /// that is every list without `keypair`.
+    /// so the gateway would answer every request with the unsigned 401. That is a
+    /// list with neither `keypair` nor `machine_tokens` (vpay's rule exactly).
     #[error(
         "auth.methods permits nothing that can authenticate a caller: hmac_webhooks signs what \
-         vsms sends, not who is asking. Add keypair"
+         vsms sends, and human_login signs a person in to the console; neither says who an API \
+         caller is. Add keypair or machine_tokens"
     )]
     NoWayIn,
 

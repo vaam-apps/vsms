@@ -17,9 +17,11 @@ The steps, in order, and why they are in this order:
    acted on under `deployment.livemode`. A secret YAML reads as a number or a
    boolean (`client_secret: 123456`) is refused here by key, because serde's own
    error for it would print the value.
-5. **Only the gateway keeps `security`.** [`Binary::Worker`] and
+5. **Only the gateway keeps `security`.** [`Binary::Worker`],
    [`Binary::ProviderTool`] (`sms-gateway mtn-subscribe-dlr`, which calls a
-   provider and hashes nothing) remove the block after steps 3 and 4 have seen
+   provider and hashes nothing) and [`Binary::Operator`] (`provision-client` and
+   `rotate-signing-key`, which write the `OpenID` Provider's rows and hash
+   nothing) remove the block after steps 3 and 4 have seen
    it and before step 6 resolves it, so neither requires nor receives
    `SMS_HASH_PEPPER`. The gateway ([`Binary::Gateway`]) keeps the block and
    refuses to start without the pepper.
@@ -48,8 +50,9 @@ The steps, in order, and why they are in this order:
 8. The cross-field rules run, `auth.methods` first ([`AuthConfig::resolve`]:
    which ways of authenticating are permitted is a property of the whole
    deployment, so a list that permits none is named before whichever later rule
-   would have tripped), then livemode's `https` and stub-host rules, the numeric
-   ranges, each provider's required keys.
+   would have tripped), then the rules that tie a method to its block (`op:` and
+   `machine_tokens`, `auth.md`), then livemode's `https` and stub-host rules,
+   the numeric ranges, each provider's required keys, and `op:`'s own rules.
 
 What an error message may repeat is a rule of this crate: a URL, a key, a
 variable name, a capped placeholder fragment. Never a secret's text. serde's

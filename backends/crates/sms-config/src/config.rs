@@ -12,6 +12,7 @@ use crate::auth::{AuthConfig, AuthMethods};
 use crate::cli::DEFAULT_PROFILE;
 use crate::error::ConfigError;
 use crate::model::{Api, Bucket, Database, Deployment, Security};
+use crate::op::{ACCESS_TOKEN_TTL_SECS, Op};
 use crate::provider::{Providers, RawProvider, validate_providers};
 use crate::retired;
 
@@ -32,6 +33,11 @@ pub enum Binary {
     /// is a variant of its own because it is not the worker, and a command
     /// that loads as `Worker` says something false about itself.
     ProviderTool,
+    /// A one-shot `sms-gateway` command that writes to the database and needs to
+    /// know which ways of authenticating the deployment serves
+    /// (`provision-client`, `rotate-signing-key`): everything but `security`. It
+    /// never hashes a message, so it is not handed the pepper.
+    Operator,
 }
 
 impl Binary {
@@ -62,6 +68,11 @@ pub struct Config {
     pub database: Database,
     /// `providers:`, validated.
     pub providers: Providers,
+    /// `op:`, the `OpenID` Provider (`machine_tokens`' block). `Some` only on a
+    /// deployment that wrote it, and then `auth.methods` permits the method
+    /// (rule 7 of `auth.md`); ask [`AuthMethods::machine_tokens_served`] rather
+    /// than testing this.
+    pub op: Option<Op>,
 }
 
 /// What serde reads, before the rules that need more than one field.
@@ -85,6 +96,19 @@ struct Raw {
     api: Api,
     database: Database,
     providers: Vec<RawProvider>,
+    // A key that is present is a block: `op:` with every item commented out is
+    // a null, and reading that as "no provider" would leave a deployment that
+    // meant to serve tokens serving none.
+    #[serde(default, deserialize_with = "present_op")]
+    op: Option<Op>,
+}
+
+/// Reads `op` when the key is present, as a block and never as a null.
+fn present_op<'de, D>(deserializer: D) -> Result<Option<Op>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Op::deserialize(deserializer).map(Some)
 }
 
 /// Hosts that mark a URL as a stub, searched in the host only: a path may say
@@ -203,6 +227,7 @@ impl Config {
             api,
             database,
             providers,
+            op,
         } = raw;
         let livemode = deployment.livemode;
 
@@ -213,7 +238,7 @@ impl Config {
         // authenticating are permitted is a property of the whole deployment, and
         // a list that permits none is better named than whichever rule would have
         // tripped on a later key.
-        let auth_methods = auth.resolve()?;
+        let auth_methods = auth.resolve()?.with_op_block(op.is_some())?;
         require_text("deployment.name", &deployment.name)?;
         check_url(
             "deployment.public_base_url",
@@ -247,6 +272,9 @@ impl Config {
 
         let providers = validate_providers(providers)?;
         validate_provider_hosts(&providers, livemode)?;
+        if let Some(op) = &op {
+            validate_op(op, livemode)?;
+        }
 
         Ok(Self {
             deployment,
@@ -255,8 +283,37 @@ impl Config {
             api,
             database,
             providers,
+            op,
         })
     }
+}
+
+/// The rules of `op:` (`op.md`).
+fn validate_op(op: &Op, livemode: bool) -> Result<(), ConfigError> {
+    check_url("op.issuer", &op.issuer, livemode)?;
+    if op.issuer.ends_with('/') {
+        return Err(invalid(
+            "op.issuer",
+            "must not end with a slash: the discovery document appends /token and /jwks.json to it",
+        ));
+    }
+    validate_bucket("op.token_rate_limit", op.token_rate_limit)?;
+    if op.signing_key.refresh_interval_secs == 0 {
+        return Err(invalid(
+            "op.signing_key.refresh_interval_secs",
+            "must be at least 1",
+        ));
+    }
+    if op.signing_key.rotation_overlap_secs <= ACCESS_TOKEN_TTL_SECS {
+        return Err(invalid(
+            "op.signing_key.rotation_overlap_secs",
+            &format!(
+                "must exceed the {ACCESS_TOKEN_TTL_SECS}-second access token lifetime, or a \
+                 token signed just before a rotation could not be verified before it expires"
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn invalid(key: &str, reason: &str) -> ConfigError {

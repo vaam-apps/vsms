@@ -14,8 +14,9 @@ pub struct Deployment {
     /// `https`-only, no-stub-host and no-literal-secret rules; it selects no
     /// code path.
     pub livemode: bool,
-    /// The origin this deployment is reached at. Validated and logged at boot;
-    /// reserved for the issuer a future token realm would derive from it.
+    /// The origin this deployment is reached at. Validated and logged at boot.
+    /// It is **not** where `op.issuer` comes from: an issuer is written, never
+    /// derived (`op.md`).
     pub public_base_url: String,
 }
 
