@@ -98,7 +98,7 @@ Legal edges live in `message_state_transitions` / `job_state_transitions`; `BEFO
 flowchart TB
     APP["Your apps<br/>OTP · notifications"]
     HUMAN["Operators<br/>browser"]
-    EDGE["Edge — Caddy + rustls<br/>TLS 1.3 · HSTS<br/>IP allowlist on /adm · rate limit on /dlr"]
+    EDGE["Edge — Caddy + rustls<br/>TLS 1.3 · HSTS<br/>IP allowlist on /adm · rate limit on /dlr, /login, /token"]
 
     subgraph online["Online tier — stateless, scale to N"]
         direction LR
