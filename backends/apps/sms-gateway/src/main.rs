@@ -3,7 +3,9 @@
 mod auth_discovery;
 mod commands;
 mod dlr;
+mod grant_gate;
 mod health;
+mod login;
 mod op;
 mod op_bearer;
 mod token_rate_limit;

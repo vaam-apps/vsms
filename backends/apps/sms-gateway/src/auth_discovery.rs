@@ -78,6 +78,58 @@ mod tests {
         );
     }
 
+    /// `auth.methods` and its blocks as a deployment writes them: the repository's
+    /// own base file with `overlay` on top, loaded the way `serve` loads it.
+    fn methods_with_blocks(overlay: &str) -> AuthMethods {
+        let config = sms_test_support::config::TestConfig::write(
+            &std::env::temp_dir(),
+            "auth-discovery",
+            overlay,
+        );
+        let args = config.args();
+        sms_config::Config::load_with_env(
+            Some(std::path::Path::new(&args[1])),
+            &args[3],
+            sms_config::Binary::Operator,
+            &|_| None,
+        )
+        .expect("a legal deployment")
+        .auth_methods
+    }
+
+    const BLOCKS: &str = "op:\n  issuer: https://sms.example.org\n  token_rate_limit:\n    burst: 10\n    \
+        refill_per_second: 0.3\n  signing_key:\n    refresh_interval_secs: 60\n    \
+        rotation_overlap_secs: 1800\nhuman_login:\n  console_client:\n    client_id: sms-console\n    \
+        redirect_uris:\n      - https://admin.example.org/cb\n  login_rate_limit:\n    burst: 5\n    \
+        refill_per_second: 0.1\n";
+
+    #[tokio::test]
+    async fn human_login_is_listed_exactly_when_it_is_served() {
+        let (_, _, body) = get_discovery(&methods_with_blocks(BLOCKS)).await;
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "methods": ["keypair", "machine_tokens", "hmac_webhooks", "human_login"]
+            })
+        );
+        // Permitted by the absent default, block not written: not listed.
+        let (_, _, body) = get_discovery(&methods_of(None)).await;
+        assert!(
+            !body["methods"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|m| m == "human_login")
+        );
+        // Listed methods narrowed to the sign-in beside the keypair: no tokens.
+        let narrowed = format!("auth:\n  methods: [keypair, human_login]\n{BLOCKS}");
+        let (_, _, body) = get_discovery(&methods_with_blocks(&narrowed)).await;
+        assert_eq!(
+            body,
+            serde_json::json!({ "methods": ["keypair", "human_login"] })
+        );
+    }
+
     #[tokio::test]
     async fn the_vaam_shape_lists_the_keypair_alone() {
         let (_, _, body) = get_discovery(&methods_of(Some(&["keypair"]))).await;

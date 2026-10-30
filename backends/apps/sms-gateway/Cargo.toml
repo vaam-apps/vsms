@@ -22,8 +22,10 @@ axum.workspace = true
 authkestra-axum.workspace = true
 authkestra-engine.workspace = true
 authkestra-op.workspace = true
-# token_rate_limit.rs reads `client_id` out of `/token`'s form body.
+# token_rate_limit.rs and grant_gate.rs read a field out of `/token`'s form body.
 form_urlencoded.workspace = true
+# login.rs tells a code redirect from an error redirect by its query.
+url.workspace = true
 # dlr.rs's real dependency: the SmsProvider trait (#34), and the concrete
 # adapters that exist to construct it from — two as of #61's MTN wiring.
 sms-provider.workspace = true

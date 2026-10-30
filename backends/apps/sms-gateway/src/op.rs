@@ -8,10 +8,10 @@ use authkestra_axum::helpers::AxumError;
 use authkestra_axum::op::axum_token_handler;
 use authkestra_engine::TokenManager;
 use authkestra_engine::token::jwk::Jwk;
-use authkestra_op::CloneableOpStore;
 use authkestra_op::config::OpConfig;
 use authkestra_op::handlers::discovery::OidcDiscovery;
 use authkestra_op::handlers::jwks::JwksResponse;
+use authkestra_op::{CloneableOpStore, OpStore};
 use axum::extract::{FromRef, State};
 use axum::middleware::from_fn_with_state;
 use axum::routing::{get, post};
@@ -19,8 +19,9 @@ use axum::{Json, Router};
 use cratestack::CratestackContext;
 use jsonwebtoken::DecodingKey;
 use sms_api::schema::Cratestack;
-use sms_auth::op::MachineOnlyOpStore;
+use sms_auth::op::{OpStore as ProviderStore, ServedGrants};
 
+use crate::grant_gate::enforce_served_grants;
 use crate::token_rate_limit::{TokenRateLimitState, enforce_token_client_rate_limit};
 
 /// What a rotation changes: the key tokens are signed with and the key set
@@ -129,7 +130,7 @@ impl OpKeyring {
 
 #[derive(Clone)]
 pub struct OpState {
-    store: Arc<MachineOnlyOpStore>,
+    store: Arc<ProviderStore>,
     keys: Arc<OpKeyring>,
     config: OpConfig,
 }
@@ -137,7 +138,7 @@ pub struct OpState {
 impl OpState {
     #[must_use]
     pub fn new(
-        store: MachineOnlyOpStore,
+        store: ProviderStore,
         tokens: Arc<TokenManager>,
         config: OpConfig,
         jwks: Vec<Jwk>,
@@ -147,6 +148,29 @@ impl OpState {
             keys: Arc::new(Keyring::new(tokens, PublishedKeys::new(jwks))),
             config,
         }
+    }
+
+    /// The OP's store, for [`crate::login`]'s own call into
+    /// `authkestra_op::handlers::authorize::handle_authorize`: that function takes
+    /// `&mut dyn OpStore` directly rather than going through axum's `FromRef`
+    /// machinery the way the generated `/token` handler does, so this is a plain
+    /// accessor.
+    ///
+    /// Returns an owned `Box<dyn OpStore>`, not an `Arc`: `handle_authorize` needs
+    /// `&mut`, and an `Arc` only ever gives shared access. The clone is cheap and
+    /// correct precisely because `ProviderStore`'s `Clone` shares state (the
+    /// `Arc<Cratestack>`, and the `Arc` inside the authorization-code
+    /// `MemoryStore`): **the code `handle_authorize` stores through this clone is
+    /// the one the `/token` handler's own clone consumes**, which is what lets a
+    /// code issued by `POST /login` be redeemed at `/token`.
+    pub(crate) fn store(&self) -> Box<dyn OpStore> {
+        Box::new((*self.store).clone())
+    }
+
+    /// The OP's config, for the same caller and the same reason as
+    /// [`Self::store`].
+    pub(crate) fn config(&self) -> OpConfig {
+        self.config.clone()
     }
 
     /// Swaps in a freshly loaded key set and signing key, the key set first
@@ -198,13 +222,26 @@ async fn jwks_handler(State(state): State<OpState>) -> Json<JwksResponse> {
 }
 
 /// Builds the discovery document with `private_key_jwt` advertised in
-/// `token_endpoint_auth_methods_supported` — see this module's own doc for
-/// why `authkestra_axum::op::axum_discovery_handler` can't do this itself.
+/// `token_endpoint_auth_methods_supported`, and **without** an
+/// `authorization_endpoint` — see this module's own doc for why
+/// `authkestra_axum::op::axum_discovery_handler` can't do either itself.
+///
+/// `grant_types_supported` is exactly the grants served ([`ServedGrants`]), and
+/// `code_challenge_methods_supported` (`["S256"]`) is present exactly when
+/// `authorization_code` is. `from_config` adds an `authorization_endpoint` for any
+/// provider that lists that grant, but `GET /authorize` is **never mounted** here
+/// (the console reaches `handle_authorize` through `POST /login`), and a
+/// discovery document that points a client at a route that 404s is worse than one
+/// that says nothing.
 async fn discovery_handler(State(state): State<OpState>) -> Json<serde_json::Value> {
-    Json(
-        serde_json::to_value(OidcDiscovery::from_config(&state.config).with_private_key_jwt())
-            .unwrap_or_default(),
-    )
+    Json(discovery_document(&state.config))
+}
+
+/// The discovery document for `config`: see [`discovery_handler`].
+pub(crate) fn discovery_document(config: &OpConfig) -> serde_json::Value {
+    let mut document = OidcDiscovery::from_config(config).with_private_key_jwt();
+    document.authorization_endpoint = None;
+    serde_json::to_value(document).unwrap_or_default()
 }
 
 /// The OP's routes, already `.with_state(...)` — mergeable directly with
@@ -226,13 +263,21 @@ async fn discovery_handler(State(state): State<OpState>) -> Json<serde_json::Val
 // No `#[must_use]`: axum's `Router` already carries one, and doubling it is
 // what `clippy::double_must_use` objects to — same reasoning as
 // `sms_api::router`'s own doc comment on this.
-pub fn router(state: OpState, token_rate_limit: TokenRateLimitState) -> Router {
+pub fn router(
+    state: OpState,
+    token_rate_limit: TokenRateLimitState,
+    served: ServedGrants,
+) -> Router {
+    // Layers wrap from the inside out: the grant gate is added last so it is the
+    // **outermost**, and a request for a grant this deployment does not serve is
+    // refused before it takes a token from any `client_id`'s bucket.
     let token_route = Router::new()
         .route("/token", post(axum_token_handler::<OpState>))
         .layer(from_fn_with_state(
             token_rate_limit,
             enforce_token_client_rate_limit,
-        ));
+        ))
+        .layer(from_fn_with_state(served, enforce_served_grants));
 
     Router::new()
         .route("/jwks.json", get(jwks_handler))
@@ -280,7 +325,74 @@ mod tests {
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
-    use super::Keyring;
+    use sms_auth::op::{ServedGrants, op_config};
+
+    use super::{Keyring, discovery_document};
+
+    fn document(machine_tokens: bool, human_login: bool) -> serde_json::Value {
+        discovery_document(&op_config(
+            "https://sms.example.org".to_owned(),
+            ServedGrants {
+                machine_tokens,
+                human_login,
+            },
+        ))
+    }
+
+    /// Exactly the grants served, never the refresh grant, and **no
+    /// `authorization_endpoint`** even when `authorization_code` is served:
+    /// `GET /authorize` is not a route here, and a document that points a client at
+    /// one that 404s is worse than silence.
+    #[test]
+    fn discovery_lists_exactly_the_served_grants_and_no_authorization_endpoint() {
+        let both = document(true, true);
+        assert_eq!(
+            both["grant_types_supported"],
+            serde_json::json!(["client_credentials", "authorization_code"])
+        );
+        assert_eq!(
+            both["code_challenge_methods_supported"],
+            serde_json::json!(["S256"])
+        );
+        assert!(both.get("authorization_endpoint").is_none(), "{both}");
+        assert_eq!(
+            both["response_types_supported"],
+            serde_json::json!(["code"])
+        );
+
+        let machines = document(true, false);
+        assert_eq!(
+            machines["grant_types_supported"],
+            serde_json::json!(["client_credentials"])
+        );
+        assert!(
+            machines.get("code_challenge_methods_supported").is_none(),
+            "no code grant, no PKCE method to advertise: {machines}"
+        );
+        assert_eq!(machines["response_types_supported"], serde_json::json!([]));
+
+        let people = document(false, true);
+        assert_eq!(
+            people["grant_types_supported"],
+            serde_json::json!(["authorization_code"])
+        );
+        assert_eq!(
+            people["scopes_supported"],
+            serde_json::json!(["openid", "profile"])
+        );
+        for doc in [&both, &machines, &people] {
+            let grants = doc["grant_types_supported"].to_string();
+            assert!(!grants.contains("refresh_token"), "{grants}");
+            assert!(
+                doc["token_endpoint_auth_methods_supported"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|m| m == "private_key_jwt"),
+                "{doc}"
+            );
+        }
+    }
 
     /// The new key set is visible while the signing key is still the old one.
     /// Deterministic, no race harness: the test holds the signing-key lock, so
