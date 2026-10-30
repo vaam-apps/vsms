@@ -3920,6 +3920,8 @@ dependencies = [
 name = "sms-core"
 version = "0.9.0"
 dependencies = [
+ "argon2",
+ "rand 0.8.7",
  "thiserror",
 ]
 

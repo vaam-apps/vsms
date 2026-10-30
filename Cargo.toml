@@ -213,6 +213,15 @@ authkestra-axum = { version = "=0.8.0", default-features = false, features = ["o
 # `provision-client` mints. One resolved copy, shared with authkestra-engine.
 rsa = "0.9"
 rand = "0.8"
+# sms-core's password module (VSA-4a): Argon2id for a person's console password,
+# the crate's own recommended defaults (19 MiB, 2 passes, 1 lane: OWASP's
+# minimum for Argon2id), so a PHC string exported from before #446 still
+# verifies. 0.6 and not the 0.5 that #446 deleted: authkestra-engine 0.8.0
+# already resolves argon2 0.6.0 (it hashes client secrets), so this is one
+# resolved copy, not a second one. The PHC output is byte-for-byte the same
+# format; only the Rust API moved (`password-hash` 0.6: the salt is generated
+# inside `hash_password`).
+argon2 = "0.6"
 # sms-fake-aws only: a self-signed certificate around a generated RSA key
 # for its fake SNS signing identity. `ring` backend, never aws-lc-rs.
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }

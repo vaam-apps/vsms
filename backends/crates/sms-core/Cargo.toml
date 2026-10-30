@@ -1,6 +1,6 @@
 [package]
 name = "sms-core"
-description = "Conventions shared across the gateway: the sentinel-delimited multi-value string encoding"
+description = "Conventions shared across the gateway: the sentinel-delimited multi-value string encoding, and Argon2id password hashing"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,6 +11,13 @@ publish.workspace = true
 
 [dependencies]
 thiserror.workspace = true
+# password.rs (VSA-4a): Argon2id hashing for a person's console password, and the
+# generator `sms-gateway provision-user --password` and `bootstrap` use. Here and
+# not in `sms-auth` so that a crate below `sms-auth` that ever needs to hash one
+# (`sms-api` cannot depend on `sms-auth`: the dependency runs the other way)
+# calls the same function, not a second copy of a security parameter.
+argon2.workspace = true
+rand.workspace = true
 
 [lints]
 workspace = true

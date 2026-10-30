@@ -2,6 +2,8 @@
 
 use thiserror::Error;
 
+pub mod password;
+
 /// The separator, which is also the sentinel.
 pub const SEPARATOR: char = ' ';
 
