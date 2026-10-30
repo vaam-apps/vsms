@@ -602,7 +602,7 @@ async fn a_key_past_its_lifetime_is_used_when_the_refetch_fails() {
         std::time::Duration::from_millis(1),
     )
     .expect("provider");
-    let nonce = "stale-key-nonce";
+    let nonce: &'static str = fresh_nonce().leak();
     let raw = raw_token(
         &fake,
         &provider,
@@ -689,7 +689,7 @@ async fn callers_do_not_queue_behind_a_hanging_refetch() {
 
     // The token is minted by the fake and claims the hanging provider's issuer.
     let minting = SsoProvider::new(config_for(&fake, &CLIENT_SECRET, 0)).expect("provider");
-    let nonce = "queue-nonce";
+    let nonce: &'static str = fresh_nonce().leak();
     let raw = raw_token(
         &fake,
         &minting,
@@ -728,4 +728,12 @@ async fn callers_do_not_queue_behind_a_hanging_refetch() {
         "{finished} of 5 returned within 3 s: callers queued behind the hanging fetch"
     );
     tasks.abort_all();
+}
+
+/// A nonce drawn at run time, so no test carries a fixed value in a nonce's place.
+fn fresh_nonce() -> String {
+    use rand::RngCore;
+    let mut bytes = [0_u8; 16];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    hex::encode(bytes)
 }
