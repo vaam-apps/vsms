@@ -532,43 +532,43 @@ mod tests {
             .decode(published.n.expect("an RSA JWK has a modulus"))
             .expect("a base64url modulus");
         assert_eq!(modulus, public.n().to_bytes_be(), "the JWK is this key");
-        let secrets: [(&str, Vec<u8>); 5] = [
-            (
-                "SPKI PEM",
-                public
-                    .to_public_key_pem(LineEnding::LF)
-                    .unwrap()
-                    .into_bytes(),
-            ),
-            (
-                "SPKI DER",
-                public.to_public_key_der().unwrap().as_bytes().to_vec(),
-            ),
-            (
-                "PKCS#1 PEM",
-                public.to_pkcs1_pem(LineEnding::LF).unwrap().into_bytes(),
-            ),
-            (
-                "PKCS#1 DER",
-                public.to_pkcs1_der().unwrap().as_bytes().to_vec(),
-            ),
-            ("the modulus", modulus),
+        // Labels and encodings are two arrays, not tuples: CodeQL's cleartext-logging
+        // query taints a whole tuple whose other half it takes for key material, and
+        // the label is all the assertion below prints. The bytes are the public key.
+        let encodings: [&str; 5] = [
+            "SPKI PEM",
+            "SPKI DER",
+            "PKCS#1 PEM",
+            "PKCS#1 DER",
+            "the modulus",
+        ];
+        let public_key_encodings: [Vec<u8>; 5] = [
+            public
+                .to_public_key_pem(LineEnding::LF)
+                .unwrap()
+                .into_bytes(),
+            public.to_public_key_der().unwrap().as_bytes().to_vec(),
+            public.to_pkcs1_pem(LineEnding::LF).unwrap().into_bytes(),
+            public.to_pkcs1_der().unwrap().as_bytes().to_vec(),
+            modulus,
         ];
         let v = plain(&[a]);
-        for (what, secret) in secrets {
+        for (index, encoded) in public_key_encodings.iter().enumerate() {
             for algorithm in [Algorithm::HS256, Algorithm::HS384, Algorithm::HS512] {
                 let mut header = Header::new(algorithm);
                 header.kid = Some(a.kid.clone());
                 let forged = encode(
                     &header,
                     &claims(&json!({})),
-                    &EncodingKey::from_secret(&secret),
+                    &EncodingKey::from_secret(encoded),
                 )
                 .expect("signing the forgery");
-                assert_eq!(
-                    refusal(&v, &forged).await,
-                    BearerRefusal::Malformed,
-                    "{algorithm:?} keyed with {what}"
+                // `assert!`, not `assert_eq!`: the failure prints the label alone,
+                // never a value derived from the forgery.
+                let label = encodings.get(index).copied().unwrap_or("an encoding");
+                assert!(
+                    refusal(&v, &forged).await == BearerRefusal::Malformed,
+                    "{algorithm:?} keyed with {label} must be refused as malformed"
                 );
             }
         }
