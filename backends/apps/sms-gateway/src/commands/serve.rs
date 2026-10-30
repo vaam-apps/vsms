@@ -335,6 +335,9 @@ pub(crate) async fn serve_command(args: ServeArgs) -> Result<()> {
             api.source_rate_limit.refill_per_second,
         ),
         hmac_webhooks,
+        // VSA-3b, next commit: the bearer door's verifier is built from the
+        // provider's own keys.
+        sms_api::ApiDoors::keypair_only(),
     )
     .context("assembling the signed-transport router")?
     // Everything merged from here on sits OUTSIDE the envelope layer, which

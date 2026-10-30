@@ -8,8 +8,12 @@ use cratestack::cose::{CoseAlg, CoseVerifierResolver, CoseVerifyKey};
 use cratestack::{CratestackContext, CratestackError, FilterExpr, VerifiedSigner};
 
 use crate::auth::{RESERVED_ROLE_KEYS, system_context};
+use crate::bearer::VerifiedBearer;
 use crate::cache::TtlCache;
-use crate::schema::{self, Cratestack, app_client, client_key, console_key, role, user};
+use crate::console_keys::names_pair_scope;
+use crate::schema::{
+    self, Cratestack, app_client, client_key, console_key, oauth_client, role, user,
+};
 
 /// How long an `AppClient` or a `User`/`Role` standing is trusted before it is
 /// read again. A key's own revocation and expiry are never cached (they are
@@ -165,6 +169,66 @@ impl SignerDirectory {
         }
     }
 
+    /// What a verified bearer token stands as: the other way into [`Standing`].
+    ///
+    /// The token only **names** a client (`sub`); everything it may do is read
+    /// here, from rows, every time:
+    ///
+    /// 1. the `OauthClient` with that `clientId` exists and is `active` (read on
+    ///    every request, never cached, so deactivating a client ends its
+    ///    outstanding tokens on the next call rather than after their 15
+    ///    minutes);
+    /// 2. it is linked to an `AppClient` (`appClientId`), which is `active` and
+    ///    not retired ([`load_app`], cached for [`STANDING_TTL`] like the signed
+    ///    door's), and whose `clientId` is the token's `sub`;
+    /// 3. the scope is [`effective_scopes`]: the `AppClient`'s own, narrowed by
+    ///    the token's claim and never `console:pair`.
+    ///
+    /// Same [`Standing`] as a signed request from the same client, so
+    /// [`crate::auth::GatewayAuth::context_for`] builds the same context and
+    /// every policy answers the same.
+    ///
+    /// # Errors
+    ///
+    /// [`CratestackError::Unauthorized`] for an unknown or inactive client, one
+    /// with no `AppClient`, or a retired or inactive `AppClient`; any other
+    /// error is a database failure and surfaces as a 5xx.
+    pub async fn bearer_standing(
+        &self,
+        bearer: &VerifiedBearer,
+    ) -> Result<Standing, CratestackError> {
+        let client = self
+            .db
+            .oauth_client()
+            .find_many()
+            .where_expr(
+                FilterExpr::from(oauth_client::clientId().eq(bearer.client_id.clone()))
+                    .and(oauth_client::active().is_true()),
+            )
+            .limit(1)
+            .run(&self.sys)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(unknown)?;
+        let app_client_id = client.appClientId.ok_or_else(unknown)?;
+        let app = self
+            .apps
+            .get_or_fetch(app_client_id, |id| {
+                let db = self.db.clone();
+                let sys = self.sys.clone();
+                async move { load_app(&db, &sys, &id).await }
+            })
+            .await?;
+        if app.client_id != bearer.client_id {
+            return Err(unknown());
+        }
+        Ok(Standing::App(AppStanding {
+            scopes: effective_scopes(&app.scopes, bearer.scope.as_deref()),
+            ..app
+        }))
+    }
+
     async fn live_client_key(
         &self,
         hex: &str,
@@ -204,6 +268,27 @@ impl SignerDirectory {
             .into_iter()
             .next())
     }
+}
+
+/// The scopes a bearer token acts with: `granted` (the `AppClient`'s own, packed)
+/// kept only where the token's `claimed` scope names it, minus `console:pair`.
+///
+/// The claim **narrows and never grants**: a scope the token names that the
+/// client does not hold is ignored, and a claim that is absent leaves the
+/// client's own. `console:pair` is dropped whatever either side says: it is
+/// the scope that lets a caller pair a console key to a person, the one grant a
+/// bearer must not carry (the pairing is a signed act, `docs/architecture.md`
+/// section 4.9). Compared the way [`names_pair_scope`] does, ASCII
+/// case-insensitively.
+///
+/// Returned in the packed, sentinel-delimited form `require_permission` reads.
+pub(crate) fn effective_scopes(granted: &str, claimed: Option<&str>) -> String {
+    let kept = sms_core::unpack(granted).into_iter().filter(|scope| {
+        !names_pair_scope(scope)
+            && claimed.is_none_or(|claim| claim.split_whitespace().any(|named| named == *scope))
+    });
+    // The scopes came out of a packed column, so each is already a legal member.
+    sms_core::pack(kept).unwrap_or_default()
 }
 
 fn unknown() -> CratestackError {
@@ -395,5 +480,41 @@ mod tests {
         }
         assert!(refuse_reserved_role("admin").is_ok());
         assert!(refuse_reserved_role("operator").is_ok());
+    }
+
+    #[test]
+    fn a_claim_narrows_the_clients_scopes_and_never_grants() {
+        let granted = " sms:send sms:read job:read ";
+        // Absent: the client's own.
+        assert_eq!(effective_scopes(granted, None), granted);
+        // The intersection, in the client's order.
+        assert_eq!(
+            effective_scopes(granted, Some("sms:read sms:send")),
+            " sms:send sms:read "
+        );
+        // A scope the client does not hold is not granted by naming it.
+        assert_eq!(
+            effective_scopes(granted, Some("sms:send provider:update")),
+            " sms:send "
+        );
+        assert_eq!(effective_scopes(granted, Some("provider:update")), " ");
+        // An empty claim narrows to nothing; it does not widen to everything.
+        assert_eq!(effective_scopes(granted, Some("")), " ");
+        // Whole scopes, not substrings.
+        assert_eq!(effective_scopes(" sms:send ", Some("sms:sendall")), " ");
+    }
+
+    #[test]
+    fn console_pair_never_rides_a_token() {
+        let granted = " sms:send console:pair ";
+        assert_eq!(effective_scopes(granted, None), " sms:send ");
+        assert_eq!(
+            effective_scopes(granted, Some("sms:send console:pair")),
+            " sms:send "
+        );
+        assert_eq!(
+            effective_scopes(" Console:Pair ", Some("console:pair")),
+            " "
+        );
     }
 }

@@ -28,6 +28,7 @@ pub use crate::cratestack_schema as schema;
 
 pub mod audit_log;
 pub mod auth;
+pub mod bearer;
 mod cache;
 pub mod client_keys;
 pub mod composition;
@@ -51,6 +52,7 @@ pub mod worker_locks;
 pub mod worker_roles;
 
 pub use auth::{GatewayAuth, Principal, PrincipalKind, system_context};
+pub use bearer::{ApiDoors, BearerRefusal, BearerVerifier, NoDoor, VerifiedBearer};
 pub use errors::{is_illegal_transition, map_database_error};
 pub use hmac_gate::{AUTH_METHOD_DISABLED, HmacBoot, HmacWebhooks};
 pub use pepper::{HashPepper, PepperError, hmac_sha256_hex};

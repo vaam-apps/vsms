@@ -7,11 +7,12 @@ use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
 use cratestack::cose::{CoseEnvelope, CoseMode, Ed25519Signer};
 use cratestack::envelope_layer::{
-    EnvelopeLayer, EnvelopeMode, PrincipalMapper, VerifiedRequest, async_trait,
+    EnvelopeLayer, EnvelopeMode, PrincipalMapper, UnsignedRequest, VerifiedRequest, async_trait,
 };
 use cratestack::{CratestackContext, CratestackError, FilterExpr, NonceStore};
 
 use crate::auth::system_context;
+use crate::bearer::ApiDoors;
 use crate::errors::UNIQUE_VIOLATION;
 use crate::schema::{self, Cratestack, envelope_nonce};
 use crate::signers::{DirectoryKeys, SignerDirectory};
@@ -351,11 +352,52 @@ impl PrincipalMapper for SignerPrincipal {
     }
 }
 
-/// Builds the envelope layer for the generated router: `Required` for every
-/// op, JSON payloads only, keys and nonces from Postgres.
+/// The mode every op runs in, from the doors a deployment opened.
 ///
-/// It must be applied as the router's last `.layer(..)` apart from the
-/// coarse source limiter (see [`crate::router::router`]).
+/// | signed envelope | machine token | mode       | what the layer does                                          |
+/// | --------------- | ------------- | ---------- | ------------------------------------------------------------ |
+/// | on              | off           | `Required` | refuses anything unsigned with the coarse 401                |
+/// | on              | on            | `Optional` | opens a signed request; lets a plain one through to the door |
+/// | off             | on            | `Off`      | passes plain traffic; refuses a COSE body with the 415       |
+///
+/// `Off` is what "keypair is off" has to mean: a request with a COSE body is
+/// never forwarded unverified, so a deployment that shut the signed door answers
+/// a signed request with the layer's own refusal and not with a quiet 401 that
+/// looks like a bad key.
+#[must_use]
+pub(crate) fn mode_for(doors: &ApiDoors) -> EnvelopeMode {
+    match (doors.keypair(), doors.bearer()) {
+        (true, false) => EnvelopeMode::Required,
+        (true, true) => EnvelopeMode::Optional,
+        // `ApiDoors` cannot be built with neither door open.
+        (false, _) => EnvelopeMode::Off,
+    }
+}
+
+/// Builds the envelope layer for the generated router: keys and nonces from
+/// Postgres, JSON payloads only, and a mode that follows the doors
+/// ([`mode_for`]).
+///
+/// Three settings do not follow the mode, and each is what keeps the second door
+/// from weakening the first:
+///
+/// - **`unresolved_mode(Required)`.** A bare `EnvelopeMode` used as the policy
+///   answers for the routes the layer cannot bind to an op with its own value, so
+///   under `Optional` or `Off` a route the resolver does not know would pass
+///   through unsigned and unchecked. Pinned to `Required` it fails closed (a
+///   500) whatever the doors are.
+/// - **`response_seal_policy(false)`.** Under `Optional` the default seals the
+///   answer to an unsigned request that names `application/cose` in `Accept`.
+///   A token caller is not a key holder: it gets plain JSON, and with it no
+///   response seal and no contract-lock 426, which only a sealed exchange
+///   carries. A signed request is always sealed, and that is not this policy's
+///   call.
+/// - **the principal mapper** names `client:<clientId>` for a signer, the same
+///   string the bearer door records for the same client, so the doors share one
+///   rate-limit bucket and one idempotency namespace.
+///
+/// It must be applied as the router's last `.layer(..)` apart from the coarse
+/// source limiter (see [`crate::router::router`]).
 ///
 /// # Errors
 ///
@@ -364,6 +406,7 @@ pub fn layer(
     signer: Ed25519Signer,
     db: &Cratestack,
     directory: SignerDirectory,
+    doors: &ApiDoors,
 ) -> Result<EnvelopeLayer, CratestackError> {
     let envelope = CoseEnvelope::server(
         CoseMode::Sign1,
@@ -372,7 +415,9 @@ pub fn layer(
         Arc::new(PgNonceStore::new(db.clone())),
     )
     .build()?;
-    schema::axum::envelope_layer(envelope, EnvelopeMode::Required, AUDIENCE)
+    schema::axum::envelope_layer(envelope, mode_for(doors), AUDIENCE)
+        .unresolved_mode(EnvelopeMode::Required)
+        .response_seal_policy(|_: &UnsignedRequest<'_>| false)
         .payload_media_types([PAYLOAD_TYPE], [PAYLOAD_TYPE])
         .principal_mapper(SignerPrincipal::new(directory))
         .build()
@@ -384,6 +429,77 @@ mod tests {
 
     const CURRENT: &[u8] = b"-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIBYj+/M+/6TszBaUcA1r2ZWEbwRFmRk5gIV5gaAPtaOL\n-----END PRIVATE KEY-----\n";
     const NEXT: &[u8] = b"-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIAgoX/+nAaZjmWgdPspG+4tKf1bYd7suk6ztD4wAKxOP\n-----END PRIVATE KEY-----\n";
+
+    fn doors(keypair: bool, bearer: bool) -> ApiDoors {
+        struct Never;
+        #[async_trait::async_trait]
+        impl crate::bearer::BearerVerifier for Never {
+            async fn verify(
+                &self,
+                _token: &str,
+            ) -> Result<crate::bearer::VerifiedBearer, crate::bearer::BearerRefusal> {
+                Err(crate::bearer::BearerRefusal::Malformed)
+            }
+        }
+        ApiDoors::new(
+            keypair,
+            bearer.then(|| Arc::new(Never) as Arc<dyn crate::bearer::BearerVerifier>),
+        )
+        .unwrap()
+    }
+
+    /// The table in [`mode_for`]'s doc, row by row.
+    #[test]
+    fn the_doors_set_the_envelope_mode() {
+        assert_eq!(mode_for(&doors(true, false)), EnvelopeMode::Required);
+        assert_eq!(mode_for(&doors(true, true)), EnvelopeMode::Optional);
+        assert_eq!(mode_for(&doors(false, true)), EnvelopeMode::Off);
+    }
+
+    /// A route the router matched but the schema does not generate: under a bare
+    /// `Optional` or `Off` policy the layer would let it through unsigned. The
+    /// layer built here fails it closed (a 500) in every mode.
+    #[tokio::test]
+    async fn a_route_the_layer_cannot_bind_fails_closed_in_every_mode() {
+        use cratestack::axum::body::Body;
+        use cratestack::axum::http::Request;
+        use cratestack::axum::routing::get;
+        use tower::ServiceExt;
+
+        let pool = cratestack::sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://unused:unused@127.0.0.1/none")
+            .expect("a lazy pool only parses the URL");
+        let db = Cratestack::builder(pool).build();
+        for (keypair, bearer) in [(true, false), (true, true), (false, true)] {
+            let layer = layer(
+                Ed25519Signer::from_seed(&[1; 32]),
+                &db,
+                SignerDirectory::new(db.clone()),
+                &doors(keypair, bearer),
+            )
+            .unwrap();
+            let app = cratestack::axum::Router::new()
+                .route(
+                    "/not-in-the-schema",
+                    get(|| async { "reached the handler" }),
+                )
+                .layer(layer);
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .uri("/not-in-the-schema")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status().as_u16(),
+                500,
+                "keypair {keypair}, bearer {bearer}"
+            );
+        }
+    }
 
     #[test]
     fn one_file_is_one_key() {

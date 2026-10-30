@@ -56,6 +56,17 @@ pub fn api_router(db: &Cratestack, pepper: &str) -> Router {
 /// [`api_router`] for a deployment whose `auth.methods` says whether
 /// `hmac_webhooks` is permitted (VSA-1).
 pub fn api_router_with(db: &Cratestack, pepper: &str, hmac: sms_api::HmacWebhooks) -> Router {
+    api_router_doors(db, pepper, hmac, sms_api::ApiDoors::keypair_only())
+}
+
+/// [`api_router_with`] for a deployment whose `auth.methods` opened `doors`
+/// (VSA-3b): the signed envelope, a machine token, or both.
+pub fn api_router_doors(
+    db: &Cratestack,
+    pepper: &str,
+    hmac: sms_api::HmacWebhooks,
+    doors: sms_api::ApiDoors,
+) -> Router {
     sms_api::router(
         db.clone(),
         server_keys().into_signer(),
@@ -64,6 +75,7 @@ pub fn api_router_with(db: &Cratestack, pepper: &str, hmac: sms_api::HmacWebhook
         sms_api::default_rate_limit_config(),
         sms_api::default_source_rate_limit_config(),
         hmac,
+        doors,
     )
     .expect("the envelope layer accepts its configuration")
 }
