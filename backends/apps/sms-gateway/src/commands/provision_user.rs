@@ -357,8 +357,8 @@ pub(crate) async fn provision_user_command(args: ProvisionUserArgs) -> Result<()
 /// password file: it is handed no path.
 fn announce_account(created: Option<&str>, email: &str, credential_asked_for: bool) {
     match (created, credential_asked_for) {
-        (Some(user_id), false) => {
-            println!("provisioned user: id={user_id}");
+        (Some(id), false) => {
+            println!("provisioned user: id={id}");
             println!(
                 "no credential exists to hand over: pair a browser key with `sms-gateway \
                  pair-console-key --user {email} --public-key <key>`, or through a vaam \
@@ -366,7 +366,7 @@ fn announce_account(created: Option<&str>, email: &str, credential_asked_for: bo
                  deployment that serves human_login."
             );
         }
-        (Some(user_id), true) => println!("provisioned user: id={user_id}"),
+        (Some(id), true) => println!("provisioned user: id={id}"),
         (None, false) => println!("a User with email {email:?} already exists — nothing to do"),
         (None, true) => {
             println!("a User with email {email:?} already exists — its role is not changed");

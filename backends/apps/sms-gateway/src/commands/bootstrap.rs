@@ -119,7 +119,7 @@ async fn bootstrap_step_owner(
     // file; the password's own line is `announce_password`'s.
     let created = create_console_user_if_absent(db, email, display_name, owner_role_key).await?;
     match created.as_deref() {
-        Some(user_id) => println!("provisioned user: id={user_id}"),
+        Some(id) => println!("provisioned user: id={id}"),
         None => println!("a User with email {email:?} already exists — skipping provision-user"),
     }
     let Some(file) = credential_file else {
