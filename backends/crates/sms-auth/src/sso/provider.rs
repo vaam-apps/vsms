@@ -118,8 +118,17 @@ impl JwksCache {
 struct Inner {
     config: SsoConfig,
     http: reqwest::Client,
+    /// The caches. Held only to read or to store, **never across a network call**.
     metadata: Mutex<Option<CachedMetadata>>,
     jwks: Mutex<JwksCache>,
+    /// Single flight: at most one task fetches discovery, and one the JWKS, at a
+    /// time. A caller that finds one in flight and holds something stale uses what
+    /// it has instead of queueing behind an identity provider that may take the
+    /// whole request timeout to fail.
+    metadata_flight: Mutex<()>,
+    jwks_flight: Mutex<()>,
+    metadata_ttl: Duration,
+    jwks_ttl: Duration,
 }
 
 /// A handle to the upstream `IdP`. Cheap to clone.
@@ -165,6 +174,22 @@ impl SsoProvider {
     ///
     /// The HTTP client could not be constructed.
     pub fn new(config: SsoConfig) -> Result<Self, SsoError> {
+        Self::with_cache_lifetimes(config, METADATA_TTL, JWKS_TTL)
+    }
+
+    /// As [`Self::new`], with the two cache lifetimes chosen. Production uses
+    /// [`Self::new`] (an hour each); a test that needs a cache to have expired
+    /// without waiting an hour uses this.
+    ///
+    /// # Errors
+    ///
+    /// The HTTP client could not be constructed.
+    #[doc(hidden)]
+    pub fn with_cache_lifetimes(
+        config: SsoConfig,
+        metadata_ttl: Duration,
+        jwks_ttl: Duration,
+    ) -> Result<Self, SsoError> {
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(5))
@@ -178,6 +203,10 @@ impl SsoProvider {
                 http,
                 metadata: Mutex::new(None),
                 jwks: Mutex::new(JwksCache::default()),
+                metadata_flight: Mutex::new(()),
+                jwks_flight: Mutex::new(()),
+                metadata_ttl,
+                jwks_ttl,
             }),
         })
     }
@@ -231,10 +260,24 @@ impl SsoProvider {
             return Err(unavailable("the IdP does not offer PKCE S256"));
         }
         let parse = |field: &'static str, value: &str| {
-            require_secure_url(field, value).map_err(|error| {
+            let url = require_secure_url(field, value).map_err(|error| {
                 tracing::error!(%error, "SSO discovery named an unacceptable endpoint");
                 unavailable("the discovery document names an unacceptable endpoint")
-            })
+            })?;
+            // Under livemode the issuer is https (the loader says so), and so is
+            // every endpoint its discovery document names: plain http to loopback
+            // is a developer's Keycloak, never a document that points a production
+            // gateway's code exchange at `http://127.0.0.1`.
+            if self.inner.config.livemode && url.scheme() != "https" {
+                tracing::error!(
+                    field,
+                    "SSO discovery named a cleartext endpoint under livemode"
+                );
+                return Err(unavailable(
+                    "the discovery document names a cleartext endpoint",
+                ));
+            }
+            Ok(url)
         };
         Ok(Metadata {
             authorization_endpoint: parse(
@@ -247,16 +290,34 @@ impl SsoProvider {
     }
 
     async fn metadata(&self) -> Result<Arc<Metadata>, SsoError> {
-        let mut slot = self.inner.metadata.lock().await;
-        if let Some(cached) = slot.as_ref()
-            && cached.fetched.elapsed() < METADATA_TTL
+        let ttl = self.inner.metadata_ttl;
+        let cached = {
+            let slot = self.inner.metadata.lock().await;
+            slot.as_ref()
+                .map(|cached| (cached.metadata.clone(), cached.fetched.elapsed()))
+        };
+        if let Some((metadata, age)) = &cached
+            && *age < ttl
+        {
+            return Ok(metadata.clone());
+        }
+        // Stale or absent. One fetch at a time; a caller with something stale
+        // never waits for it.
+        let _flight = match (self.inner.metadata_flight.try_lock(), &cached) {
+            (Ok(flight), _) => flight,
+            (Err(_), Some((metadata, _))) => return Ok(metadata.clone()),
+            (Err(_), None) => self.inner.metadata_flight.lock().await,
+        };
+        // Whoever held the flight may have just filled it.
+        if let Some(cached) = self.inner.metadata.lock().await.as_ref()
+            && cached.fetched.elapsed() < ttl
         {
             return Ok(cached.metadata.clone());
         }
         match self.fetch_discovery().await {
             Ok(fresh) => {
                 let metadata = Arc::new(fresh);
-                *slot = Some(CachedMetadata {
+                *self.inner.metadata.lock().await = Some(CachedMetadata {
                     metadata: metadata.clone(),
                     fetched: Instant::now(),
                 });
@@ -265,9 +326,9 @@ impl SsoProvider {
             Err(error) => {
                 // A stale document beats none: the `IdP` being briefly down
                 // must not stop sign-ins that need only what we already know.
-                if let Some(cached) = slot.as_ref() {
+                if let Some((metadata, _)) = cached {
                     tracing::warn!(%error, "SSO discovery refresh failed; using the cached document");
-                    return Ok(cached.metadata.clone());
+                    return Ok(metadata);
                 }
                 Err(error)
             }
@@ -364,7 +425,9 @@ impl SsoProvider {
             .ok_or_else(|| unavailable("the token response carried no id_token"))
     }
 
-    async fn fetch_jwks(&self, cache: &mut JwksCache) -> Result<(), SsoError> {
+    /// Fetches the published keys. Touches no cache: the caller stores the result
+    /// only if it is good.
+    async fn fetch_jwks(&self) -> Result<Vec<Jwk>, SsoError> {
         let metadata = self.metadata().await?;
         let response = self
             .inner
@@ -385,35 +448,63 @@ impl SsoProvider {
             .ok_or_else(|| unavailable("the JWKS has no `keys` array"))?;
         // One unparseable key (an encryption key of a kind this library does
         // not model) must not discard the rest.
-        cache.keys = keys
+        Ok(keys
             .iter()
             .filter_map(|key| serde_json::from_value::<Jwk>(key.clone()).ok())
             .filter(|key| key.common.key_id.is_some())
-            .collect();
-        cache.fetched = Some(Instant::now());
-        Ok(())
+            .collect())
     }
 
+    /// The key a token's header names.
+    ///
+    /// A key younger than the TTL is used as is. Otherwise the keys are fetched
+    /// again, at most once per `jwks_min_refresh` and by one task at a time, and
+    /// **a stale key beats none**: if the fetch fails, or another task is already
+    /// making it, a key held from an earlier fetch is used. (A key the provider has
+    /// since withdrawn stops verifying when a fetch *succeeds* without it.) No lock
+    /// is held across the network call.
     async fn find_key(&self, kid: &str) -> Result<Jwk, SsoError> {
-        let mut cache = self.inner.jwks.lock().await;
-        let fresh_enough = cache.fetched.is_some_and(|at| at.elapsed() < JWKS_TTL);
-        if fresh_enough && let Some(key) = cache.find(kid) {
-            return Ok(key);
+        let min_refresh = self.inner.config.jwks_min_refresh;
+        let (known, fetched) = {
+            let cache = self.inner.jwks.lock().await;
+            (cache.find(kid), cache.fetched)
+        };
+        if let (Some(key), Some(at)) = (&known, fetched)
+            && at.elapsed() < self.inner.jwks_ttl
+        {
+            return Ok(key.clone());
         }
-        let may_refetch = cache
-            .fetched
-            .is_none_or(|at| at.elapsed() >= self.inner.config.jwks_min_refresh);
-        if may_refetch {
-            self.fetch_jwks(&mut cache).await?;
-            if let Some(key) = cache.find(kid) {
-                return Ok(key);
+        if fetched.is_some_and(|at| at.elapsed() < min_refresh) {
+            // Refetching is rate-limited: better the key we have than none.
+            return known.ok_or_else(|| Refusal::UnknownKeyId.into());
+        }
+        let _flight = match (self.inner.jwks_flight.try_lock(), &known) {
+            (Ok(flight), _) => flight,
+            (Err(_), Some(key)) => return Ok(key.clone()),
+            (Err(_), None) => self.inner.jwks_flight.lock().await,
+        };
+        {
+            // The task that held the flight may have just fetched.
+            let cache = self.inner.jwks.lock().await;
+            if cache.fetched.is_some_and(|at| at.elapsed() < min_refresh) {
+                return cache.find(kid).ok_or_else(|| Refusal::UnknownKeyId.into());
             }
-        } else if let Some(key) = cache.find(kid) {
-            // Stale (older than the TTL) but refetching is rate-limited:
-            // better the key we have than none.
-            return Ok(key);
         }
-        Err(Refusal::UnknownKeyId.into())
+        match self.fetch_jwks().await {
+            Ok(keys) => {
+                let mut cache = self.inner.jwks.lock().await;
+                cache.keys = keys;
+                cache.fetched = Some(Instant::now());
+                cache.find(kid).ok_or_else(|| Refusal::UnknownKeyId.into())
+            }
+            Err(error) => match known {
+                Some(key) => {
+                    tracing::warn!(%error, "SSO JWKS refresh failed; using the cached key");
+                    Ok(key)
+                }
+                None => Err(error),
+            },
+        }
     }
 
     /// Verifies `raw` as an `id_token` for this transaction's `nonce`.

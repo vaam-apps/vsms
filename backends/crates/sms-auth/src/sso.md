@@ -71,6 +71,15 @@ sequenceDiagram
   database refuses an `owner` from an `admin` creator. The loader's list is a copy of
   `sms_api::auth::RESERVED_ROLE_KEYS` and `DEVICE_ONLY_ROLES`, which `sms-config` cannot
   import, and a test here pins the copy.
+- **The e-mail clash check ignores case.** `users_email_key` compares the exact text, so
+  `Alice@corp.test` would sail past a local `alice@corp.test`; a first sign-in therefore
+  reads the users a page at a time and compares in Rust (the query builder has no
+  case-insensitive filter, and raw SQL is R1's to refuse). It never runs for a returning
+  person, and a table too large to scan fails closed.
+- **Keys and discovery are used stale rather than not at all, and nothing is locked across
+  the network.** One task at a time fetches; a caller that holds something older than its
+  lifetime uses it when the fetch fails or is already under way. Under `livemode` every
+  endpoint the discovery document names must be `https`.
 - **`lastLoginAt` is stamped by the caller**, once a code is issued
   ([`store::stamp_last_login`]), and a first sign-in creates the account with none:
   resolving an account is not signing it in.

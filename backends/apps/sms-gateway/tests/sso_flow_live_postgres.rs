@@ -1585,6 +1585,17 @@ async fn an_expired_transaction_is_refused() {
 /// A stored transaction for `state` that expires `minutes` from now (negative:
 /// already).
 async fn seed_transaction(db: &Cratestack, state: &str, console_client_id: &str, minutes: i64) {
+    seed_transaction_to(db, state, console_client_id, CONSOLE_REDIRECT_URI, minutes).await;
+}
+
+/// [`seed_transaction`], for a console request that names `redirect_uri`.
+async fn seed_transaction_to(
+    db: &Cratestack,
+    state: &str,
+    console_client_id: &str,
+    redirect_uri: &str,
+    minutes: i64,
+) {
     db.sso_transaction()
         .create(schema::CreateSsoTransactionInput {
             stateHash: sms_auth::sso::store::state_hash(state),
@@ -1592,7 +1603,7 @@ async fn seed_transaction(db: &Cratestack, state: &str, console_client_id: &str,
             codeVerifier: "v".to_owned(),
             consoleRequest: serde_json::json!({
                 "client_id": console_client_id,
-                "redirect_uri": CONSOLE_REDIRECT_URI,
+                "redirect_uri": redirect_uri,
                 "response_type": "code",
                 "scope": "openid profile",
                 "state": "s",
@@ -2177,4 +2188,113 @@ async fn an_unreachable_idp_does_not_stop_the_gateway_or_password_sign_in() {
     );
     let _ = gateway.kill();
     let _ = gateway.wait();
+}
+
+/// An error redirect is still a redirect. A transaction written when a redirect URI
+/// was registered must not send the browser there once the console's list no longer
+/// has it; a URI that is still registered gets its `access_denied` as before.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn the_callback_redirects_only_to_a_uri_registered_now() {
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = Rig::start().await;
+    let client = &rig.deployment.console_client_id;
+
+    let stale = format!("stale-redirect-{}", rig.suffix);
+    seed_transaction_to(&rig.db, &stale, client, "https://old-console.example/cb", 5).await;
+    let answer = rig
+        .browser
+        .get(format!(
+            "{}/login/sso/callback?error=access_denied&state={stale}",
+            rig.base_url()
+        ))
+        .send()
+        .await
+        .expect("callback");
+    assert_eq!(answer.status(), reqwest::StatusCode::BAD_REQUEST);
+    assert!(answer.headers().get("location").is_none());
+
+    let current = format!("current-redirect-{}", rig.suffix);
+    seed_transaction(&rig.db, &current, client, 5).await;
+    let answer = rig
+        .browser
+        .get(format!(
+            "{}/login/sso/callback?error=access_denied&state={current}",
+            rig.base_url()
+        ))
+        .send()
+        .await
+        .expect("callback");
+    assert_eq!(answer.status(), reqwest::StatusCode::FOUND);
+    let location = answer.headers()["location"].to_str().unwrap();
+    assert!(
+        location.starts_with(CONSOLE_REDIRECT_URI) && location.contains("error=access_denied"),
+        "{location}"
+    );
+}
+
+/// The upstream `code` is the one parameter the identity provider makes, and some
+/// providers' codes are long. 3000 characters reach the code exchange (the fake
+/// rejects it: `upstream_denied`); 5000 are not a code (`no_code`).
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn the_callback_takes_a_long_upstream_code_but_not_an_unbounded_one() {
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = Rig::start().await;
+    let client = &rig.deployment.console_client_id;
+    for (length, reason) in [(3000, "upstream_denied"), (5000, "no_code")] {
+        let state = format!("long-code-{length}-{}", rig.suffix);
+        seed_transaction(&rig.db, &state, client, 5).await;
+        let code = "c".repeat(length);
+        let answer = rig
+            .browser
+            .get(format!(
+                "{}/login/sso/callback?code={code}&state={state}",
+                rig.base_url()
+            ))
+            .send()
+            .await
+            .expect("callback");
+        assert_eq!(answer.status(), reqwest::StatusCode::FOUND, "{length}");
+        tokio::time::sleep(StdDuration::from_millis(300)).await;
+        let log = rig.logs.text();
+        assert!(
+            log.contains(reason),
+            "a {length}-character code should end as {reason}"
+        );
+        if length == 3000 {
+            assert!(!log.contains("no_code"), "a long code is not an absent one");
+        }
+    }
+}
+
+/// A value the identity provider sent and the database or the `User` validators
+/// refuse is not repeated in the gateway's log: the error's own text names it.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn an_address_the_user_model_refuses_is_refused_and_never_logged() {
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = Rig::start().await;
+    let local = format!("sneaky-{}", rig.suffix);
+    // Plausible to the broker (a local part, a dot after the first `@`), refused by
+    // the model's `@email` rule, which wants exactly one `@`.
+    let address = format!("{local}@x@example.test");
+    rig.fake.queue_login(LoginSpec {
+        email: Some(address.clone()),
+        ..rig.spec()
+    });
+    let attempt = rig.attempt();
+    assert_denied(
+        &rig.sign_in(&attempt).await,
+        &attempt,
+        "an address the model refuses",
+    );
+    tokio::time::sleep(StdDuration::from_millis(300)).await;
+    let log = rig.logs.text();
+    assert!(
+        log.contains("did not validate as a User"),
+        "the refusal reached the log, so the test is exercising the path:\n{log}"
+    );
+    assert!(!log.contains(&local), "the address was logged:\n{log}");
+    assert_eq!(rig.users_with_email(&address).await.len(), 0);
 }

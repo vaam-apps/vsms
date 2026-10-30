@@ -53,6 +53,10 @@ pub struct SsoConfig {
     pub jit_role_key: String,
     /// Floor on the gap between two JWKS fetches.
     pub jwks_min_refresh: Duration,
+    /// Whether the deployment is `livemode`: every endpoint the identity
+    /// provider's discovery document names must then be `https`, not only the
+    /// issuer.
+    pub livemode: bool,
 }
 
 /// Why a configuration the loader accepted cannot be used. Reachable only for
@@ -133,7 +137,7 @@ impl SsoConfig {
     ///
     /// [`ConfigError::BadUrl`] if `op_issuer` does not parse: it cannot, for a
     /// loaded document.
-    pub fn new(sso: &Sso, op_issuer: &str) -> Result<Self, ConfigError> {
+    pub fn new(sso: &Sso, op_issuer: &str, livemode: bool) -> Result<Self, ConfigError> {
         let base = require_secure_url("op.issuer", op_issuer)?;
         Ok(Self {
             issuer: sso.issuer.clone(),
@@ -147,6 +151,7 @@ impl SsoConfig {
             accepted_amr: sso.accepted_amr.clone(),
             jit_role_key: sso.jit_role.clone(),
             jwks_min_refresh: Duration::from_secs(sso.jwks_min_refresh_secs),
+            livemode,
         })
     }
 }
@@ -184,8 +189,12 @@ pub(crate) mod tests {
 
     #[test]
     fn the_callback_is_the_op_issuer_plus_the_callback_route() {
-        let config =
-            SsoConfig::new(&sso(&serde_json::json!({})), "https://vsms.example.test").unwrap();
+        let config = SsoConfig::new(
+            &sso(&serde_json::json!({})),
+            "https://vsms.example.test",
+            false,
+        )
+        .unwrap();
         assert_eq!(
             config.redirect_uri,
             "https://vsms.example.test/login/sso/callback"
@@ -194,6 +203,7 @@ pub(crate) mod tests {
         let config = SsoConfig::new(
             &sso(&serde_json::json!({})),
             "https://vsms.example.test/gw/",
+            false,
         )
         .unwrap();
         assert_eq!(
@@ -207,6 +217,7 @@ pub(crate) mod tests {
         let config = SsoConfig::new(
             &sso(&serde_json::json!({ "issuer": "https://auth.example.test/realms/staff/" })),
             "https://vsms.example.test",
+            false,
         )
         .unwrap();
         assert_eq!(config.scopes, "openid email profile");
@@ -216,9 +227,19 @@ pub(crate) mod tests {
 
     #[test]
     fn the_client_secret_never_prints() {
-        let config =
-            SsoConfig::new(&sso(&serde_json::json!({})), "https://vsms.example.test").unwrap();
-        assert!(!format!("{config:?}").contains("s3cret-for-this-test"));
+        let secret = secret();
+        let config = SsoConfig::new(
+            &sso(&serde_json::json!({ "client_secret": secret })),
+            "https://vsms.example.test",
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            config.client_secret.expose(),
+            secret,
+            "the secret is carried"
+        );
+        assert!(!format!("{config:?}").contains(&secret));
     }
 
     #[test]

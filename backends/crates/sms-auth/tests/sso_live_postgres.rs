@@ -80,7 +80,7 @@ fn config_with_role(issuer: &str, role: &str) -> SsoConfig {
         "rate_limit": { "burst": 30, "refill_per_second": 1.0 },
     }))
     .expect("a complete block");
-    SsoConfig::new(&block, "https://vsms.example.test").expect("valid")
+    SsoConfig::new(&block, "https://vsms.example.test", false).expect("valid")
 }
 
 fn claims(suffix: &str) -> IdClaims {
@@ -477,4 +477,53 @@ async fn a_first_sign_in_stamps_nothing_until_a_code_is_issued() {
     store::stamp_last_login(&db, &sys(), &resolved.user_id).await;
     let row = &users_with_email(&db, c.email.as_deref().unwrap()).await[0];
     assert!(row.lastLoginAt.is_some(), "stamped once the caller says so");
+}
+
+/// `users_email_key` compares the exact text, so a local `alice@corp.test` does not
+/// stop `Alice@corp.test` at the database: the broker checks without regard to case.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn an_email_held_locally_in_another_case_is_still_in_use() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let suffix = unique_suffix();
+    let cfg = config("https://idp.example.test/realms/live");
+    let local = format!("alice-{suffix}@corp.test");
+    db.user()
+        .create(schema::CreateUserInput {
+            subject: format!("pending-{suffix}"),
+            email: local.clone(),
+            displayName: "Local Alice".to_owned(),
+            roleKey: "support".to_owned(),
+            lastLoginAt: None,
+            deletedAt: None,
+        })
+        .run(&owner())
+        .await
+        .expect("local user");
+    let claimed = format!("Alice-{suffix}@Corp.Test");
+    let c = IdClaims {
+        email: Some(claimed.clone()),
+        ..claims(&suffix)
+    };
+    let result = store::resolve_user(&db, &sys(), &cfg, &c).await;
+    assert!(
+        matches!(result, Err(SsoError::Refused(Refusal::EmailInUse))),
+        "{result:?}"
+    );
+    assert_eq!(
+        users_with_email(&db, &claimed).await.len(),
+        0,
+        "no second account for the same mailbox"
+    );
+    let links = db
+        .federated_link()
+        .find_many()
+        .where_expr(cratestack::FilterExpr::from(
+            schema::federated_link::subject().eq(c.subject.clone()),
+        ))
+        .run(&sys())
+        .await
+        .expect("links");
+    assert_eq!(links.len(), 0);
 }

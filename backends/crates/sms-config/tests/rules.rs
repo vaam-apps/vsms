@@ -1483,6 +1483,16 @@ fn the_issuer_is_a_url_with_a_host_and_nothing_else_on_it() {
 }
 
 #[test]
+fn the_issuer_fits_the_column_it_is_stored_in() {
+    // 512 is FederatedLink.issuer's @length max: loads. One more is refused by the
+    // loader and not, later, by the first sign-in's validation.
+    let longest =
+        load("sso-issuer-longest").expect("512 characters is the longest the column holds");
+    assert_eq!(longest.sso().unwrap().issuer.chars().count(), 512);
+    assert!(sso_invalid("sso-issuer-too-long", "issuer").contains("at most 512"));
+}
+
+#[test]
 fn the_issuer_is_kept_byte_for_byte_and_plain_http_is_for_loopback_only() {
     let config = load("sso-issuer-verbatim-trailing-slash").unwrap();
     assert_eq!(

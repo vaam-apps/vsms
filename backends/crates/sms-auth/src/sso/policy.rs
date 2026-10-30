@@ -86,6 +86,7 @@ mod tests {
         SsoConfig::new(
             &sso(&serde_json::json!({ "accepted_acr": acr, "accepted_amr": amr })),
             "https://vsms.example.test",
+            false,
         )
         .unwrap()
     }

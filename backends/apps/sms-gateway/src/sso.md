@@ -44,7 +44,12 @@ bucket -> every parameter present and bounded -> the console's client_id -> the 
 # What `callback` does
 
 It consumes the row (a delete: of two concurrent callbacks for one `state`, exactly one wins),
-reads the console's request back, and runs `sms_auth::sso::flow::complete`. A verified,
+reads the console's request back, **checks its `redirect_uri` is still one the console client is
+registered with** (the list can change between `start` and the callback, and an error redirect is
+still a redirect: otherwise a plain `400`), and runs `sms_auth::sso::flow::complete`. The upstream
+`code` may be up to 4096 bytes where every other parameter is capped at 1024: it is the one value
+the identity provider, not the console, makes, some providers' codes are themselves long signed
+tokens, and it is never stored. A verified,
 admitted sign-in then runs the real `handle_authorize` with
 `Identity { provider_id: "sms-console", external_id: <User.id>, email, username }`, the shape
 `POST /login` issues, so VSA-4b's person realm and its owner and admin cap apply to the
@@ -55,6 +60,26 @@ redirect from the library at this point is a `400` too, not a sign-in.
 **`lastLoginAt` is stamped last**, once the code is issued (`sms_auth::sso::store::stamp_last_login`),
 exactly as `POST /login` does: a verified token whose authorization request the library then
 refuses signed nobody in. A first sign-in creates the account with no stamp for the same reason.
+
+# What the console must do with this (VSA-5)
+
+**The upstream `state` is bound to a Postgres row, not to the browser.** Anyone who holds a
+live `state` can complete the callback in their own browser and be sent to the console's
+`redirect_uri` with a code that is *theirs*: login CSRF, the OAuth 2.0 threat model's
+classic. The gateway cannot see the console's cookie, so the binding is the console's:
+
+- it starts a sign-in by setting its own transaction cookie (`vsms_oidc_txn`) holding the
+  `state` it passed to `start`, the PKCE verifier and the `nonce`, and sets it **before**
+  sending the browser to `/login/sso/start`;
+- on its callback it **refuses a `state` that differs from the cookie's**, and never redeems
+  a code whose `state` it did not start;
+- it redeems the code at `/token` with that verifier, once, and ends the cookie.
+
+`/login/sso/start` is, in effect, a browser `GET` authorization endpoint: the console
+navigates the browser to it with the eight OAuth parameters in the query string, exactly as
+it would to any authorization server, and gets a `302` back to the console's `redirect_uri`
+(`?code=` and `state`, or `?error=`). It is not the JSON `POST /login`, and a console written
+against that one must not call it from a server.
 
 # What the browser is told
 

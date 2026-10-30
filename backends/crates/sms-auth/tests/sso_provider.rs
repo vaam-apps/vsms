@@ -35,7 +35,7 @@ fn config_for(fake: &FakeOidc, secret: &str, min_refresh_secs: u64) -> SsoConfig
         "rate_limit": { "burst": 30, "refill_per_second": 1.0 },
     }))
     .expect("a complete block");
-    SsoConfig::new(&block, "http://127.0.0.1:1").expect("a valid config")
+    SsoConfig::new(&block, "http://127.0.0.1:1", false).expect("a valid config")
 }
 
 async fn setup() -> (FakeOidc, SsoProvider) {
@@ -552,4 +552,180 @@ async fn a_replayed_code_and_a_wrong_pkce_verifier_are_refused_upstream() {
         matches!(replay, SsoError::Refused(Refusal::UpstreamDenied)),
         "{replay:?}"
     );
+}
+
+// --- livemode, stale keys, and no queueing behind a dead identity provider ----
+
+/// Under `livemode` every endpoint the discovery document names must be `https`,
+/// not only the issuer: the fake's are plain `http` on loopback, which a developer's
+/// Keycloak may be and a production gateway's code exchange must never be sent to.
+#[tokio::test]
+async fn under_livemode_a_discovery_naming_cleartext_endpoints_is_refused() {
+    let fake = FakeOidc::start(CLIENT_ID, &CLIENT_SECRET).await;
+    let mut config = config_for(&fake, &CLIENT_SECRET, 0);
+    config.livemode = true;
+    let provider = SsoProvider::new(config).expect("provider");
+    let error = provider
+        .authorization_url(&AuthnSecrets::generate(), false)
+        .await
+        .expect_err("cleartext endpoints under livemode");
+    assert!(matches!(error, SsoError::Unavailable(_)), "{error:?}");
+    // The same document is fine outside livemode (every other test in this file).
+    let (_fake, plain) = setup().await;
+    plain
+        .authorization_url(&AuthnSecrets::generate(), false)
+        .await
+        .expect("a sandbox may use loopback http");
+}
+
+/// A raw token from the fake, to verify more than once.
+async fn raw_token(fake: &FakeOidc, provider: &SsoProvider, spec: LoginSpec) -> String {
+    fake.queue_login(spec);
+    let secrets = AuthnSecrets::generate();
+    let (code, _) = authorize(provider, &secrets, false).await;
+    provider
+        .exchange_code(&code, &secrets.code_verifier)
+        .await
+        .expect("a token")
+}
+
+/// **A stale key beats none.** The keys are older than their lifetime and the
+/// provider is gone: the refetch fails and the key held from before is used. A
+/// provider that never had the key has nothing to fall back to and says so.
+#[tokio::test]
+async fn a_key_past_its_lifetime_is_used_when_the_refetch_fails() {
+    let fake = FakeOidc::start(CLIENT_ID, &CLIENT_SECRET).await;
+    let config = config_for(&fake, &CLIENT_SECRET, 0);
+    let provider = SsoProvider::with_cache_lifetimes(
+        config.clone(),
+        std::time::Duration::from_secs(3600),
+        std::time::Duration::from_millis(1),
+    )
+    .expect("provider");
+    let nonce = "stale-key-nonce";
+    let raw = raw_token(
+        &fake,
+        &provider,
+        LoginSpec {
+            nonce: NonceMode::Fixed(nonce.to_owned()),
+            ..LoginSpec::default()
+        },
+    )
+    .await;
+    provider.verify_id_token(&raw, nonce).await.expect("fresh");
+
+    let never_fetched = SsoProvider::new(config).expect("provider");
+    drop(fake);
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    provider
+        .verify_id_token(&raw, nonce)
+        .await
+        .expect("the key held from before is used while the provider is down");
+    let result = never_fetched.verify_id_token(&raw, nonce).await;
+    assert!(
+        matches!(result, Err(SsoError::Unavailable(_))),
+        "nothing held, nothing to fall back to: {result:?}"
+    );
+}
+
+/// An identity provider that answers discovery and the first JWKS request and then
+/// hangs on every later JWKS request. Returns its issuer.
+async fn provider_that_hangs_after_the_first_keys(keys: String) -> String {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let issuer = format!("http://{}", listener.local_addr().expect("addr"));
+    let served = issuer.clone();
+    let first = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            let (issuer, keys, first) = (served.clone(), keys.clone(), first.clone());
+            tokio::spawn(async move {
+                let mut buffer = [0u8; 2048];
+                let n = stream.read(&mut buffer).await.unwrap_or(0);
+                let request = String::from_utf8_lossy(&buffer[..n]).into_owned();
+                let body = if request.contains("openid-configuration") {
+                    serde_json::json!({
+                        "issuer": issuer,
+                        "authorization_endpoint": format!("{issuer}/authorize"),
+                        "token_endpoint": format!("{issuer}/token"),
+                        "jwks_uri": format!("{issuer}/jwks.json"),
+                    })
+                    .to_string()
+                } else if first.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                    keys
+                } else {
+                    tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+                    return;
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+            });
+        }
+    });
+    issuer
+}
+
+/// **A dead identity provider does not queue every sign-in behind its timeout.**
+/// With the keys stale and a refetch already hanging, the other callers use the key
+/// they hold and return at once; only the one making the fetch waits.
+#[tokio::test]
+async fn callers_do_not_queue_behind_a_hanging_refetch() {
+    let fake = FakeOidc::start(CLIENT_ID, &CLIENT_SECRET).await;
+    let keys = reqwest::get(format!("{}/jwks.json", fake.issuer()))
+        .await
+        .expect("keys")
+        .text()
+        .await
+        .expect("body");
+    let hanging = provider_that_hangs_after_the_first_keys(keys).await;
+
+    // The token is minted by the fake and claims the hanging provider's issuer.
+    let minting = SsoProvider::new(config_for(&fake, &CLIENT_SECRET, 0)).expect("provider");
+    let nonce = "queue-nonce";
+    let raw = raw_token(
+        &fake,
+        &minting,
+        LoginSpec {
+            iss: Some(hanging.clone()),
+            nonce: NonceMode::Fixed(nonce.to_owned()),
+            ..LoginSpec::default()
+        },
+    )
+    .await;
+
+    let mut config = config_for(&fake, &CLIENT_SECRET, 0);
+    config.issuer = hanging;
+    let provider = SsoProvider::with_cache_lifetimes(
+        config,
+        std::time::Duration::from_secs(3600),
+        std::time::Duration::from_millis(1),
+    )
+    .expect("provider");
+    provider.verify_id_token(&raw, nonce).await.expect("first");
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+
+    let mut tasks = tokio::task::JoinSet::new();
+    for _ in 0..5 {
+        let (provider, raw) = (provider.clone(), raw.clone());
+        tasks.spawn(async move { provider.verify_id_token(&raw, nonce).await.is_ok() });
+    }
+    let mut finished = 0;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+    while let Ok(Some(joined)) = tokio::time::timeout_at(deadline, tasks.join_next()).await {
+        assert!(joined.expect("task"), "a stale key verifies");
+        finished += 1;
+    }
+    assert!(
+        finished >= 4,
+        "{finished} of 5 returned within 3 s: callers queued behind the hanging fetch"
+    );
+    tasks.abort_all();
 }

@@ -32,6 +32,14 @@ use crate::op::OpState;
 /// the database hold.
 const MAX_PARAM_LEN: usize = 1024;
 
+/// Longest upstream `code` the callback accepts. It is the one parameter the
+/// identity provider, not the console, makes: some providers issue codes that are
+/// themselves signed tokens of well over a kilobyte, and refusing one would fail
+/// every sign-in at the last step. It is still bounded, and it is never stored (it
+/// is spent at the provider's token endpoint), so a larger cap costs the database
+/// nothing.
+const MAX_CODE_LEN: usize = 4096;
+
 /// How often the reaper looks for expired transactions.
 const REAPER_INTERVAL: Duration = Duration::from_secs(60);
 const REAPER_BATCH: i64 = 500;
@@ -296,6 +304,14 @@ async fn callback_handler(
         );
     };
 
+    // The stored `redirect_uri` was registered when the row was written. The console
+    // client's list can have changed since (a redeploy with another callback), and
+    // an error redirect is still a redirect: only to a URI that is registered now.
+    if !state.redirect_uris.contains(&request.redirect_uri) {
+        tracing::error!("SSO callback: the stored redirect_uri is no longer a registered one");
+        return plain(StatusCode::BAD_REQUEST, "Sign-in could not be completed.");
+    }
+
     if query.error.is_some() {
         tracing::warn!(
             reason = Refusal::UpstreamDenied.reason(),
@@ -305,7 +321,7 @@ async fn callback_handler(
     }
     let Some(code) = query
         .code
-        .filter(|c| !c.is_empty() && c.len() <= MAX_PARAM_LEN)
+        .filter(|c| !c.is_empty() && c.len() <= MAX_CODE_LEN)
     else {
         tracing::warn!(reason = Refusal::NoCode.reason(), "SSO sign-in refused");
         return console_error_redirect(&request, "access_denied");

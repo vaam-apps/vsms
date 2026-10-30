@@ -447,8 +447,21 @@ fn validate_sso(sso: &Sso, livemode: bool) -> Result<(), ConfigError> {
 /// a host and nothing else on it, `https` in every mode except plain `http` to a
 /// loopback host (a developer's Keycloak, the tests' fake), and under `livemode`
 /// the same real-host rule as every other URL.
+/// `FederatedLink.issuer`'s `@length(max: ...)` in `schemas/vsms.cstack`.
+const ISSUER_MAX_CHARS: usize = 512;
+
 fn validate_sso_issuer(issuer: &str, livemode: bool) -> Result<(), ConfigError> {
     const KEY: &str = "human_login.sso.issuer";
+    // `FederatedLink.issuer` is `@length(max: 512)`: a longer issuer would pass every
+    // other rule and then fail the first account creation as a validation error.
+    if issuer.chars().count() > ISSUER_MAX_CHARS {
+        return Err(invalid(
+            KEY,
+            &format!(
+                "must be at most {ISSUER_MAX_CHARS} characters: it is stored in FederatedLink.issuer"
+            ),
+        ));
+    }
     let parsed = url::Url::parse(issuer).map_err(|error| ConfigError::InvalidValue {
         key: KEY.to_owned(),
         reason: format!("{issuer:?} is not a URL: {error}"),

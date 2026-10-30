@@ -48,8 +48,21 @@ pub fn state_hash(state: &str) -> String {
     hex::encode(Sha256::digest(state.as_bytes()))
 }
 
+/// What a log line may say about a database error: the SQLSTATE and the
+/// constraint's name, and nothing else. A `CratestackError`'s `Display` can carry
+/// the value that failed (an e-mail address the identity provider sent, a
+/// `state` hash, a key's value), and the log is not where a person's address
+/// belongs.
+fn db_kind(error: &CratestackError) -> (&str, &str) {
+    (
+        error.db_sqlstate().unwrap_or("none"),
+        error.db_constraint().unwrap_or("none"),
+    )
+}
+
 fn internal(what: &str, error: &CratestackError) -> SsoError {
-    tracing::error!(%error, what, "SSO persistence failed");
+    let (sqlstate, constraint) = db_kind(error);
+    tracing::error!(what, sqlstate, constraint, "SSO persistence failed");
     SsoError::Unavailable(format!("{what} failed"))
 }
 
@@ -120,7 +133,8 @@ pub async fn consume_transaction(
     // The delete is the gate. Of two concurrent callbacks for one `state`,
     // exactly one deletes the row; the other's delete finds nothing.
     if let Err(error) = db.sso_transaction().delete(row.id.clone()).run(sys).await {
-        tracing::info!(%error, "SSO transaction already consumed");
+        let (sqlstate, constraint) = db_kind(&error);
+        tracing::info!(sqlstate, constraint, "SSO transaction already consumed");
         return Ok(None);
     }
     if row.expiresAt <= Utc::now() {
@@ -327,6 +341,7 @@ pub async fn stamp_last_login(db: &Cratestack, sys: &CratestackContext, user_id:
         Ok(Some(row)) => row,
         Ok(None) => return,
         Err(error) => {
+            // `error` is an `SsoError`: a fixed description, never a value.
             tracing::warn!(%error, "could not read the account to stamp lastLoginAt");
             return;
         }
@@ -342,7 +357,12 @@ pub async fn stamp_last_login(db: &Cratestack, sys: &CratestackContext, user_id:
         .run(sys)
         .await;
     if let Err(error) = result {
-        tracing::warn!(%error, "could not stamp lastLoginAt after an SSO sign-in");
+        let (sqlstate, constraint) = db_kind(&error);
+        tracing::warn!(
+            sqlstate,
+            constraint,
+            "could not stamp lastLoginAt after an SSO sign-in"
+        );
     }
 }
 
@@ -386,6 +406,75 @@ pub async fn resolve_user(
     ))
 }
 
+/// How many users one page of [`email_held_locally`] reads, and the most pages it
+/// will read before it gives up.
+const EMAIL_SCAN_PAGE: i64 = 500;
+const EMAIL_SCAN_MAX_PAGES: i64 = 100;
+
+/// Whether any live `User` holds `email`, **ignoring case**.
+///
+/// The unique index is on the exact text and the query builder has no
+/// case-insensitive comparison (raw SQL is R1's to refuse), so this reads the
+/// users a page at a time and compares in Rust. That is acceptable only because it
+/// runs for a *first* sign-in of an identity, never for a returning one, and a
+/// console's user table is staff. A table too large to scan (more than
+/// `EMAIL_SCAN_PAGE * EMAIL_SCAN_MAX_PAGES` users) fails closed as an operator
+/// problem and is a reason to add a normalised column, not to skip the check.
+async fn email_held_locally(
+    db: &Cratestack,
+    sys: &CratestackContext,
+    email: &str,
+) -> Result<bool, SsoError> {
+    let wanted = email.to_lowercase();
+    for page in 0..EMAIL_SCAN_MAX_PAGES {
+        let users = db
+            .user()
+            .find_many()
+            .order_by(user::id().asc())
+            .limit(EMAIL_SCAN_PAGE)
+            .offset(page * EMAIL_SCAN_PAGE)
+            .run(sys)
+            .await
+            .map_err(|e| internal("scanning the users for the e-mail", &e))?;
+        if users.iter().any(|row| row.email.to_lowercase() == wanted) {
+            return Ok(true);
+        }
+        if i64::try_from(users.len()).unwrap_or(i64::MAX) < EMAIL_SCAN_PAGE {
+            return Ok(false);
+        }
+    }
+    tracing::error!("the user table is too large to scan for a case-insensitive e-mail clash");
+    Err(SsoError::Unavailable(
+        "the user table is too large to check the e-mail".to_owned(),
+    ))
+}
+
+/// Whether `email` can be given to a new account. `Ok(false)` is "a concurrent
+/// first sign-in of this very identity created it a moment ago": the caller reads
+/// the link. A genuine clash is `Refusal::EmailInUse`.
+///
+/// `users_email_key` is case-sensitive, so `Alice@corp.test` would sail past a
+/// local `alice@corp.test` and create a second account for one mailbox: the check
+/// ignores case ([`email_held_locally`]).
+async fn email_is_free(
+    db: &Cratestack,
+    sys: &CratestackContext,
+    config: &SsoConfig,
+    claims: &IdClaims,
+    email: &str,
+) -> Result<bool, SsoError> {
+    if !email_held_locally(db, sys, email).await? {
+        return Ok(true);
+    }
+    if find_link(db, sys, &config.issuer, &claims.subject)
+        .await?
+        .is_some()
+    {
+        return Ok(false);
+    }
+    Err(Refusal::EmailInUse.into())
+}
+
 /// Creates the `User` and its link in one transaction. `Ok(None)` means the
 /// link already exists (a concurrent first sign-in won).
 async fn provision(
@@ -410,6 +499,9 @@ async fn provision(
     }
     if is_reserved_domain(&email) {
         return Err(Refusal::EmailReserved.into());
+    }
+    if !email_is_free(db, sys, config, claims, &email).await? {
+        return Ok(None);
     }
     let display_name = display_name_for(claims, &email);
     let creator = jit_context();
@@ -495,8 +587,10 @@ async fn provision(
                 _ => Err(internal("provisioning the SSO user", &error)),
             }
         }
-        Err(error @ CratestackError::Validation(_)) => {
-            tracing::warn!(%error, "the IdP's email or name did not validate as a User");
+        Err(CratestackError::Validation(_)) => {
+            // Fixed text: the validation message names the value that failed, and
+            // that is the identity provider's address or name.
+            tracing::warn!("the IdP's email or name did not validate as a User");
             Err(Refusal::EmailMissing.into())
         }
         Err(error) => Err(internal("provisioning the SSO user", &error)),

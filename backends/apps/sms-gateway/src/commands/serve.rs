@@ -634,8 +634,8 @@ async fn build_sso(
         return Ok(None);
     };
     let sys = system_context("sms-gateway:sso");
-    let sso_config =
-        sms_auth::sso::SsoConfig::new(block, op_issuer).context("human_login.sso is not usable")?;
+    let sso_config = sms_auth::sso::SsoConfig::new(block, op_issuer, config.deployment.livemode)
+        .context("human_login.sso is not usable")?;
     if !sms_auth::sso::store::jit_role_exists(db, &sys, &block.jit_role)
         .await
         .context("checking human_login.sso.jit_role")?
