@@ -90,6 +90,23 @@ pub enum ConsoleClientError {
         /// Every difference found, not only the first.
         mismatches: Vec<Mismatch>,
     },
+    /// The row with the configured id is a **machine client's**: it holds a
+    /// public key, is linked to an `AppClient`, or authenticates with
+    /// `private_key_jwt`. Neither the boot check nor [`seed_console_client`]
+    /// touches it: reconciling would strip a service's credentials and turn it
+    /// into the console, and the command's repair is for a stale *console* row.
+    #[error(
+        "the OauthClient {client_id:?} is a machine client, not a console row ({}): refusing to \
+         take it over. Choose another human_login.console_client.client_id, or remove that \
+         client deliberately first",
+        join(.conflicts)
+    )]
+    MachineClient {
+        /// The configured id.
+        client_id: String,
+        /// Which of the three machine markers the row carries.
+        conflicts: Vec<Mismatch>,
+    },
     /// The configured values cannot be stored (a redirect URI that contains the
     /// column's delimiter; the loader refuses these first).
     #[error("human_login.console_client cannot be stored: {0}")]
@@ -152,6 +169,23 @@ pub fn mismatches(row: &schema::OauthClient, console: &ConsoleClient) -> Vec<Mis
     found
 }
 
+/// The differences that mean the row is not a console row at all but a machine
+/// client's: a key, an `AppClient`, or an assertion-based auth method. Every other
+/// [`Mismatch`] is drift of a console row, which `seed-console-client` repairs.
+#[must_use]
+pub fn machine_conflicts(differences: &[Mismatch]) -> Vec<Mismatch> {
+    differences
+        .iter()
+        .filter(|difference| {
+            matches!(
+                difference,
+                Mismatch::AuthMethod | Mismatch::Jwks | Mismatch::AppClient
+            )
+        })
+        .cloned()
+        .collect()
+}
+
 fn same_set(a: &[String], b: &[String]) -> bool {
     let mut a = a.to_vec();
     let mut b = b.to_vec();
@@ -186,7 +220,9 @@ async fn find(
 /// # Errors
 ///
 /// [`ConsoleClientError::Missing`] or [`ConsoleClientError::Mismatched`], both of
-/// which tell the operator to run [`SEED_COMMAND`].
+/// which tell the operator to run [`SEED_COMMAND`]; or
+/// [`ConsoleClientError::MachineClient`], which does not (the command would refuse
+/// it too) and says to choose another id.
 pub async fn check_console_client(
     db: &Cratestack,
     sys: &CratestackContext,
@@ -199,11 +235,18 @@ pub async fn check_console_client(
     };
     let differences = mismatches(&row, console);
     if differences.is_empty() {
-        Ok(())
-    } else {
+        return Ok(());
+    }
+    let conflicts = machine_conflicts(&differences);
+    if conflicts.is_empty() {
         Err(ConsoleClientError::Mismatched {
             client_id: console.client_id.clone(),
             mismatches: differences,
+        })
+    } else {
+        Err(ConsoleClientError::MachineClient {
+            client_id: console.client_id.clone(),
+            conflicts,
         })
     }
 }
@@ -224,11 +267,17 @@ pub enum Seeded {
 /// in the file reaches the row, and a leftover `refresh_token` grant is removed),
 /// untouched when it already matches. Idempotent.
 ///
+/// **A row that is a machine client's is refused, never reconciled**
+/// ([`ConsoleClientError::MachineClient`]): a row with an `AppClient` link, a
+/// public key or `private_key_jwt` belongs to a service, and rewriting it into the
+/// console would silently cut that service off.
+///
 /// `sys` is the internal `system` context, the only one `OauthClient` admits.
 ///
 /// # Errors
 ///
-/// [`ConsoleClientError`].
+/// [`ConsoleClientError`]; [`ConsoleClientError::MachineClient`] when the row
+/// with the configured id is a machine client's.
 pub async fn seed_console_client(
     db: &Cratestack,
     sys: &CratestackContext,
@@ -258,6 +307,13 @@ pub async fn seed_console_client(
     let differences = mismatches(&row, console);
     if differences.is_empty() {
         return Ok(Seeded::Unchanged);
+    }
+    let conflicts = machine_conflicts(&differences);
+    if !conflicts.is_empty() {
+        return Err(ConsoleClientError::MachineClient {
+            client_id: console.client_id.clone(),
+            conflicts,
+        });
     }
     db.oauth_client()
         .update(row.id)
@@ -428,6 +484,59 @@ mod tests {
             }
             .to_string()
             .contains(SEED_COMMAND)
+        );
+    }
+
+    /// Only the three markers of a machine client are conflicts. Drift of a
+    /// console row (a redirect URI, a scope, a leftover grant, PKCE off, inactive)
+    /// is the repair `seed-console-client` exists for.
+    #[test]
+    fn only_a_key_an_app_client_or_an_assertion_method_marks_a_machine_row() {
+        let machine = schema::OauthClient {
+            tokenEndpointAuthMethod: ClientAuthMethod::private_key_jwt,
+            jwks: Some("{}".to_owned()),
+            appClientId: Some("c00000000000000000000002".to_owned()),
+            grantTypes: " client_credentials ".to_owned(),
+            ..row()
+        };
+        let found = machine_conflicts(&mismatches(&machine, &console()));
+        assert_eq!(
+            found,
+            [Mismatch::AuthMethod, Mismatch::Jwks, Mismatch::AppClient]
+        );
+
+        let stale_console = schema::OauthClient {
+            active: false,
+            requirePkce: false,
+            grantTypes: " authorization_code refresh_token ".to_owned(),
+            scopes: " openid ".to_owned(),
+            redirectUris: " https://old.example/cb ".to_owned(),
+            ..row()
+        };
+        assert_eq!(
+            machine_conflicts(&mismatches(&stale_console, &console())),
+            [],
+            "a console row that drifted is repaired, not refused"
+        );
+    }
+
+    #[test]
+    fn the_machine_client_error_names_the_conflict_and_does_not_offer_the_command() {
+        let error = ConsoleClientError::MachineClient {
+            client_id: "sms-console".to_owned(),
+            conflicts: vec![Mismatch::AppClient, Mismatch::Jwks],
+        };
+        let message = error.to_string();
+        assert!(message.contains("machine client"), "{message}");
+        assert!(message.contains("AppClient"), "{message}");
+        assert!(message.contains("public key"), "{message}");
+        assert!(
+            message.contains("another human_login.console_client.client_id"),
+            "{message}"
+        );
+        assert!(
+            !message.contains(SEED_COMMAND),
+            "the command would refuse this row too: {message}"
         );
     }
 }

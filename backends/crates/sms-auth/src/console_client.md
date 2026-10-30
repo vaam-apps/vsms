@@ -21,6 +21,19 @@ carried that row across (the runbook's export and import) would give a person a
 30-day credential for the asking, and nothing in the OP's own configuration would
 say so. `serve` therefore refuses to start on it, naming the command.
 
+# A machine client's row is never taken over
+
+[`machine_conflicts`] picks out the three differences that mean the row is not a
+console row at all: a public key, an `AppClient` link, or `private_key_jwt` as the
+auth method. When the row with the configured id has any, [`seed_console_client`]
+and [`check_console_client`] both answer [`ConsoleClientError::MachineClient`],
+naming which, and write nothing. Reconciling would strip a service's credentials
+and turn it into the console, cutting the service off silently; the repair this
+command offers is for a *stale console row*, and it is told apart from a machine's
+by exactly those markers. The error says to choose another
+`human_login.console_client.client_id` (or remove the client deliberately) and does
+not offer the command, because the command would refuse it too.
+
 # Seeding reconciles
 
 Creating when missing, updating when different, leaving alone when it matches. The
