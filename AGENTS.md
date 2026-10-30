@@ -4702,6 +4702,29 @@ receiver's configuration, with a snippet, and `hmac_v1.md` the HMAC's.
 - **Not verified here:** the Helm chart against a cluster (it had no envelope-key configuration at all, which this adds), the
   demo-app image build, and a delivery to vaam's real `/webhooks/vsms` (VA-5 builds that receiver).
 
+## Dependabot's 2026-10-30 alerts, cleared by re-resolution (no ignore added)
+
+Fourteen alerts on `main` (3 critical, 4 high, 3 moderate, 4 low), found without the Dependabot UI by
+running `pnpm audit --json` in every pnpm root and `npm audit` in both `ci/` tools, plus `cargo deny
+check advisories` on all six manifests the `deny` recipe covers. The Rust side was already clean, so
+no `Cargo.lock` and no `deny.toml` entry moved.
+
+- **`next` 16.3.8 to 16.4.1** (exact pin in `frontends/apps/admin`): GHSA-2464-fhr4-w9xw, GHSA-673q-mjm6-r5xr
+  critical, GHSA-p3m5-59mp-jv5r high, all fixed from 16.4.1. `nuqs` takes `next` as a peer, so it follows.
+- **`zod` 4.6.2 to 4.6.6** (three exact pins): GHSA-mrhx-c7xc-m3w5 high, fixed from 4.6.6.
+  `@hookform/resolvers` reaches the same copy.
+- **`vitest` 5.0.0 to 5.0.5, and `vite` 8.3.0 to 8.3.5 under it.** `vite` is only a peer of `vitest`, so
+  `pnpm update vite` never moves it: the locked peer stays. It moved by deleting its two lockfile entries
+  and running `pnpm install --lockfile-only --fix-lockfile`, which re-resolves what is missing. `vitest`'s
+  own `^5` range is unchanged (`pnpm update` rewrites it to `^5.0.5`; that was reverted).
+- **`brace-expansion` 2.1.4 to 2.1.7** under `@swc/cli`'s `minimatch`, by `pnpm update`.
+- **`qs` 6.16.0 to 6.17.1** in the three example lockfiles. `examples/pnpm-lock.yaml` had also drifted
+  from `node/webhook-receiver/package.json` (a missing `@vaam-apps/vsms-node` importer), so
+  `--frozen-lockfile` failed on `main` before this change; regenerating it repaired that.
+- **`ci/mermaid-parse`**: `dompurify` 3.4.13 to 3.4.17 by `npm update`, and `mermaid` 11.16.1 to 12.2.0,
+  because `katex` is fixed only from 0.18.2 and mermaid 11 asks for `^0.16`. Both docs' diagrams still
+  parse (15 and 1), and a deliberately broken block still fails the parser.
+
 ## Open questions blocking later milestones
 
 1. **Hosting location.** Law No. 2024/017 requires prior authorisation for *all* cross-border personal-data transfers, and "legitimate interest" is not a lawful basis. Cameroon-hosted is the safe default. Needs an answer before production.
