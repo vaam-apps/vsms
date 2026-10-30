@@ -60,7 +60,15 @@ const REWRITTEN_BY_LATER: [(&str, &str); 2] = [
 /// tables; a new such migration appends an entry. Delete an entry, and its
 /// statements, when the migrations are squashed into a regenerated
 /// `0001_init`.
-const ADDED_BY_LATER: [(&str, &[&str]); 4] = [
+///
+/// A table may be in an entry here **and** in [`DROPPED_BY_LATER`]: that is a
+/// table `0001_init` created, a later migration dropped and a still-later one
+/// created again (the embedded provider's five, `0012`). The two strips then
+/// cancel - `0001_init` loses the table's statements for the drop, the
+/// generator loses them for the restore - and [`check_restoring_migrations`]
+/// holds the pair to what makes that true: the restoring migration sorts after
+/// the dropping one, and never drops the table itself.
+const ADDED_BY_LATER: [(&str, &[&str]); 5] = [
     (
         "backends/migrations/postgres/0005_sso_federation",
         &["federated_links"],
@@ -77,27 +85,45 @@ const ADDED_BY_LATER: [(&str, &[&str]); 4] = [
         "backends/migrations/postgres/0008_envelope_nonces",
         &["envelope_nonces"],
     ),
+    (
+        "backends/migrations/postgres/0012_restore_openid_provider",
+        OPENID_PROVIDER_TABLES,
+    ),
+];
+
+/// The five tables of the embedded provider and the human-login plane:
+/// created by `0001_init`/`0005_sso_federation`, dropped by
+/// `0009_drop_openid_provider` (VS-4) and created again, empty, by
+/// `0012_restore_openid_provider` (VSA-2, owner ruling R5). One list, read by
+/// [`DROPPED_BY_LATER`] and by the `0012` entry of [`ADDED_BY_LATER`], so the
+/// drop and the restore cannot name different tables.
+const OPENID_PROVIDER_TABLES: &[&str] = &[
+    "oauth_clients",
+    "oauth_signing_keys",
+    "client_assertions",
+    "user_credentials",
+    "sso_transactions",
 ];
 
 /// The forward migration that drops tables an earlier, already-applied
 /// migration created (VS-4: the embedded provider's tables), and the tables it
-/// drops. The mirror image of [`ADDED_BY_LATER`]: the schema no longer has
-/// them, so the generator no longer emits them, while the frozen `0001_init`
-/// (and `0002_bootstrap`, `0005_sso_federation`) still create them. Every
+/// drops. The mirror image of [`ADDED_BY_LATER`]: the frozen `0001_init` (and
+/// `0002_bootstrap`, `0005_sso_federation`) still create them, so every
 /// committed statement that names one of these tables is *removed* from
 /// `0001_init` before the comparison, and the migration must drop every table
 /// listed (`DROP TABLE <table>;` in its `up.sql`), so the list cannot name a
 /// table the migration leaves behind. Delete the entry, and regenerate
 /// `0001_init`, when the migrations are squashed.
+///
+/// Whether the schema still has these tables is not this entry's business. Until
+/// `0012` it did not, and the generator emitted nothing for them; since `0012`
+/// restored them it does, and the generator's statements are taken out of *its*
+/// side by the `0012` entry of [`ADDED_BY_LATER`] instead. Dropping this entry
+/// without that one (or the other way round) leaves one side with the tables
+/// and the other without, and the comparison fails.
 const DROPPED_BY_LATER: (&str, &[&str]) = (
     "backends/migrations/postgres/0009_drop_openid_provider",
-    &[
-        "oauth_clients",
-        "oauth_signing_keys",
-        "client_assertions",
-        "user_credentials",
-        "sso_transactions",
-    ],
+    OPENID_PROVIDER_TABLES,
 );
 
 /// A forward migration that changes the columns of a table `0001_init` already
@@ -522,6 +548,130 @@ fn strip_column_statements(root: &Path, f: &str, fresh: &str) -> Result<String, 
     Ok(kept)
 }
 
+/// What makes a table that is both dropped ([`DROPPED_BY_LATER`]) and added
+/// ([`ADDED_BY_LATER`]) a table the database really ends up with: every
+/// restoring migration sorts *after* the dropping one (`sms-migrate` applies in
+/// directory order, so one that sorted before would be undone by the drop and
+/// the database would lack tables the schema has), and its `up.sql` does not
+/// `DROP TABLE` any table it creates. `restoring` is `(directory, up.sql text)`
+/// for each entry of [`ADDED_BY_LATER`] that shares a table with the drop.
+fn check_restoring_migrations(
+    dropping_dir: &str,
+    dropped_tables: &[&str],
+    added: &[(&str, &[&str])],
+    up_sql: impl Fn(&str) -> Result<String, String>,
+) -> Result<(), String> {
+    for (dir, tables) in added {
+        let shared: Vec<&str> = tables
+            .iter()
+            .copied()
+            .filter(|table| dropped_tables.contains(table))
+            .collect();
+        if shared.is_empty() {
+            continue;
+        }
+        if dir <= &dropping_dir {
+            return Err(format!(
+                "migrations-current: {dir} restores {shared:?}, which {dropping_dir} drops, but it does not \
+                 sort after {dropping_dir}: migrations apply in directory order, so the drop would undo the \
+                 restore and a database would lack tables the schema has"
+            ));
+        }
+        let text = up_sql(dir)?;
+        let statements = executable_sql(&text);
+        for table in &shared {
+            if drops_table(&statements, table) {
+                return Err(format!(
+                    "migrations-current: {dir}/up.sql drops {table} (a `DROP TABLE` statement that \
+                     names it, in any spelling), but ADDED_BY_LATER says it creates {table}"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether `sql` (already [`executable_sql`]) has a statement that drops `table`,
+/// in any spelling Postgres accepts: any case, any whitespace (a newline
+/// included), `IF EXISTS`, a trailing `CASCADE` or `RESTRICT`, a `public.`
+/// prefix, a double-quoted name and a list (`DROP TABLE a, t;`). The text is
+/// split into statements outside strings, identifiers and dollar-quoted bodies,
+/// so a `;` or a `DROP TABLE` inside a literal is neither a statement nor a
+/// drop. A drop executed from inside a dollar-quoted body (`DO $$ ... $$`) is
+/// not seen: the file would have to build its SQL as text.
+fn drops_table(sql: &str, table: &str) -> bool {
+    split_statements(sql).iter().any(|statement| {
+        let words: Vec<String> = statement
+            .split(|c: char| c.is_whitespace() || c == ',')
+            .filter(|word| !word.is_empty())
+            .map(str::to_lowercase)
+            .collect();
+        if words.first().map(String::as_str) != Some("drop")
+            || words.get(1).map(String::as_str) != Some("table")
+        {
+            return false;
+        }
+        let mut names = &words[2..];
+        if let [first, second, rest @ ..] = names
+            && first == "if"
+            && second == "exists"
+        {
+            names = rest;
+        }
+        if let [rest @ .., last] = names
+            && (last == "cascade" || last == "restrict")
+        {
+            names = rest;
+        }
+        let table = table.to_lowercase();
+        names.iter().any(|name| {
+            let name = name.replace('"', "");
+            name.strip_prefix("public.").unwrap_or(&name) == table
+        })
+    })
+}
+
+/// `sql` cut at every `;` that is not inside a `'...'` literal, a `"..."`
+/// identifier or a dollar-quoted body. A trailing run with no `;` is a statement
+/// too.
+fn split_statements(sql: &str) -> Vec<String> {
+    let chars: Vec<char> = sql.chars().collect();
+    let mut statements = Vec::new();
+    let mut current = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            ';' => {
+                statements.push(std::mem::take(&mut current));
+                i += 1;
+            }
+            '\'' => {
+                let backslash_escapes = i > 0
+                    && matches!(chars[i - 1], 'E' | 'e')
+                    && (i < 2 || !(chars[i - 2].is_alphanumeric() || chars[i - 2] == '_'));
+                i = copy_quoted(&chars, i, '\'', backslash_escapes, &mut current);
+            }
+            '"' => i = copy_quoted(&chars, i, '"', false, &mut current),
+            '$' => {
+                if let Some(tag) = dollar_tag(&chars, i) {
+                    i = copy_dollar_quoted(&chars, i, &tag, &mut current);
+                } else {
+                    current.push('$');
+                    i += 1;
+                }
+            }
+            c => {
+                current.push(c);
+                i += 1;
+            }
+        }
+    }
+    if !current.trim().is_empty() {
+        statements.push(current);
+    }
+    statements
+}
+
 /// The committed `0001_init`'s `f`.sql, minus the dropped tables'
 /// statements ([`strip_dropped_tables`]).
 fn read_committed(root: &Path, f: &str) -> Result<String, String> {
@@ -778,6 +928,16 @@ pub fn run(root: &Path) -> Result<(), String> {
         ));
     }
 
+    check_restoring_migrations(
+        DROPPED_BY_LATER.0,
+        DROPPED_BY_LATER.1,
+        &ADDED_BY_LATER,
+        |dir| {
+            let path = root.join(dir).join("up.sql");
+            fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))
+        },
+    )?;
+
     let scratch = ScratchDir::new()?;
 
     // `--out-dir` is the *parent* of the backend directory `migrate diff`
@@ -993,12 +1153,119 @@ mod tests {
 
     #[test]
     fn the_dropping_migration_is_not_also_an_adding_one() {
-        let dropped: Vec<&str> = DROPPED_BY_LATER.1.to_vec();
-        for (_, tables) in ADDED_BY_LATER {
-            assert!(
-                tables.iter().all(|table| !dropped.contains(table)),
-                "a table cannot be both added by a later migration and dropped by one"
+        for (dir, _) in ADDED_BY_LATER {
+            assert_ne!(
+                dir, DROPPED_BY_LATER.0,
+                "the migration that drops the provider's tables cannot also be one that adds tables"
             );
+        }
+    }
+
+    /// The real pair, as committed: the drop (0009) and the restore (0012) name
+    /// the same five tables because they read one list, and the restore follows
+    /// the drop.
+    #[test]
+    fn the_provider_tables_are_dropped_by_0009_and_restored_by_0012() {
+        let restoring: Vec<&(&str, &[&str])> = ADDED_BY_LATER
+            .iter()
+            .filter(|(_, tables)| tables.iter().any(|t| DROPPED_BY_LATER.1.contains(t)))
+            .collect();
+        assert_eq!(restoring.len(), 1, "exactly one migration restores them");
+        assert_eq!(
+            restoring[0].1, DROPPED_BY_LATER.1,
+            "the restore names every table the drop does, and no other"
+        );
+        assert!(restoring[0].0 > DROPPED_BY_LATER.0);
+    }
+
+    #[test]
+    fn a_restoring_migration_must_sort_after_the_dropping_one() {
+        let up = |_: &str| Ok("CREATE TABLE t (id TEXT);".to_owned());
+        let after = [("migrations/0012_restore", &["t"][..])];
+        assert!(check_restoring_migrations("migrations/0009_drop", &["t"], &after, up).is_ok());
+        // Sorting before the drop: the drop would undo the restore.
+        let before = [("migrations/0008_restore", &["t"][..])];
+        let error =
+            check_restoring_migrations("migrations/0009_drop", &["t"], &before, up).unwrap_err();
+        assert!(error.contains("does not sort after"), "{error}");
+        // The dropping migration itself is not a restore of its own tables.
+        let same = [("migrations/0009_drop", &["t"][..])];
+        assert!(check_restoring_migrations("migrations/0009_drop", &["t"], &same, up).is_err());
+        // A migration that adds tables the drop does not touch is not constrained.
+        let unrelated = [("migrations/0005_other", &["u"][..])];
+        assert!(check_restoring_migrations("migrations/0009_drop", &["t"], &unrelated, up).is_ok());
+    }
+
+    #[test]
+    fn a_restoring_migration_may_not_drop_what_it_restores() {
+        let added = [("migrations/0012_restore", &["t", "u"][..])];
+        let drops = |_: &str| Ok("CREATE TABLE t (id TEXT);\nDROP TABLE t;\n".to_owned());
+        let error =
+            check_restoring_migrations("migrations/0009_drop", &["t"], &added, drops).unwrap_err();
+        assert!(error.contains("drops t"), "{error}");
+        // A drop in a comment is a comment.
+        let commented = |_: &str| Ok("-- DROP TABLE t;\nCREATE TABLE t (id TEXT);\n".to_owned());
+        assert!(
+            check_restoring_migrations("migrations/0009_drop", &["t"], &added, commented).is_ok()
+        );
+        // A file that cannot be read is an error, not a pass.
+        let unreadable = |dir: &str| Err(format!("{dir}: no such file"));
+        assert!(
+            check_restoring_migrations("migrations/0009_drop", &["t"], &added, unreadable).is_err()
+        );
+    }
+
+    #[test]
+    fn a_restoring_migration_may_not_drop_in_any_spelling() {
+        let added = [("migrations/0012_restore", &["t", "u"][..])];
+        for drop in [
+            "DROP TABLE t;",
+            "drop table t;",
+            "Drop Table T;",
+            "DROP TABLE IF EXISTS t;",
+            "drop table if exists t;",
+            "DROP TABLE t CASCADE;",
+            "drop table t cascade;",
+            "DROP TABLE IF EXISTS t CASCADE;",
+            "DROP TABLE t RESTRICT;",
+            "DROP TABLE public.t;",
+            "DROP TABLE IF EXISTS public.t CASCADE;",
+            "DROP TABLE \"t\";",
+            "DROP TABLE a, t;",
+            "DROP TABLE t, a CASCADE;",
+            "DROP\n  TABLE\n  IF EXISTS\n  t\n  CASCADE\n;",
+            "CREATE TABLE t (id TEXT); DROP TABLE t",
+            "  DROP TABLE t ;",
+        ] {
+            let text = format!("CREATE TABLE u (id TEXT);\n{drop}\n");
+            let up = move |_: &str| Ok(text.clone());
+            let result = check_restoring_migrations("migrations/0009_drop", &["t"], &added, up);
+            assert!(
+                result.is_err(),
+                "{drop:?} is a drop of t and must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn a_restoring_migration_may_drop_what_it_does_not_restore() {
+        let added = [("migrations/0012_restore", &["t", "u"][..])];
+        for fine in [
+            "DROP TABLE other;",
+            "DROP TABLE IF EXISTS tt CASCADE;",
+            "DROP TABLE public.t2;",
+            "DROP INDEX t;",
+            "ALTER TABLE t DROP COLUMN c;",
+            "COMMENT ON TABLE t IS 'DROP TABLE t;';",
+            "INSERT INTO log VALUES ('x; DROP TABLE t');",
+            "-- DROP TABLE IF EXISTS t CASCADE;",
+            "/* drop table t; */",
+            "CREATE TABLE t2 (id TEXT);",
+        ] {
+            let text = format!("CREATE TABLE u (id TEXT);\n{fine}\n");
+            let up = move |_: &str| Ok(text.clone());
+            let result = check_restoring_migrations("migrations/0009_drop", &["t"], &added, up);
+            assert!(result.is_ok(), "{fine:?} does not drop t: {result:?}");
         }
     }
 

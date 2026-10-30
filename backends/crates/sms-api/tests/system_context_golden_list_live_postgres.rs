@@ -187,11 +187,13 @@ use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::{CratestackContext, FilterExpr};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
-    self, ConsentChannel, Cratestack, DeliveryOutcome, Encoding, MessageClass, OperatorCode,
-    OptOutSource, ProviderKind, SenderIdKind, SenderIdRegistrationStatus, app, app_client,
-    audit_anchor, client_key, consent_record, console_key, delivery_receipt, envelope_nonce,
-    federated_link, job, message, operator_prefix_rule, opt_out, provider, role, route,
-    route_validation, sender_id, sender_id_registration, user, webhook_attempt, webhook_endpoint,
+    self, ClientAuthMethod, ConsentChannel, Cratestack, DeliveryOutcome, Encoding, MessageClass,
+    OperatorCode, OptOutSource, ProviderKind, SenderIdKind, SenderIdRegistrationStatus, app,
+    app_client, audit_anchor, client_assertion, client_key, consent_record, console_key,
+    delivery_receipt, envelope_nonce, federated_link, job, message, oauth_client,
+    oauth_signing_key, operator_prefix_rule, opt_out, provider, role, route, route_validation,
+    sender_id, sender_id_registration, sso_transaction, user, user_credential, webhook_attempt,
+    webhook_endpoint,
 };
 
 /// Same reasoning as every other live suite's own copy of this mutex — see
@@ -206,6 +208,12 @@ static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
 ///
 /// - `App`, `AppClient` — `Procedures::resolve_app` (`backends/crates/sms-api/src/procedures.rs`)
 ///   and `SignerDirectory`'s own `AppClient` lookup (`backends/crates/sms-api/src/auth.rs`).
+/// - `OauthClient`, `OauthSigningKey`, `ClientAssertion`, `UserCredential`,
+///   `SsoTransaction` — restored by VSA-2 (`0012_restore_openid_provider`) and
+///   read by nothing yet: the OP's stores (VSA-3) and the login and SSO broker
+///   (VSA-4) will read and write them under `sys`. `hasRole('system')` is the
+///   whole policy of each, so the live half proves a system context sees its
+///   rows before any reader exists to find out the hard way.
 /// - `EnvelopeNonce` — the signed transport's replay cache (VS-3): the nonce
 ///   store records, takes over and the worker sweeps it, all under `sys`.
 /// - `SenderId`, `SenderIdRegistration` — `Procedures::resolve_sender_id`.
@@ -267,6 +275,15 @@ static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
 const SYSTEM_READABLE_MODELS: &[&str] = &[
     "App",
     "AppClient",
+    // VSA-2: the five models of the OpenID Provider and the human-login plane,
+    // restored with `hasRole('system')` as the whole policy and no reader yet.
+    // Listed now, not when VSA-3/4 add the readers, so the live half proves on
+    // day one that the context those readers will use can see its own rows.
+    "OauthClient",
+    "OauthSigningKey",
+    "ClientAssertion",
+    "UserCredential",
+    "SsoTransaction",
     // VS-3: the envelope layer's nonce store records and takes over under
     // sys(). Not a "found live" instance.
     "EnvelopeNonce",
@@ -1042,6 +1059,146 @@ async fn seed_and_verify_user(db: &Cratestack, suffix: &str, role_key: &str) -> 
     seeded
 }
 
+async fn seed_and_verify_oauth_client(
+    db: &Cratestack,
+    suffix: &str,
+    app_client_id: &str,
+) -> schema::OauthClient {
+    let seeded = db
+        .oauth_client()
+        .create(schema::CreateOauthClientInput {
+            clientId: format!("sys-golden-oauth-{suffix}"),
+            appClientId: Some(app_client_id.to_owned()),
+            tokenEndpointAuthMethod: ClientAuthMethod::private_key_jwt,
+            jwks: Some(r#"{"keys":[{"kty":"RSA","kid":"k1","n":"...","e":"AQAB"}]}"#.to_owned()),
+            grantTypes: " client_credentials ".to_owned(),
+            scopes: " sms:send ".to_owned(),
+            redirectUris: " ".to_owned(),
+            requirePkce: false,
+        })
+        .run(&sys())
+        .await
+        .expect("seeding an OauthClient");
+    assert_system_can_read_back!(
+        db,
+        oauth_client,
+        oauth_client,
+        seeded.id,
+        "OauthClient",
+        "@@allow(\"read\", hasRole('system'))"
+    );
+    seeded
+}
+
+async fn seed_and_verify_oauth_signing_key(db: &Cratestack) -> schema::OauthSigningKey {
+    let seeded = db
+        .oauth_signing_key()
+        .create(schema::CreateOauthSigningKeyInput {
+            privateKeyPem: "-----BEGIN PRIVATE KEY-----\nsystem-golden-list-fixture\n\
+                             -----END PRIVATE KEY-----"
+                .to_owned(),
+            expiresAt: None,
+        })
+        .run(&sys())
+        .await
+        .expect("seeding an OauthSigningKey");
+    assert_system_can_read_back!(
+        db,
+        oauth_signing_key,
+        oauth_signing_key,
+        seeded.id,
+        "OauthSigningKey",
+        "@@allow(\"read\", hasRole('system'))"
+    );
+    seeded
+}
+
+async fn seed_and_verify_client_assertion(
+    db: &Cratestack,
+    suffix: &str,
+    now: chrono::DateTime<Utc>,
+) -> schema::ClientAssertion {
+    let seeded = db
+        .client_assertion()
+        .create(schema::CreateClientAssertionInput {
+            jti: format!("sys-golden-jti-{suffix}"),
+            expiresAt: now + Duration::hours(1),
+        })
+        .run(&sys())
+        .await
+        .expect("seeding a ClientAssertion");
+    assert_system_can_read_back!(
+        db,
+        client_assertion,
+        client_assertion,
+        seeded.id,
+        "ClientAssertion",
+        "@@allow(\"read\", hasRole('system'))"
+    );
+    seeded
+}
+
+/// `UserCredential` (restored by VSA-2, no reader until VSA-4's login): the
+/// password-hash row is read and written under `sys` only, and
+/// `hasRole('system')` is its *entire* policy on every action, not a gap found
+/// live. VSA-4's `authenticate_user` is its one future reader.
+async fn seed_and_verify_user_credential(db: &Cratestack, user_id: &str) -> schema::UserCredential {
+    // A plausible-shaped but fixed literal, not a real Argon2id hash: this
+    // test proves the read/write policy, never authentication itself.
+    let seeded = db
+        .user_credential()
+        .create(schema::CreateUserCredentialInput {
+            userId: user_id.to_owned(),
+            passwordHash: "$argon2id$v=19$m=19456,t=2,p=1$c3lzLWdvbGRlbi1saXN0$\
+                           c3lzLWdvbGRlbi1saXN0LXBhc3N3b3Jk"
+                .to_owned(),
+        })
+        .run(&sys())
+        .await
+        .expect("seeding a UserCredential");
+    assert_system_can_read_back!(
+        db,
+        user_credential,
+        user_credential,
+        seeded.id,
+        "UserCredential",
+        "@@allow(\"read\", hasRole('system'))"
+    );
+    seeded
+}
+
+/// `SsoTransaction` (restored by VSA-2, no reader until VSA-4's SSO broker):
+/// created, read by `stateHash` and deleted under `sys`. `hasRole('system')` is
+/// its entire policy.
+async fn seed_and_verify_sso_transaction(
+    db: &Cratestack,
+    suffix: &str,
+    now: chrono::DateTime<Utc>,
+) -> schema::SsoTransaction {
+    let seeded = db
+        .sso_transaction()
+        .create(schema::CreateSsoTransactionInput {
+            stateHash: format!("{suffix:0>64}"),
+            nonce: "golden-list-nonce".to_owned(),
+            codeVerifier: "golden-list-verifier".to_owned(),
+            consoleRequest: "{}".to_owned(),
+            isRetry: false,
+            expiresAt: now + Duration::minutes(5),
+        })
+        .run(&sys())
+        .await
+        .expect("seeding an SsoTransaction");
+    assert_system_can_read_back!(
+        db,
+        sso_transaction,
+        sso_transaction,
+        seeded.id,
+        "SsoTransaction",
+        "@@allow(\"read\", hasRole('system'))"
+    );
+    seeded
+}
+
 /// Signed transport's `ClientKey`: written and read under `sys` by
 /// `registerAppClientKey`/`revokeAppClientKey`. The row is seeded through the
 /// generated delegate under `sys` - the one writer the policy admits - with a
@@ -1277,6 +1434,10 @@ async fn every_system_readable_model_actually_admits_a_system_read() {
     let app = seed_and_verify_app(&db, &suffix).await;
     let app_client = seed_and_verify_app_client(&db, &suffix, &app.id).await;
     seed_and_verify_envelope_nonce(&db, &suffix, now).await;
+    seed_and_verify_oauth_client(&db, &suffix, &app_client.id).await;
+    seed_and_verify_oauth_signing_key(&db).await;
+    seed_and_verify_client_assertion(&db, &suffix, now).await;
+    seed_and_verify_sso_transaction(&db, &suffix, now).await;
     let sender_id = seed_and_verify_sender_id(&db, &suffix).await;
     let provider = seed_and_verify_provider(&db, &suffix).await;
     let route = seed_and_verify_route(&db, &suffix, &provider.id).await;
@@ -1292,6 +1453,7 @@ async fn every_system_readable_model_actually_admits_a_system_read() {
     let role = seed_and_verify_role(&db, &suffix).await;
     let user = seed_and_verify_user(&db, &suffix, &role.key).await;
     seed_and_verify_federated_link(&db, &suffix, &user.id).await;
+    seed_and_verify_user_credential(&db, &user.id).await;
     seed_and_verify_client_key(&db, &suffix, &app_client.id).await;
     seed_and_verify_console_key(&db, &suffix, &user.id, now).await;
     seed_and_verify_audit_anchor(&db, &suffix, now).await;

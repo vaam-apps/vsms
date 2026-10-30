@@ -419,6 +419,127 @@ envelope signing key; `backends/crates/sms-worker/src/claim.md`). Without it eve
 endpoint it asks for, on every poll. Rolling back the
 migration (`down.sql`) drops this index and nothing else.
 
+=== Keeping the OpenID Provider's rows across 0009 and 0012
+
+Migration `0009_drop_openid_provider` (VS-4) dropped five tables, and
+`0012_restore_openid_provider` (VSA-2, owner ruling R5: which ways in a deployment
+permits is configuration) creates them again, *empty*. `0009` is in no release tag:
+the latest, v0.9.0, predates it. So *every deployment on v0.9.0 or earlier* runs
+`0009` and `0012` together, in the one migrate Job of its next upgrade, and loses
+the rows before the new release starts:
+
+[cols="1,3"]
+|===
+| Table | What is lost, and what to do
+
+| `oauth_clients`
+| Every OAuth client registration. Each machine client is provisioned again once
+  the release serves the token endpoint (VSA-3), with a new keypair.
+
+| `oauth_signing_keys`
+| The OP's signing keys, private halves included. `rotate-signing-key` mints a new
+  one (VSA-3); a token the old key signed is not verifiable by it.
+
+| `user_credentials`
+| Every password hash. Each person is given a new password through `provision-user`
+  once the release serves the login (VSA-4).
+
+| `client_assertions`, `sso_transactions`
+| Spent client assertions and sign-ins in flight. Both are ephemeral: nothing
+  outlasts the minutes it takes to need them, and nothing is worth exporting.
+|===
+
+*Nothing serves these tables yet.* This release has no token endpoint, no
+`/login` and no SSO broker (they return in VSA-3 and VSA-4, behind `auth.methods`),
+and the tables are unreachable by any route, so a deployment that never used them
+loses nothing it can see. A deployment that is *already past* `0009` has nothing to
+keep: 0009 deleted the rows when it ran, and `0012` only ever finds the tables
+missing.
+
+To keep the first three tables, export them *before* the upgrade and import them
+*after* it. Do it only if you will turn the legacy ways back on; otherwise
+provisioning anew is the simpler path, and a file of signing keys and password
+hashes is one more thing to look after.
+
+. Check that `0009` has not run. If this returns a row, it has, and there is
+  nothing to export:
++
+[,bash]
+----
+psql "$DATABASE_URL" -At -c "SELECT name FROM public.schema_migrations WHERE name = '0009_drop_openid_provider'"
+----
+. Stop writes to the three tables: no client provisioned, no key rotated, no
+  password set. Anything written after the export is not in it. A user or app client
+  deleted after the export makes the import refuse (the foreign keys below), which is
+  the right answer: export again.
+. Export, from a directory only you can read. The files hold the OP's private keys
+  and Argon2id hashes: they are secrets. `\copy` runs on the client, so the files
+  land where `psql` runs. Explicit column lists, so a column added later fails the
+  import instead of shifting the rest:
++
+[,bash]
+----
+umask 077 && mkdir op-export && cd op-export
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+\copy oauth_signing_keys (created_at, updated_at, id, private_key_pem, active, expires_at) TO 'oauth_signing_keys.csv' WITH (FORMAT csv)
+\copy oauth_clients (created_at, updated_at, id, client_id, app_client_id, token_endpoint_auth_method, jwks, grant_types, scopes, redirect_uris, require_pkce, active) TO 'oauth_clients.csv' WITH (FORMAT csv)
+\copy user_credentials (created_at, updated_at, id, user_id, password_hash) TO 'user_credentials.csv' WITH (FORMAT csv)
+SQL
+----
+. Upgrade. `0009` drops the tables and `0012` creates them again.
+. Import, from the same directory, in one transaction so a refusal leaves the
+  tables empty rather than half full. The order matters only for the foreign keys
+  (`oauth_clients.app_client_id` names an `app_clients` row and
+  `user_credentials.user_id` a `users` row, both of which `0009` kept):
++
+[,bash]
+----
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 <<'SQL'
+\copy oauth_signing_keys (created_at, updated_at, id, private_key_pem, active, expires_at) FROM 'oauth_signing_keys.csv' WITH (FORMAT csv)
+\copy oauth_clients (created_at, updated_at, id, client_id, app_client_id, token_endpoint_auth_method, jwks, grant_types, scopes, redirect_uris, require_pkce, active) FROM 'oauth_clients.csv' WITH (FORMAT csv)
+\copy user_credentials (created_at, updated_at, id, user_id, password_hash) FROM 'user_credentials.csv' WITH (FORMAT csv)
+SQL
+----
+. Destroy `op-export/` and any copy of it. The files hold private signing keys and
+  Argon2id hashes, so a plain `rm` is not enough; overwrite them first:
++
+[,bash]
+----
+cd .. && find op-export -type f -exec shred -u {} + && rmdir op-export
+----
++
+`shred` is as good as the file system lets it be (a journaling, copy-on-write or
+SSD-backed volume may keep old blocks), so use the equivalent your platform
+offers, or keep the directory on an encrypted volume that is itself destroyed.
+Remember that *backups may hold copies*: a backup or snapshot of the machine, of the
+directory's volume or of the database taken while the files or the imported rows
+existed carries the same keys and hashes, and is as secret as they are.
+
+*After an import, an `oauth_clients` row blocks a hard delete of its AppClient.*
+`oauth_clients.app_client_id` is a plain `NO ACTION` foreign key (so is
+`user_credentials.user_id`, for a User), and nothing reads the imported rows until
+VSA-3 and VSA-4. Until then, deleting an AppClient from the console (or a User)
+fails with a foreign-key error naming `oauth_clients_app_client_id_fkey`
+(`user_credentials_user_id_fkey`). Remove the imported rows that name it first,
+then delete it again:
+
+[,sql]
+----
+DELETE FROM oauth_clients WHERE app_client_id = '<app client id>';
+DELETE FROM user_credentials WHERE user_id = '<user id>';
+----
+
+The client or the password that row stood for is gone with it; VSA-3 and VSA-4
+provision a new one.
+
+The statements above are the ones
+`a_provider_export_taken_before_0009_is_restored_after_0012`
+(`backends/crates/sms-api/tests/restore_openid_provider_live_postgres.rs`) reads out
+of this page and runs, against a database that stopped at `0008` with a row in each
+table; `the_runbooks_cleanup_unblocks_a_hard_delete` runs the two `DELETE`s above
+against rows that refuse the delete of their AppClient and User. Rolling back `0012` (`down.sql`, which `sms-migrate` never runs) drops the
+five tables and refuses while any holds a row, naming the counts.
+
 == 2. Build and bring up Postgres + migrations first
 
 [,bash]
