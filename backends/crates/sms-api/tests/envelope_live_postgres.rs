@@ -379,7 +379,7 @@ async fn an_unsigned_request_is_a_401_and_runs_nothing() {
         );
         // The envelope layer's own coarse answer, not the inner auth provider's:
         // with `EnvelopeMode::Optional` an unsigned request would reach
-        // `SignedAuth`, which also says 401 but in its own words (and 400 for a
+        // `GatewayAuth`, which also says 401 but in its own words (and 400 for a
         // bearer), so the status alone cannot tell the two modes apart.
         let body = response.text().await.expect("reading the refusal");
         assert_eq!(

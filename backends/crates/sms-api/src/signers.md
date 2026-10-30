@@ -14,7 +14,7 @@ request:
 2. **What does it stand as?** [`SignerDirectory::standing`] looks the verified
    key up by its full thumbprint and returns an [`AppStanding`] (the
    `AppClient`'s id, app and scopes) or a [`UserStanding`] (the person's role
-   and the role's permissions). [`crate::auth::SignedAuth`] turns that into the
+   and the role's permissions). [`crate::auth::GatewayAuth`] turns that into the
    policy context, and `crate::envelope::SignerPrincipal` into the name the rate
    limiter and the idempotency layer charge the request to.
 

@@ -79,7 +79,7 @@ fn sys() -> CratestackContext {
 /// #24: `sendMessage` now gates on `require_permission(ctx, "sms:send")`
 /// (Layer 2) before anything else in the procedure runs. This tool calls
 /// `send_message` directly through `ProcedureRegistry`, bypassing
-/// the envelope and `SignedAuth` (see this file's own module doc — no admin console or
+/// the envelope and `GatewayAuth` (see this file's own module doc — no admin console or
 /// `provisionAppClient` exists yet), so it has to carry the same claim a
 /// real token's `scope` would by hand.
 fn app_caller() -> CratestackContext {

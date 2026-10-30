@@ -17,7 +17,7 @@ use cratestack::ratelimit::{
 };
 use cratestack_codec_json::JsonCodec;
 
-use crate::auth::SignedAuth;
+use crate::auth::GatewayAuth;
 use crate::hmac_gate::{HmacWebhooks, enforce_hmac_gate};
 use crate::owner_grant::{OwnerGrantState, enforce_owner_grant_guard};
 use crate::pair_scope::enforce_pair_scope_guard;
@@ -56,7 +56,7 @@ pub(crate) const ROUTER_CODEC: JsonCodec = JsonCodec;
 /// (`record_provider_failure`/`reset_provider_failures`, run under this
 /// crate's internal `sys()` context) — and still no `hasRole('app')`,
 /// unlike `sendMessage`'s procedure-level `@allow`. `system` changes
-/// nothing about this route's own perimeter: `SignedAuth::context_for`
+/// nothing about this route's own perimeter: `GatewayAuth::context_for`
 /// (`backends/crates/sms-api/src/auth.rs`) never produces it, and
 /// `crate::signers` refuses a person whose role is `system`; it exists only
 /// inside `Procedures::sys()`. Since VS-3 a paired console key makes a
@@ -374,12 +374,12 @@ fn source_fingerprint(req: &Request) -> String {
 ///    the principal can no longer be forged by a header;
 /// 4. the Layer 2 guards: [`enforce_owner_grant_guard`] and the four
 ///    [`enforce_route_permission`] instances, which read the verified signer
-///    through [`SignedAuth`], and, innermost of them, [`enforce_hmac_gate`]
+///    through [`GatewayAuth`], and, innermost of them, [`enforce_hmac_gate`]
 ///    (VSA-1), which refuses a webhook endpoint write that makes an `hmac`
 ///    endpoint when `auth.methods` does not permit `hmac_webhooks` and is a no-op
 ///    otherwise: placed under the RBAC layers so a caller who lacks
 ///    `webhook:manage` hears that first;
-/// 5. the generated router, whose own extractors run [`SignedAuth`] a last
+/// 5. the generated router, whose own extractors run [`GatewayAuth`] a last
 ///    time.
 ///
 /// What is **not** wrapped, because `sms-gateway serve` merges it in
@@ -431,7 +431,7 @@ pub fn router(
     hmac_webhooks: HmacWebhooks,
 ) -> Result<Router, CratestackError> {
     let directory = SignerDirectory::new(db.clone());
-    let auth = SignedAuth::new(directory.clone());
+    let auth = GatewayAuth::new(directory.clone());
     let envelope = crate::envelope::layer(signer, &db, directory)?;
 
     let rbac_state = RbacState {

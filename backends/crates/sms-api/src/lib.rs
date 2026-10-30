@@ -50,7 +50,7 @@ pub mod webhooks;
 pub mod worker_locks;
 pub mod worker_roles;
 
-pub use auth::{Principal, PrincipalKind, SignedAuth, system_context};
+pub use auth::{GatewayAuth, Principal, PrincipalKind, system_context};
 pub use errors::{is_illegal_transition, map_database_error};
 pub use hmac_gate::{AUTH_METHOD_DISABLED, HmacBoot, HmacWebhooks};
 pub use pepper::{HashPepper, PepperError, hmac_sha256_hex};

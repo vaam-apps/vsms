@@ -8,9 +8,9 @@ are produced, so a rename in the schema breaks exactly one function.
 
 # VS-3: the only credential is the key that signed the request
 
-[`SignedAuth`] is the generated router's one `AuthProvider`. The envelope
+[`GatewayAuth`] is the generated router's one `AuthProvider`. The envelope
 layer (`crate::envelope`) opens the `COSE_Sign1` message, checks the signature
-and records a `VerifiedSigner` in the request's extensions; [`SignedAuth`]
+and records a `VerifiedSigner` in the request's extensions; [`GatewayAuth`]
 maps that signer through `crate::signers::SignerDirectory` and reads nothing
 else. There is no token to validate, no JWKS to fetch, and an `Authorization`
 header is refused with a 400 rather than ignored.
@@ -20,7 +20,7 @@ sequenceDiagram
     participant C as Caller
     participant E as Envelope layer
     participant D as SignerDirectory
-    participant A as SignedAuth
+    participant A as GatewayAuth
     participant R as Router (policies)
     C->>E: `COSE_Sign1` over the JSON payload
     E->>D: resolve kid (ClientKey, ConsoleKey: live rows only)
@@ -77,7 +77,7 @@ ctx.request_id().unwrap_or("")` (`cratestack-macros`'s
 `list_result_log_tokens`/`dispatch_tail.rs`) — but nothing in this
 deployment ever called `with_request_id`, so that field had been empty
 on every single one of those log lines since the router first existed.
-[`SignedAuth::authenticate`] is the one place a [`CratestackContext`] is
+[`GatewayAuth::authenticate`] is the one place a [`CratestackContext`] is
 constructed per inbound HTTP request, so it is the natural, and only,
 place to close that gap: honour an inbound `X-Request-Id` if the caller
 sent one (so a client's own trace id survives into this system's logs

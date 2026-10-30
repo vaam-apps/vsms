@@ -70,7 +70,7 @@ impl Principal {
 ///
 /// There is no credential in a request but its signature. The envelope layer
 /// (`crate::envelope`) has already verified it and recorded a
-/// `VerifiedSigner` in the request extensions; [`SignedAuth`] maps that signer
+/// `VerifiedSigner` in the request extensions; [`GatewayAuth`] maps that signer
 /// through [`SignerDirectory`] and reads nothing else, so there is no token to
 /// validate, no JWKS to fetch and no `Authorization` header to trust:
 ///
@@ -87,11 +87,11 @@ impl Principal {
 /// treated as anonymous, because no policy in this schema admits an
 /// unauthenticated caller.
 #[derive(Clone)]
-pub struct SignedAuth {
+pub struct GatewayAuth {
     directory: SignerDirectory,
 }
 
-impl SignedAuth {
+impl GatewayAuth {
     /// An auth provider answering from `directory`.
     #[must_use]
     pub fn new(directory: SignerDirectory) -> Self {
@@ -109,10 +109,10 @@ impl SignedAuth {
     /// meant to.
     ///
     /// ```
-    /// use sms_api::auth::SignedAuth;
+    /// use sms_api::auth::GatewayAuth;
     /// use sms_api::signers::{AppStanding, Standing};
     ///
-    /// let ctx = SignedAuth::context_for(Standing::App(AppStanding {
+    /// let ctx = GatewayAuth::context_for(Standing::App(AppStanding {
     ///     client_id: "appc_demo".to_owned(),
     ///     app_id: "app1".to_owned(),
     ///     scopes: " sms:send ".to_owned(),
@@ -182,7 +182,7 @@ fn request_id_from(headers: &cratestack::axum::http::HeaderMap) -> String {
         )
 }
 
-impl AuthProvider for SignedAuth {
+impl AuthProvider for GatewayAuth {
     type Error = CratestackError;
 
     fn authenticate(
@@ -227,8 +227,8 @@ impl AuthProvider for SignedAuth {
 /// place to hold, not six independently-drifting copies of it.
 ///
 /// **The invariant: this must never be reachable from an HTTP request.**
-/// Nothing in [`SignedAuth::authenticate`] ever produces `role: "system"`
-/// for a real signer — [`SignedAuth::context_for`] hardcodes `role: "app"`
+/// Nothing in [`GatewayAuth::authenticate`] ever produces `role: "system"`
+/// for a real signer — [`GatewayAuth::context_for`] hardcodes `role: "app"`
 /// for an app key (see the comment there on why `"system"` specifically
 /// must never slip), and `crate::signers` refuses a person whose
 /// `Role.key` is `"system"` (or `"app"`) before a `Principal` is ever built
@@ -269,7 +269,7 @@ pub fn system_context(sub: impl Into<String>) -> CratestackContext {
 ///   the design doc. A `Role` row keyed `"system"` would let
 ///   `hasRole('system')` match for a real human.
 /// - `"app"` is reserved too, defensively, even though it is not
-///   currently a privilege escalation: [`SignedAuth::context_for`]'s
+///   currently a privilege escalation: [`GatewayAuth::context_for`]'s
 ///   `role: "app"` sentinel matches no `hasRole(...)` clause in the schema,
 ///   so a human
 ///   `Role` keyed `"app"` would be confusing, not exploitable — reserved
@@ -319,11 +319,11 @@ mod tests {
     /// A lazy pool only parses the URL and never connects. The tests below
     /// all fail before the directory is asked anything, so no database is
     /// reached.
-    fn signed_auth() -> SignedAuth {
+    fn signed_auth() -> GatewayAuth {
         let pool = cratestack::sqlx::postgres::PgPoolOptions::new()
             .connect_lazy("postgres://unused:unused@127.0.0.1/none")
             .expect("a lazy pool only parses the URL");
-        SignedAuth::new(SignerDirectory::new(
+        GatewayAuth::new(SignerDirectory::new(
             crate::schema::Cratestack::builder(pool).build(),
         ))
     }
@@ -382,7 +382,7 @@ mod tests {
 
     #[test]
     fn an_app_key_is_an_app_principal_with_its_scopes_and_no_permissions() {
-        let ctx = SignedAuth::context_for(Standing::App(crate::signers::AppStanding {
+        let ctx = GatewayAuth::context_for(Standing::App(crate::signers::AppStanding {
             client_id: "appc_demo".to_owned(),
             app_id: "app1".to_owned(),
             scopes: "message:send job:read".to_owned(),
@@ -409,7 +409,7 @@ mod tests {
 
     #[test]
     fn a_console_key_is_a_user_principal_with_its_roles_permissions_and_no_scope() {
-        let ctx = SignedAuth::context_for(Standing::User(crate::signers::UserStanding {
+        let ctx = GatewayAuth::context_for(Standing::User(crate::signers::UserStanding {
             user_id: "usr1".to_owned(),
             role: "operator".to_owned(),
             perms: vec!["provider:update".to_owned()],
@@ -436,12 +436,12 @@ mod tests {
     #[test]
     fn no_standing_ever_produces_the_system_role() {
         for ctx in [
-            SignedAuth::context_for(Standing::App(crate::signers::AppStanding {
+            GatewayAuth::context_for(Standing::App(crate::signers::AppStanding {
                 client_id: "system".to_owned(),
                 app_id: "system".to_owned(),
                 scopes: String::new(),
             })),
-            SignedAuth::context_for(Standing::User(crate::signers::UserStanding {
+            GatewayAuth::context_for(Standing::User(crate::signers::UserStanding {
                 user_id: "system".to_owned(),
                 role: "operator".to_owned(),
                 perms: Vec::new(),

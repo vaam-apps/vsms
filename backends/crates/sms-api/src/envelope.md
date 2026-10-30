@@ -3,7 +3,7 @@ opens every request and seals every response of the generated router.
 
 The layer proves *who holds the key*; it authenticates no one. What a key may
 do is [`crate::signers::SignerDirectory`]'s answer, read by
-[`crate::auth::SignedAuth`]. This module is the Postgres-backed plumbing the
+[`crate::auth::GatewayAuth`]. This module is the Postgres-backed plumbing the
 layer needs:
 
 - [`ServerKeys`]: the Ed25519 key that seals every response, and the `next`

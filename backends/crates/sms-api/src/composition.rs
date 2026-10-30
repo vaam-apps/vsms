@@ -80,11 +80,11 @@ pub fn authorize(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::{Principal, SignedAuth};
+    use crate::auth::{GatewayAuth, Principal};
     use crate::signers::{Standing, UserStanding};
 
     fn person(role: &str, perms: &[&str]) -> CratestackContext {
-        SignedAuth::context_for(Standing::User(UserStanding {
+        GatewayAuth::context_for(Standing::User(UserStanding {
             user_id: "u1".to_owned(),
             role: role.to_owned(),
             perms: perms.iter().map(|p| (*p).to_owned()).collect(),
