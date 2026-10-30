@@ -5,7 +5,7 @@ use cratestack::{
 };
 
 use crate::bearer::BearerCaller;
-use crate::signers::{SignerDirectory, Standing};
+use crate::signers::{SignerDirectory, Standing, UserStanding};
 
 /// Who a request is. Mirrors the `auth Principal` block in `schema.cstack`
 /// field for field — the names below are load-bearing, not cosmetic.
@@ -76,8 +76,9 @@ impl Principal {
 /// - the envelope layer (`crate::envelope`) opens a `COSE_Sign1` message and
 ///   records a `VerifiedSigner`; [`GatewayAuth`] maps that signer through
 ///   [`SignerDirectory`];
-/// - the bearer door (`crate::bearer`) verifies a machine token, resolves its
-///   client from rows, and records a [`BearerCaller`] holding the [`Standing`].
+/// - the bearer door (`crate::bearer`) verifies a machine's or a person's
+///   token, resolves who it names from rows, and records a [`BearerCaller`]
+///   holding the [`Standing`].
 ///
 /// Both end in the same [`Standing`] and the same [`GatewayAuth::context_for`], so
 /// a policy cannot tell them apart:
@@ -85,9 +86,13 @@ impl Principal {
 /// - a `ClientKey` of an active `AppClient`, or a token of an active
 ///   `OauthClient` linked to one, is an **app** principal (`sub =
 ///   AppClient.clientId`, `role = "app"`, the client's scopes);
-/// - a paired, unexpired `ConsoleKey` of an active `User` is a **user**
-///   principal, that person's role and the permissions of that role. A token
-///   never is one: the human realm is VSA-4b.
+/// - a paired, unexpired `ConsoleKey` of an active `User`, or an access token
+///   `human_login` minted for one, is a **user** principal: that person's role
+///   and the permissions of that role. **Except** that a person's token never
+///   stands as an `owner` or an `admin` ([`DEVICE_ONLY_ROLES`]): those roles act
+///   only from a paired console key, and the token is refused with a 403
+///   ([`DEVICE_REQUIRED`]) by [`refuse_device_only_role`], at the door and again
+///   here.
 ///
 /// Nothing here reads an `Authorization` header as an identity. A request that
 /// carries one beside a verified signature is refused outright (400), and one
@@ -230,7 +235,16 @@ impl AuthProvider for GatewayAuth {
                 }
                 (Some(signer), None) => directory.standing(&signer, chrono::Utc::now()).await?,
                 // Resolved by the bearer door from rows, not from the token.
-                (None, Some(caller)) => caller.0,
+                // A person's token never carries a device-only role; the door
+                // and `SignerDirectory::bearer_standing` already refused it, and
+                // this is the same function a second time, so that a standing
+                // recorded by anything but the door still cannot act as one.
+                (None, Some(caller)) => {
+                    if let Standing::User(person) = &caller.0 {
+                        refuse_device_only_role(person)?;
+                    }
+                    caller.0
+                }
                 (None, None) => {
                     return Err(CratestackError::Unauthorized(
                         "no verified credential".to_owned(),
@@ -305,6 +319,60 @@ pub fn system_context(sub: impl Into<String>) -> CratestackContext {
 ///   to keep it that way rather than relying on that fact never changing.
 pub const RESERVED_ROLE_KEYS: &[&str] = &["system", "app"];
 
+/// `Role.key` values that act only from a paired console key, never from a
+/// person's access token (VSA-4b).
+///
+/// A user has exactly one `roleKey` and `hasRole(...)` matches one string, so a
+/// token cannot be handed "the role minus `owner` and `admin`": it is the
+/// person's role or nothing. A password proves one factor and a token outlives
+/// the page that holds it; `owner` and `admin` provision clients, pair keys and
+/// promote people, so those roles ask for the device that holds a key the
+/// server has seen (`Device.adminTrusted`'s counterpart in vsms is a
+/// `ConsoleKey`). Every other role a person's token carries as its row says.
+pub const DEVICE_ONLY_ROLES: &[&str] = &["owner", "admin"];
+
+/// The 403 body's text for a person whose role acts only from a paired console
+/// key. It names no role: the caller has just proved who they are, and the
+/// answer says what to do, not how the policy is laid out.
+pub const DEVICE_REQUIRED: &str =
+    "this account's role acts only from a paired console key; a signed-in session cannot carry it";
+
+/// Refuses a person's token standing when the role is one of
+/// [`DEVICE_ONLY_ROLES`].
+///
+/// The **one** function behind both guards: `SignerDirectory::bearer_standing`
+/// calls it when it builds the standing, and [`GatewayAuth::authenticate`]
+/// calls it again on the standing the door recorded. It is
+/// [`CratestackError::Forbidden`] and not `Unauthorized`: the person is who they
+/// say, and the door answers 403 with [`DEVICE_REQUIRED`], where a refused
+/// credential gets the coarse 401.
+///
+/// ```
+/// use sms_api::auth::{DEVICE_REQUIRED, refuse_device_only_role};
+/// use sms_api::signers::UserStanding;
+///
+/// let person = |role: &str| UserStanding {
+///     user_id: "usr1".to_owned(),
+///     role: role.to_owned(),
+///     perms: Vec::new(),
+/// };
+/// assert!(refuse_device_only_role(&person("operator")).is_ok());
+/// assert_eq!(
+///     refuse_device_only_role(&person("admin")).unwrap_err().to_string(),
+///     cratestack::CratestackError::Forbidden(DEVICE_REQUIRED.to_owned()).to_string(),
+/// );
+/// ```
+///
+/// # Errors
+///
+/// [`CratestackError::Forbidden`] carrying [`DEVICE_REQUIRED`].
+pub fn refuse_device_only_role(person: &UserStanding) -> Result<(), CratestackError> {
+    if DEVICE_ONLY_ROLES.contains(&person.role.as_str()) {
+        return Err(CratestackError::Forbidden(DEVICE_REQUIRED.to_owned()));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,6 +384,89 @@ mod tests {
             role: "admin".to_owned(),
             app_id: String::new(),
         }
+    }
+
+    fn person(role: &str) -> UserStanding {
+        UserStanding {
+            user_id: "usr1".to_owned(),
+            role: role.to_owned(),
+            perms: vec!["sms:read".to_owned()],
+        }
+    }
+
+    /// The function both guards call: `owner` and `admin` are refused with the
+    /// 403 text, every other role passes, and the 403 names no role.
+    #[test]
+    fn a_device_only_role_is_refused_and_every_other_passes() {
+        assert_eq!(DEVICE_ONLY_ROLES, ["owner", "admin"]);
+        for role in DEVICE_ONLY_ROLES {
+            assert!(
+                matches!(
+                    refuse_device_only_role(&person(role)),
+                    Err(CratestackError::Forbidden(text)) if text == DEVICE_REQUIRED
+                ),
+                "{role}"
+            );
+            assert!(!DEVICE_REQUIRED.contains(role), "the text names no role");
+        }
+        for role in [
+            "operator",
+            "auditor",
+            "developer",
+            "support",
+            "Admin",
+            "owner ",
+        ] {
+            assert!(refuse_device_only_role(&person(role)).is_ok(), "{role}");
+        }
+    }
+
+    /// The second guard, on its own: a standing the door recorded for an `admin`
+    /// is a 403 at the provider even though nothing upstream stopped it, and an
+    /// `operator`'s authenticates as that person.
+    #[tokio::test]
+    async fn the_provider_refuses_a_recorded_admin_standing_on_its_own() {
+        use cratestack::axum::http::{Extensions, HeaderMap};
+
+        async fn authenticate(
+            auth: &GatewayAuth,
+            role: &str,
+        ) -> Result<CratestackContext, CratestackError> {
+            let mut extensions = Extensions::new();
+            extensions.insert(BearerCaller(Standing::User(person(role))));
+            let headers = HeaderMap::new();
+            let request = RequestContext {
+                method: "GET",
+                path: "/probe",
+                query: None,
+                headers: &headers,
+                body: &[],
+                extensions: &extensions,
+            };
+            auth.authenticate(&request).await
+        }
+
+        let pool = cratestack::sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://unused:unused@127.0.0.1/none")
+            .expect("a lazy pool only parses the URL");
+        let auth = GatewayAuth::new(SignerDirectory::new(
+            crate::schema::Cratestack::builder(pool).build(),
+        ));
+        assert!(matches!(
+            authenticate(&auth, "admin").await,
+            Err(CratestackError::Forbidden(text)) if text == DEVICE_REQUIRED
+        ));
+        assert!(matches!(
+            authenticate(&auth, "owner").await,
+            Err(CratestackError::Forbidden(_))
+        ));
+        let ctx = authenticate(&auth, "operator")
+            .await
+            .expect("an operator acts");
+        assert_eq!(
+            ctx.auth_field("role"),
+            Some(&Value::String("operator".to_owned()))
+        );
     }
 
     #[test]

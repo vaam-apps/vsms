@@ -1,34 +1,74 @@
 Verifying the access tokens this gateway's own OP mints, so the API can accept
-one (VSA-3b).
+one (VSA-3b for a machine, VSA-4b for a person).
 
 [`OpBearerVerifier`] implements `sms_api::BearerVerifier`. It answers one
-question: **did this process's OP sign this token, and is it a machine client's
-token for this issuer that has not expired.** What a verified token may then do
-is `sms_api`'s to decide, from rows (`docs/architecture.md` section 4.9).
+question: **did this process's OP sign this token, and is it an access token of a
+realm this deployment serves, for this issuer, that has not expired.** What a
+verified token may then do is `sms_api`'s to decide, from rows
+(`docs/architecture.md` section 4.9).
+
+# The realms
+
+[`Realms`] says whose tokens are accepted, and is built from what `auth.methods`
+**serves** (`commands::serve::realms`), with no key of its own: the machine realm
+is `machine_tokens` served, the person realm is `human_login` served, addressed to
+`human_login.console_client.client_id`. The realm of a token is its own
+`identity` claim: a person's token carries one and a `client_credentials` token
+never does. A token of a realm not served is refused for that, as
+`HumanToken` or `MachineToken`, before anything else about it is read.
 
 # What it checks
 
-| Check                 | Refusal                  | How                                                                                       |
-| --------------------- | ------------------------ | ----------------------------------------------------------------------------------------- |
-| three segments, RS256 | `Malformed`              | `decode_header`; any other algorithm is refused before a key is looked up                 |
-| a `kid`               | `MissingKid`             | never the first key of the set: during a rotation two keys are published                  |
-| a key for that `kid`  | `UnknownKid`             | the OP's own keyring, then one forced reload ([below](#an-unknown-kid-forces-one-reload)) |
-| the signature         | `Signature`              | RSA, under that key                                                                       |
-| `iss` is `op.issuer`  | `Issuer`                 | required, exact                                                                           |
-| `exp`, `nbf`          | `Expired`, `NotYetValid` | 60 seconds of leeway ([`LEEWAY_SECS`]); `exp` required                                    |
-| no `identity`         | `HumanToken`             | a person's token has no door here (VSA-4b)                                                |
-| no `cnf`              | `SenderConstrained`      | a token bound to a key needs that key's proof, which this door never checks               |
-| `aud` contains `sub`  | `Audience`               | by hand, after the signature: authkestra stamps `aud = client_id`                         |
+| Check                    | Refusal             | How                                                                         |
+| ------------------------ | ------------------- | --------------------------------------------------------------------------- |
+| three segments, RS256    | `Malformed`         | `decode_header`; any other algorithm is refused before a key is looked up   |
+| a `kid`                  | `MissingKid`        | never the first key of the set: during a rotation two keys are published    |
+| a key for that `kid`     | `UnknownKid`        | the OP's own keyring, then one forced reload (below)                        |
+| the signature            | `Signature`         | RSA, under that key                                                         |
+| `iss` is `op.issuer`     | `Issuer`            | required, exact                                                             |
+| `exp`, `nbf`             | `Expired`           | 60 seconds of leeway; `exp` required; `nbf` is `NotYetValid`                |
+| no `cnf`                 | `SenderConstrained` | a token bound to a key needs that key's proof, which this door never checks |
+| `identity`, a person     | `HumanToken`        | when no person realm is served                                              |
+| no `identity`, a machine | `MachineToken`      | when no machine realm is served                                             |
 
-The audience rule is "contains `sub`", not "equals `vsms`": a token is addressed
+A **machine** token (no `identity`) then needs `aud` to contain `sub`
+(`Audience`, by hand after the signature: authkestra stamps `aud = client_id`).
+A **person** token (an `identity`) then needs:
+
+| Check                                            | Refusal     | How                                                                                                      |
+| ------------------------------------------------ | ----------- | -------------------------------------------------------------------------------------------------------- |
+| `sub` non-empty and the identity's `external_id` | `Malformed` | the provider stamps `sub` from `identity.external_id`; a token where they differ is not its              |
+| exactly one `aud`, the console                   | `Audience`  | a string, or a list of one, equal to the console's `client_id`; any other list is refused                |
+| a non-blank `scope`, no `nonce`                  | `IdToken`   | the ID token has no scope (and a nonce when the sign-in sent one); the access token has `openid profile` |
+
+The machine audience rule is "contains `sub`", not "equals `vsms`": a token is addressed
 to its own client by default, which is what keeps the SDKs that already speak to
 the provider working, and a client that asked for another audience gets a token
 for that resource and not for this API. `validate_aud` is off in the library
 because its audience is one fixed list and this one differs per token; the hand
 check replaces it and a test fails when it is removed.
 
-Nothing is taken from the token except its client id and the scope it **asks
-for**. Role, permissions, app and the scopes it holds all come from rows.
+Nothing is taken from the token except who it names (a machine's client id and
+the scope it **asks for**; a person's `User.id` and the console it was minted
+for). Role, permissions, app and the scopes it holds all come from rows.
+
+The person audience is stricter than the machine's on purpose. A machine's
+`aud` is its own `sub`, so "contains" is the only rule that fits; a person's is
+the console, one fixed value, and a token that lists another resource beside it
+is a token for two audiences that this API does not serve.
+
+# The ID token is the one confusion that needs a heuristic
+
+The provider's ID token (`TokenManager::issue_id_token`) carries the same `iss`,
+`sub`, `aud`, `identity`, `kid` and lifetime as the access token beside it, and
+differs only in `scope` (none) and an optional `nonce`. The console reads it in a
+browser to learn who signed in and may log it; if it opened the API, leaking one
+would hand out a session. `authkestra` stamps no `typ` or `token_use`, so the
+distinction is the absence of a scope or the presence of a nonce: `IdToken`.
+The cost is that a sign-in that asked for no scope gets an access token with no
+scope and the API refuses it; `human_login`'s console client is registered with
+`openid profile` and `/login` is asked for it. An upstream request for a
+distinguishing claim is the proper fix.
 
 # The keys are the OP's, in process
 
@@ -97,7 +137,11 @@ a little longer than it had to be, and the caller asks again.
   back to the first key without a `kid`, and caches for a fixed time.
 - `validate_aud = false` with nothing in its place.
 - `scope` or `perms` read from the token as a grant.
-- A human realm. A token with an `identity` is `HumanToken`.
+- A person's `scope` or `identity` attributes read as a grant, or a role
+  taken from the token. The role is the `User` row's.
+- `provider_id` is not checked: the cap and the standing are keyed on the
+  credential and the account, so a later sign-in through another provider that
+  maps onto a `User.id` is held to the same rules.
 - Sender-constrained tokens. The provider mints none today, but a `cnf` claim
   (RFC 7800) means the token is only good with a proof of possession, and a
   door that checks none must not wave it through as a bearer: it is

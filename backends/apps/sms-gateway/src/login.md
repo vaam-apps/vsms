@@ -130,6 +130,8 @@ no sign-in screen on this release: VSA-5 builds it against this.
 An `Identity` of provider `sms-console`, `external_id` the `User.id`, the email
 and display name. No role, no permission. The API resolves those from rows per
 request (VSA-4b), so a deactivation takes effect within one cache window and a code
-cannot outlive a demotion.
+cannot outlive a demotion. The access token that comes out is accepted by the API as
+that person; an `owner` or an `admin` behind it is refused with a 403 and acts only
+from a paired console key.
 
 <!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->

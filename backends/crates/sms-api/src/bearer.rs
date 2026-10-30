@@ -48,11 +48,26 @@ pub enum BearerRefusal {
     /// `nbf` is in the future, beyond the clock-skew leeway.
     #[error("the token is not valid yet")]
     NotYetValid,
-    /// The token belongs to a person (it carries an `identity`), not a machine.
-    /// Only machine callers have a door here; a person signs in some other way
-    /// (VSA-4b; VSA-4a issues the token and this door still refuses it).
-    #[error("the token belongs to a person, not a machine client")]
+    /// The token belongs to a person (it carries an `identity`) and this
+    /// deployment serves no person realm (`human_login` is not served): only a
+    /// machine's token has a door here then. Where `human_login` **is** served
+    /// a person's token is accepted ([`VerifiedBearer::Person`]) and this
+    /// refusal never fires.
+    #[error("the token belongs to a person, and this deployment accepts only a machine's")]
     HumanToken,
+    /// The token belongs to a machine client (no `identity`) and this deployment
+    /// serves only people (`human_login` without `machine_tokens`). The mirror
+    /// of [`BearerRefusal::HumanToken`].
+    #[error("the token belongs to a machine client, and this deployment accepts only a person's")]
+    MachineToken,
+    /// The token is a person's **ID token**, not their access token. The OP
+    /// stamps the two with the same issuer, subject, audience, identity and key;
+    /// an ID token differs only by carrying no `scope` (and, when the sign-in
+    /// asked for one, a `nonce`). It is the token a console reads to learn who
+    /// signed in, handed to the browser and logged, never one to call the API
+    /// with.
+    #[error("the token is an ID token, not an access token")]
+    IdToken,
     /// The token carries a `cnf` (confirmation) claim: it is bound to a key the
     /// holder must prove, and this door checks no proof. Accepted as a plain
     /// bearer it would lose the constraint it was issued with, so it is
@@ -63,17 +78,44 @@ pub enum BearerRefusal {
 
 /// What a verified token says, and nothing it does not.
 ///
-/// A client id and the scopes it asked for: **claims that narrow, never grant**.
-/// The caller's standing is read from the database by
-/// [`SignerDirectory::bearer_standing`]; this struct is only how the token names
-/// the row.
+/// Who the token names and, for a machine, the scopes it asked for: **claims
+/// that narrow, never grant**. The caller's standing is read from the database
+/// by [`SignerDirectory::bearer_standing`]; this enum is only how the token
+/// names the rows.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VerifiedBearer {
-    /// The token's `sub`, an `OauthClient.clientId`.
-    pub client_id: String,
-    /// The token's space-delimited `scope` claim, when it has one. The effective
-    /// scope is its intersection with the client's own.
-    pub scope: Option<String>,
+pub enum VerifiedBearer {
+    /// A `client_credentials` token: no `identity`, `sub` is an
+    /// `OauthClient.clientId`.
+    Machine {
+        /// The token's `sub`, an `OauthClient.clientId`.
+        client_id: String,
+        /// The token's space-delimited `scope` claim, when it has one. The
+        /// effective scope is its intersection with the client's own.
+        scope: Option<String>,
+    },
+    /// An `authorization_code` access token minted by `human_login`: an
+    /// `identity` whose `external_id` is the token's `sub`, addressed to the
+    /// console client alone. Its `scope` (the OIDC `openid profile`) is
+    /// deliberately not carried: it names what the console may read about the
+    /// person, and grants the API nothing; the person's role does.
+    Person {
+        /// The token's `sub`, a `User.id`.
+        user_id: String,
+        /// The token's one audience, the console's `OauthClient.clientId`.
+        client_id: String,
+    },
+}
+
+impl VerifiedBearer {
+    /// Which realm the token belongs to, for a log line that must name neither
+    /// the person nor the client.
+    #[must_use]
+    pub fn realm(&self) -> &'static str {
+        match self {
+            VerifiedBearer::Machine { .. } => "machine",
+            VerifiedBearer::Person { .. } => "person",
+        }
+    }
 }
 
 /// Checks a bearer token's signature and claims.
@@ -101,16 +143,20 @@ pub struct ApiDoors {
     bearer: Option<Arc<dyn BearerVerifier>>,
 }
 
-/// Neither door open: `auth.methods` permits no way to say who a caller is. The
-/// configuration refuses it first (`ConfigError::NoWayIn`); this is the same
-/// refusal at the place that would otherwise build a gateway nobody can call.
+/// Neither door open: `auth.methods` permits no way to say who a caller is (a
+/// person's token is a way in only beside the keypair or `machine_tokens`: it
+/// is not one on its own, `ConfigError::NoWayIn`). The configuration refuses it
+/// first; this is the same refusal at the place that would otherwise build a
+/// gateway nobody can call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("no way in: neither the signed envelope nor a machine token is accepted")]
 pub struct NoDoor;
 
 impl ApiDoors {
     /// `keypair`: `auth.methods` permits it. `bearer`: `Some` exactly when
-    /// `machine_tokens` is **served** (permitted and `op:` written).
+    /// `machine_tokens` **or** `human_login` is served (permitted and its block
+    /// written): the one verifier holds the realms, and which of them it
+    /// accepts is its own business, not the doors'.
     ///
     /// # Errors
     ///
@@ -219,15 +265,22 @@ fn unauthenticated() -> Response {
 /// 3. **An unsigned request needs a verified bearer**, or it is the coarse 401
 ///    the envelope gives every unauthenticated caller. The token is checked
 ///    ([`BearerVerifier`]), then resolved to a standing
-///    ([`SignerDirectory::bearer_standing`]: the `OauthClient` is active, its
-///    `AppClient` live and the same client), and only then does the request
-///    become a principal: `VerifiedPrincipal("client:<clientId>")`, the very
-///    name the signed door gives the same client, so both doors draw from **one**
+///    ([`SignerDirectory::bearer_standing`]: for a machine, the `OauthClient`
+///    is active, its `AppClient` live and the same client; for a person, the
+///    console client is the unlinked public one and the `User` is active with
+///    a role that may act), and only then does the request become a principal:
+///    `VerifiedPrincipal("client:<clientId>")` for a machine and
+///    `VerifiedPrincipal("user:<User.id>")` for a person, the very names the
+///    signed door gives the same caller, so both doors draw from **one**
 ///    rate-limit bucket and **one** idempotency namespace.
 ///
 /// A refusal is one 401 whatever failed; the [`BearerRefusal`] is written at
 /// `debug`. A database failure while resolving the standing is a 5xx, never a
-/// refusal.
+/// refusal. **The one answer that is not a 401** is a person whose role is
+/// `owner` or `admin`: a verified token and a live account, refused with a 403
+/// ([`crate::auth::DEVICE_REQUIRED`]) because those roles act only from a paired
+/// console key. That is a refusal of what the token may do, after it has proved
+/// who holds it, so it does not hide behind the coarse 401.
 pub async fn enforce_bearer_door(
     State(state): State<BearerDoorState>,
     mut request: Request,
@@ -257,7 +310,10 @@ pub async fn enforce_bearer_door(
     let standing = match state.directory.bearer_standing(&claims).await {
         Ok(standing) => standing,
         Err(CratestackError::Unauthorized(_)) => {
-            tracing::debug!(client_id = %claims.client_id, "a verified token's client has no standing");
+            tracing::debug!(
+                realm = claims.realm(),
+                "a verified token names no one who may act"
+            );
             return unauthenticated();
         }
         Err(error) => return error_response(&error),
@@ -389,7 +445,7 @@ mod tests {
     }
 
     fn ok_claims() -> VerifiedBearer {
-        VerifiedBearer {
+        VerifiedBearer::Machine {
             client_id: "appc_demo".to_owned(),
             scope: None,
         }
@@ -433,6 +489,8 @@ mod tests {
             BearerRefusal::Expired,
             BearerRefusal::NotYetValid,
             BearerRefusal::HumanToken,
+            BearerRefusal::MachineToken,
+            BearerRefusal::IdToken,
             BearerRefusal::SenderConstrained,
         ];
         let mut bodies = std::collections::BTreeSet::new();
@@ -449,6 +507,31 @@ mod tests {
             bodies.len(),
             1,
             "the body must not depend on the refusal: {bodies:?}"
+        );
+    }
+
+    /// The one answer of the door that is not the coarse 401: a person whose
+    /// role acts only from a device. [`error_response`] renders
+    /// `Forbidden(DEVICE_REQUIRED)` as a 403 with that text and nothing else, and
+    /// it is not the body a refused credential gets.
+    #[tokio::test]
+    async fn a_device_only_role_is_a_403_with_its_own_text() {
+        let response = error_response(&CratestackError::Forbidden(
+            crate::auth::DEVICE_REQUIRED.to_owned(),
+        ));
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = cratestack::axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&body).into_owned();
+        assert!(body.contains(r#""code":"FORBIDDEN""#), "{body}");
+        assert!(body.contains(crate::auth::DEVICE_REQUIRED), "{body}");
+        for role in crate::auth::DEVICE_ONLY_ROLES {
+            assert!(!body.contains(role), "the answer names no role: {body}");
+        }
+        assert!(
+            !body.contains("request could not be authenticated"),
+            "a 403 is not the coarse 401: {body}"
         );
     }
 

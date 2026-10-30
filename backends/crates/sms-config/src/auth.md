@@ -25,7 +25,7 @@ spellings, so one operator's muscle memory covers both repositories.
 | `keypair`        | requests signed by a registered key, and the sealed answers; the console's paired keys       | the envelope layer: `Required` alone, `Optional` beside tokens, a 415 when off                                                                                                |
 | `machine_tokens` | `Authorization: Bearer` from the deployment's own `OpenID` Provider                          | the provider (`/token`, `/jwks.json`, discovery) is mounted when `op:` is present (VSA-3a); the API accepts its tokens beside the envelope (VSA-3b, `sms_api::bearer`)        |
 | `hmac_webhooks`  | webhook endpoints delivered with `X-Sms-Signature` (`deliveryMode: hmac`), and their secrets | `sms_api::HmacWebhooks`: the create, update, switch, rotate and replay calls refuse; `sms-worker`'s `hooks` claims no `hmac` attempt, which stays `pending`                   |
-| `human_login`    | a person's password sign-in to the console, through the deployment's own `OpenID` Provider   | `POST /login` and the provider's `authorization_code` grant are mounted when `human_login:` and `op:` are present (VSA-4a); the API still refuses the person's token (VSA-4b) |
+| `human_login`    | a person's password sign-in to the console, through the deployment's own `OpenID` Provider   | `POST /login` and the provider's `authorization_code` grant are mounted when `human_login:` and `op:` are present (VSA-4a); the API accepts the person's access token (VSA-4b) as the person, never as an `owner` or an `admin` |
 
 # Permitted is not served
 

@@ -56,8 +56,8 @@ The two gates ([`gate`]) are the one question the operator commands ask before
 they touch the database: is the method served?
 
 Not here, and VSA-4c's: `sso` (the Keycloak relying party) and its transaction
-table. Not here, and VSA-4b's: accepting a person's token at the API; this crate
-issues a code and `sms-gateway` redeems it, and the API still refuses what comes
-out.
+table. Not here, and `sms_api`'s since VSA-4b: accepting a person's token at the API; this
+crate issues a code and `sms-gateway` redeems it, and the API accepts what comes
+out, as that person, never as an `owner` or an `admin`.
 
 <!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->

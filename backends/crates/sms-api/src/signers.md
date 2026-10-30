@@ -29,11 +29,21 @@ stateDiagram-v2
     Standing --> [*]
 ```
 
-A machine token is the second way to a [`Standing`]: [`SignerDirectory::bearer_standing`]
-reads the `OauthClient` (active, on every request), its `AppClient` (active, not
-retired, the token's `sub`) and acts with the `AppClient`'s scopes that the
-`OauthClient` row also lists, narrowed by the token's claim when it has one,
-never `console:pair` (`bearer.md`).
+A token is the second way to a [`Standing`]: [`SignerDirectory::bearer_standing`].
+A machine's reads the `OauthClient` (active, on every request), its `AppClient`
+(active, not retired, the token's `sub`) and acts with the `AppClient`'s scopes
+that the `OauthClient` row also lists, narrowed by the token's claim when it has
+one, never `console:pair` (`bearer.md`). A person's (VSA-4b,
+[`SignerDirectory::person_standing`]) reads the console `OauthClient` (active,
+public, linked to nothing, on every request), then the `User` and `Role` through
+the **same** cache a paired key's owner is read through (so one `users` cache,
+one 60-second window, one `load_user` with its reserved-role refusal), and then
+refuses an `owner` or an `admin` with a 403 ([`crate::auth::DEVICE_REQUIRED`]).
+That last check runs **after** the cache read, on the value just read. The cache
+is shared with the signed door, where an `admin` is legitimate, so an `admin`
+standing a console key has just cached must not be served to a token for the same
+account; and a person promoted to a device-only role is refused as soon as the
+cache turns over.
 
 Nothing about a key is cached. The standing of the key's owner is, for 60
 seconds, which is how long a deactivated client or person may keep acting.

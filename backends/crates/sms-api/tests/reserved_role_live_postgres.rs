@@ -296,6 +296,117 @@ async fn a_role_keyed_system_never_authenticates_even_past_the_database_check() 
     fixture.cleanup(&db).await;
 }
 
+/// Answers every token with one fixed person of the console: the verifier is not
+/// what is under test, the point-of-use guard behind it is.
+struct OnePerson {
+    user_id: String,
+    client_id: String,
+}
+
+#[async_trait::async_trait]
+impl sms_api::BearerVerifier for OnePerson {
+    async fn verify(
+        &self,
+        _token: &str,
+    ) -> Result<sms_api::VerifiedBearer, sms_api::BearerRefusal> {
+        Ok(sms_api::VerifiedBearer::Person {
+            user_id: self.user_id.clone(),
+            client_id: self.client_id.clone(),
+        })
+    }
+}
+
+/// The same guard on the other way in (VSA-4b): a person's **token** for the
+/// account whose role is the reserved key `"system"` is the coarse 401, not an
+/// `app`-kind context with the synthetic role. The control is the same router
+/// answering 200 for an ordinary person, so the 401 is the reserved-role guard
+/// and not a missing console client or a verifier that refuses everything.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_persons_token_for_a_role_keyed_system_never_authenticates() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db_url = sms_test_support::database_url().await;
+    let db = db().await;
+    let suffix = unique_suffix();
+
+    let fixture = seed_reserved_role_account(&db_url, &db, &suffix).await;
+    let console_id = format!("console_{suffix}");
+    db.oauth_client()
+        .create(schema::CreateOauthClientInput {
+            clientId: console_id.clone(),
+            appClientId: None,
+            tokenEndpointAuthMethod: schema::ClientAuthMethod::none,
+            jwks: None,
+            grantTypes: " authorization_code ".to_owned(),
+            scopes: " openid profile ".to_owned(),
+            redirectUris: " https://console.example/cb ".to_owned(),
+            requirePkce: true,
+        })
+        .run(&sms_api::system_context("reserved-role-test"))
+        .await
+        .expect("seeding the console client");
+    // An ordinary person (the cleanup landing role has no permissions, which
+    // `previewMessage` does not ask for).
+    let ordinary = db
+        .user()
+        .create(schema::CreateUserInput {
+            subject: format!("reserved-role-ordinary-{suffix}"),
+            email: format!("reserved-role-ordinary-{suffix}@example.test"),
+            displayName: "Ordinary".to_owned(),
+            roleKey: fixture.landing_role_key.clone(),
+            lastLoginAt: None,
+            deletedAt: None,
+        })
+        .run(&owner())
+        .await
+        .expect("seeding an ordinary person");
+
+    let preview = |base: String| async move {
+        reqwest::Client::new()
+            .post(format!("{base}/$procs/previewMessage"))
+            .bearer_auth(format!("tok-{}", unique_suffix()))
+            .header("accept", "application/json")
+            .header("content-type", "application/json")
+            .body(r#"{"args":{"body":"hello"}}"#)
+            .send()
+            .await
+            .expect("sending")
+            .status()
+            .as_u16()
+    };
+    let router_for = |user_id: String| {
+        sealed_fixtures::api_router_doors(
+            &db,
+            TEST_PEPPER,
+            sms_api::HmacWebhooks::Permitted,
+            sms_api::ApiDoors::new(
+                true,
+                Some(std::sync::Arc::new(OnePerson {
+                    user_id,
+                    client_id: console_id.clone(),
+                })),
+            )
+            .expect("a door is open"),
+        )
+    };
+
+    let control = sealed_fixtures::serve(router_for(ordinary.id.clone())).await;
+    assert_eq!(
+        preview(control).await,
+        200,
+        "an ordinary person's token acts"
+    );
+    let reserved = sealed_fixtures::serve(router_for(fixture.user_id.clone())).await;
+    assert_eq!(
+        preview(reserved).await,
+        401,
+        "a token for a person whose role is the reserved key \"system\" must never authenticate"
+    );
+
+    // The ordinary person sits on the landing role the cleanup reassigns to.
+    fixture.cleanup(&db).await;
+}
+
 /// **The first of two independent guards against a `Role` keyed `"system"` —
 /// the database itself.** `roles_key_not_reserved_check`
 /// (`backends/migrations/postgres/0002_bootstrap`, generated from
