@@ -20,22 +20,34 @@ see that `impl`'s own doc for how it differs from the other two: endpoint
 health, not just row state, decides what's claimable).
 
 A claim is also decided by **which endpoints it may take attempts from**. A `hooks`
-worker without the envelope signing key claims `hmac` attempts only
-([`ServedModes`]), and no worker takes the attempts of an endpoint that is
-deactivated or whose circuit is open. Both are conditions of the rows the query
-selects, never a filter over what it returned: a window of the oldest rows is a
-fixed number of rows, and an endpoint whose attempts the worker will not take, with
-that many due, fills it and starves everyone behind it. It is also why nothing is
-written for a row the worker cannot serve, which a "claim it, find out, hand it back"
-design could not say. [`claim_webhook_attempts`] is that claim;
-[`count_sealed_attempts_waiting`] is the `COUNT(*)` a keyless worker reports with.
+worker serves the delivery modes its configuration allows ([`ServedModes`]), and no
+worker takes the attempts of an endpoint that is deactivated or whose circuit is
+open. Two facts decide the modes: whether the worker holds the envelope signing key
+(without it there is no `sealed` delivery), and whether `auth.methods` permits
+`hmac_webhooks` (VSA-1; without it there is no `hmac` delivery):
+
+| signing key | `hmac_webhooks` | `ServedModes` | claims attempts of            | backlog watch that speaks |
+| ----------- | --------------- | ------------- | ----------------------------- | ------------------------- |
+| held        | permitted       | `Both`        | `hmac` and `sealed` endpoints | none                      |
+| not held    | permitted       | `HmacOnly`    | `hmac` endpoints only         | `SealedBacklogWatch`      |
+| held        | not permitted   | `SealedOnly`  | `sealed` endpoints only       | `HmacBacklogWatch`        |
+| not held    | not permitted   | `Neither`     | nothing; `run` warns at start | both                      |
+
+All of it is a condition of the rows the query selects, never a filter over what it
+returned: a window of the oldest rows is a fixed number of rows, and an endpoint
+whose attempts the worker will not take, with that many due, fills it and starves
+everyone behind it. It is also why nothing is written for a row the worker cannot
+serve, which a "claim it, find out, hand it back" design could not say: the attempt
+stays `pending`, uncounted and off the endpoint's breaker. [`claim_webhook_attempts`]
+is that claim; [`count_attempts_waiting`] is the count the two backlog
+watches report with.
 
 # What a claim costs, and why it is not always one query
 
 The claim reads the endpoints first (`webhook_endpoints`, a scan of the few rows it
 holds) and chooses, with one rule for both modes (`ServedModes::can_claim`: the
-endpoint is active, its circuit is closed, and for a keyless worker it delivers
-`hmac`):
+endpoint is active, its circuit is closed, and its mode is one the worker
+serves):
 
 - **Every endpoint in the table is claimable by this worker**: the endpoint
   condition would remove nothing, so the claim is one time-ordered read of
@@ -43,7 +55,8 @@ endpoint is active, its circuit is closed, and for a keyless worker it delivers
   `webhook_attempts_lease_reclaim_idx` (`time_ordered_candidates`), each stopped
   by `LIMIT` at `budget` rows whatever the number of endpoints. This is every
   healthy all-`hmac` deployment (every deployment until an operator switches one
-  endpoint to `sealed`) and every healthy keyed one. The rule is "every endpoint,
+  endpoint to `sealed`), every healthy keyed one, and a deployment with
+  `hmac_webhooks` off whose endpoints are all `sealed`. The rule is "every endpoint,
   in any state", not "no sealed endpoint": see below.
 - **Otherwise**: one query per claimable endpoint, `endpoint_id = $1`, which
   `webhook_endpoint_due_idx (endpoint_id, next_attempt_at) WHERE state IN
@@ -55,8 +68,8 @@ endpoint is active, its circuit is closed, and for a keyless worker it delivers
 
 **Why the single query is only for a table with nothing to leave out.** A window of
 the oldest rows of any endpoint is a fixed number of rows. An endpoint a claim must
-not take from (deactivated after a 410, a circuit open, `sealed` for a keyless
-worker) can hold that many due attempts, and nothing purges them
+not take from (deactivated after a 410, a circuit open, a mode the worker does
+not serve: `sealed` without the key, `hmac` with `hmac_webhooks` off) can hold that many due attempts, and nothing purges them
 (`purge_retention` deletes messages and receipts, not attempts). The claim used to
 fetch the oldest `3 x budget` rows and drop those of unhealthy endpoints
 afterwards, so such an endpoint with 60 or more due attempts was all of every

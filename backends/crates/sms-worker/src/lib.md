@@ -22,8 +22,8 @@ glue over the pure route-selection engine).
 
 [`WorkerContext`] carries two things the `hooks` role reads: `webhook_sealer` (the
 envelope signing key, for `sealed` endpoints) and `hmac_webhooks` (VSA-1, whether
-`auth.methods` permits the shared-secret scheme at all; with it off `hooks` parks
-an `hmac` endpoint's attempts and sends nothing, `hooks.md`, "When `hmac_webhooks`
-is off"). Neither is read by any other role.
+`auth.methods` permits the shared-secret scheme at all; with it off `hooks` claims
+no `hmac` endpoint's attempt, which stays `pending`, `hooks.md`, "When
+`hmac_webhooks` is off"). Neither is read by any other role.
 
 <!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->

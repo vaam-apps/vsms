@@ -20,12 +20,12 @@ edit was meant to shut. vaam writes `methods: [keypair]`.
 This is vpay's key (`vpay-config`, VPA-1), with the same rules and the same
 spellings, so one operator's muscle memory covers both repositories.
 
-| Method           | What it permits                                                                              | Where it is enforced                                                                                                 |
-| ---------------- | -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `keypair`        | requests signed by a registered key, and the sealed answers; the console's paired keys       | the envelope layer, always `Required`                                                                                |
-| `machine_tokens` | `Authorization: Bearer` from the deployment's own `OpenID` Provider                          | **not restored** (VSA-3)                                                                                             |
-| `hmac_webhooks`  | webhook endpoints delivered with `X-Sms-Signature` (`deliveryMode: hmac`), and their secrets | `sms_api::HmacWebhooks`: the create, update, switch and rotate calls refuse; `sms-worker`'s `hooks` parks deliveries |
-| `human_login`    | a person's password or SSO sign-in to the console                                            | **not restored** (VSA-4)                                                                                             |
+| Method           | What it permits                                                                              | Where it is enforced                                                                                                                                |
+| ---------------- | -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `keypair`        | requests signed by a registered key, and the sealed answers; the console's paired keys       | the envelope layer, always `Required`                                                                                                               |
+| `machine_tokens` | `Authorization: Bearer` from the deployment's own `OpenID` Provider                          | **not restored** (VSA-3)                                                                                                                            |
+| `hmac_webhooks`  | webhook endpoints delivered with `X-Sms-Signature` (`deliveryMode: hmac`), and their secrets | `sms_api::HmacWebhooks`: the create, update, switch and rotate calls refuse; `sms-worker`'s `hooks` claims no `hmac` attempt, which stays `pending` |
+| `human_login`    | a person's password or SSO sign-in to the console                                            | **not restored** (VSA-4)                                                                                                                            |
 
 # Permitted is not served
 
