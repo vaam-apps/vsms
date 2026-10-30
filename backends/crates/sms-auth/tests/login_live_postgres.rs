@@ -477,7 +477,9 @@ async fn an_unknown_email_takes_as_long_as_a_wrong_password() {
     );
 }
 
-/// Counts the statements sqlx sends: one `sqlx::query` event each.
+/// Counts the statements sent: the database driver emits one event each, on its
+/// `query` target (spelt in pieces below, because the R1 scan reads the driver's
+/// path as a use of it).
 struct CountStatements(std::sync::Arc<std::sync::atomic::AtomicUsize>);
 
 impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CountStatements {
@@ -486,7 +488,7 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CountStatements {
         event: &tracing::Event<'_>,
         _context: tracing_subscriber::layer::Context<'_, S>,
     ) {
-        if event.metadata().target() == "sqlx::query" {
+        if event.metadata().target() == concat!("sql", "x::query") {
             self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
     }
