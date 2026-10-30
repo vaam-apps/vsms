@@ -451,9 +451,13 @@ human_login:
     client_id: sms-console            # 8 to 64 characters; the only client_id /login accepts
     redirect_uris:                    # exact match; https and no stub host under livemode
       - https://admin.sms.example.org/api/auth/callback
-  login_rate_limit:                   # per email address and per source address,
-    burst: 5                          # before any password is hashed
-    refill_per_second: 0.1
+  login_rate_limit:                   # both before any password is hashed
+    per_email:                        # one bucket per email address
+      burst: 5
+      refill_per_second: 0.1
+    aggregate:                        # one bucket for every sign-in: the Argon2 CPU budget
+      burst: 10
+      refill_per_second: 1.0
 ----
 
 Every key is required; there is no secret in the block. A `human_login:` block without

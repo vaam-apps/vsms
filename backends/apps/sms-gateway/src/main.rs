@@ -193,8 +193,8 @@ enum Command {
     /// printed**. An existing account without a password gets one; an existing
     /// password is refused unless `--reset`. On a deployment that does not serve
     /// `human_login` it refuses, `auth_method_disabled`, before the database is
-    /// touched. Admin rights are a device's, never a password's: a password
-    /// yields a plain `user` session (VSA-4b).
+    /// touched. Which roles a password session may carry is decided in VSA-4b;
+    /// in this release a person's token is refused by the API whatever its roles.
     ProvisionUser(commands::provision_user::ProvisionUserArgs),
     /// Registers (or reconciles) the console's `OauthClient` row from
     /// `human_login.console_client`: the public client a person's sign-in is

@@ -12,6 +12,12 @@ What order the work happens in, what genuinely blocks what, and what has to be t
 > broker, the password store, `sms-fake-oidc` and `authkestra`. Everything below that describes M1's
 > token issuance, the human login (#194), single sign-on or the demo's "provisioned client" is the
 > history of what was built, kept unrewritten; the signed transport (§4.0) replaced all of it.
+>
+> **Partly restored, behind configuration (owner ruling R5, 2026-10-27).** `auth.methods` and `op:` bring
+> the provider back for machine callers (VSA-3a, VSA-3b) and `human_login:` brings `/login`, the password
+> store and the `authorization_code` flow back for the console (VSA-4a); the API still refuses a person's
+> token until VSA-4b, and single sign-on (VSA-4c) stays deleted. `docs/architecture.md` §4.10 is the
+> reference; this file's sequencing does not change.
 
 The status column below is a **dated snapshot**, not a source of truth. This repo has been bitten four separate times by documentation asserting something the code did not do (see `AGENTS.md`'s corrections on the M1 `/token` claim, `rust-version`, the `/token` rate-limiting table row, and OTP body storage), so treat any status claim older than its date with suspicion and check the tracker.
 
