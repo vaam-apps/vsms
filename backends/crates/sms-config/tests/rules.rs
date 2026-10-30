@@ -424,7 +424,7 @@ fn only_the_gateway_needs_the_pepper() {
     assert!(env.remove("SMS_HASH_PEPPER").is_some(), "the base reads it");
 
     // The worker hashes nothing, and neither does `mtn-subscribe-dlr`.
-    for binary in [Binary::Worker, Binary::ProviderTool] {
+    for binary in [Binary::Worker, Binary::ProviderTool, Binary::Operator] {
         let loaded = load_for(binary, "valid-all-providers", &env)
             .unwrap_or_else(|error| panic!("{binary:?} never reads security.*: {error}"));
         assert!(loaded.security.is_none(), "{binary:?}");
@@ -472,7 +472,7 @@ fn a_document_without_security_is_refused_by_the_gateway_and_loads_for_the_worke
 
 #[test]
 fn the_worker_and_the_provider_tool_still_refuse_a_retired_variable() {
-    for binary in [Binary::Worker, Binary::ProviderTool] {
+    for binary in [Binary::Worker, Binary::ProviderTool, Binary::Operator] {
         for retired in RETIRED {
             if retired.env == "SMS_HASH_PEPPER" {
                 continue; // the placeholder form is the exempt one, above
@@ -496,7 +496,7 @@ fn the_worker_and_the_provider_tool_still_refuse_a_literal_pepper_under_livemode
     // The rule reads the file as written, and the file is shared: a literal
     // pepper in a livemode document is a leak whichever binary reads it.
     let env = env_for("livemode-literal-pepper");
-    for binary in [Binary::Worker, Binary::ProviderTool] {
+    for binary in [Binary::Worker, Binary::ProviderTool, Binary::Operator] {
         assert!(
             matches!(
                 load_for(binary, "livemode-literal-pepper", &env),
@@ -526,7 +526,7 @@ fn served(config: &Config) -> Vec<&'static str> {
 }
 
 #[test]
-fn an_absent_key_permits_all_four_and_serves_two() {
+fn an_absent_key_permits_all_four_and_serves_two_without_an_op_block() {
     let config = load(DEFAULT_PROFILE).unwrap();
     assert_eq!(
         permitted(&config),
@@ -535,9 +535,10 @@ fn an_absent_key_permits_all_four_and_serves_two() {
     assert_eq!(
         served(&config),
         ["keypair", "hmac_webhooks"],
-        "machine_tokens and human_login are permitted by the default and served by nothing"
+        "machine_tokens is permitted but needs its op: block, and human_login is served by nothing"
     );
     assert!(!config.auth_methods.is_explicit());
+    assert!(config.op.is_none());
 }
 
 #[test]
@@ -596,17 +597,171 @@ fn a_duplicate_method_is_refused() {
 #[test]
 fn a_method_this_release_cannot_serve_is_refused_when_named() {
     assert_eq!(
-        refused("auth-machine-tokens"),
-        ConfigError::AuthMethodUnavailable(AuthMethod::MachineTokens)
-    );
-    assert_eq!(
         refused("auth-human-login"),
         ConfigError::AuthMethodUnavailable(AuthMethod::HumanLogin)
     );
+}
+
+fn not_configured(method: AuthMethod) -> ConfigError {
+    ConfigError::AuthMethodNotConfigured {
+        method,
+        key: "op".to_owned(),
+    }
+}
+
+#[test]
+fn machine_tokens_named_without_the_op_block_is_refused() {
     assert_eq!(
-        refused("auth-machine-tokens-alone"),
-        ConfigError::AuthMethodUnavailable(AuthMethod::MachineTokens),
-        "unavailable is named before the missing keypair"
+        refused("auth-machine-tokens"),
+        not_configured(AuthMethod::MachineTokens)
+    );
+}
+
+/// `[machine_tokens]` alone is refused until VSA-3b: the API accepts no bearer
+/// yet, so such a gateway would answer every API call with the unsigned 401.
+/// VSA-3b makes `machine_tokens` a way in; then the first profile is
+/// `not_configured` again (it names the method without its block) and the second
+/// loads, and this test is the one to rewrite.
+#[test]
+fn machine_tokens_alone_is_refused_until_vsa_3b_with_or_without_its_block() {
+    for profile in [
+        "auth-machine-tokens-alone",
+        "auth-machine-tokens-alone-with-op",
+    ] {
+        assert_eq!(refused(profile), ConfigError::NoWayIn, "{profile}");
+    }
+    let message = ConfigError::NoWayIn.to_string();
+    assert!(
+        message.contains("VSA-3b") && message.contains("Add keypair"),
+        "{message}"
+    );
+}
+
+#[test]
+fn the_op_block_without_the_method_is_dormant_configuration_and_is_refused() {
+    let expected = ConfigError::AuthMethodDisabled {
+        method: AuthMethod::MachineTokens,
+        key: "op".to_owned(),
+    };
+    for profile in ["op-without-the-method", "op-without-the-method-hmac"] {
+        assert_eq!(refused(profile), expected, "{profile}");
+    }
+    let message = expected.to_string();
+    assert!(
+        message.contains("delete op") && message.contains("add machine_tokens"),
+        "the message names both ways out: {message}"
+    );
+}
+
+#[test]
+fn the_absent_default_serves_machine_tokens_exactly_when_op_is_written() {
+    let config = load("op-default-methods").unwrap();
+    assert!(!config.auth_methods.is_explicit());
+    assert!(config.auth_methods.machine_tokens_served());
+    assert_eq!(
+        served(&config),
+        ["keypair", "machine_tokens", "hmac_webhooks"]
+    );
+    let op = config.op.expect("the block is read");
+    assert_eq!(op.issuer, "https://sms.example.com");
+    assert_eq!(op.token_rate_limit.burst, 10);
+    assert_eq!(op.signing_key.refresh_interval_secs, 60);
+    assert_eq!(op.signing_key.rotation_overlap_secs, 1800);
+}
+
+#[test]
+fn a_list_naming_machine_tokens_with_its_block_serves_it() {
+    let config = load("auth-machine-tokens-with-op").unwrap();
+    assert_eq!(permitted(&config), ["keypair", "machine_tokens"]);
+    assert_eq!(served(&config), ["keypair", "machine_tokens"]);
+}
+
+#[test]
+fn an_op_that_is_a_null_is_refused_not_read_as_absent() {
+    let message = shape_message("op-null");
+    assert!(
+        message.contains("op") || message.contains("struct Op"),
+        "{message}"
+    );
+}
+
+#[test]
+fn an_op_block_missing_a_key_or_with_an_unknown_one_is_refused_and_named() {
+    assert!(shape_message("shape-op-missing-keys").contains("token_rate_limit"));
+    assert!(shape_message("shape-op-unknown-key").contains("kid"));
+}
+
+#[test]
+fn the_issuer_is_a_url_without_a_trailing_slash() {
+    assert!(matches!(
+        refused("op-issuer-not-a-url"),
+        ConfigError::InvalidValue { key, .. } if key == "op.issuer"
+    ));
+    let error = refused("op-issuer-trailing-slash");
+    assert!(
+        matches!(&error, ConfigError::InvalidValue { key, reason }
+            if key == "op.issuer" && reason.contains("slash")),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn under_livemode_the_issuer_is_https_and_not_a_stub() {
+    assert!(matches!(
+        refused("op-livemode-insecure-issuer"),
+        ConfigError::InsecureHost { key, .. } if key == "op.issuer"
+    ));
+    assert!(matches!(
+        refused("op-livemode-stub-issuer"),
+        ConfigError::StubHostInLivemode { key, .. } if key == "op.issuer"
+    ));
+    load("op-livemode-valid").expect("a real https issuer is fine in livemode");
+}
+
+#[test]
+fn the_op_buckets_and_timings_are_range_checked() {
+    for (profile, key) in [
+        ("op-bucket-burst-zero", "op.token_rate_limit.burst"),
+        ("op-refresh-zero", "op.signing_key.refresh_interval_secs"),
+        (
+            "op-overlap-not-above-token-ttl",
+            "op.signing_key.rotation_overlap_secs",
+        ),
+        // 1800 clears the 900-second lifetime alone and not refresh (3600) + 900:
+        // the last token a running serve signs under the old key outlives it.
+        (
+            "op-overlap-not-above-refresh-plus-token-ttl",
+            "op.signing_key.rotation_overlap_secs",
+        ),
+        // The boundary is exclusive: 60 + 900 = 960 is refused, 961 loads below.
+        (
+            "op-overlap-at-refresh-plus-token-ttl",
+            "op.signing_key.rotation_overlap_secs",
+        ),
+    ] {
+        assert!(
+            matches!(refused(profile), ConfigError::InvalidValue { key: got, .. } if got == key),
+            "{profile}"
+        );
+    }
+}
+
+#[test]
+fn the_overlap_rule_names_the_refresh_interval_and_has_an_exclusive_boundary() {
+    let ConfigError::InvalidValue { reason, .. } =
+        refused("op-overlap-not-above-refresh-plus-token-ttl")
+    else {
+        panic!("expected InvalidValue");
+    };
+    assert!(
+        reason.contains("refresh_interval_secs (3600)") && reason.contains("4500"),
+        "{reason}"
+    );
+    let config = load("op-overlap-just-above-refresh-plus-token-ttl")
+        .expect("one second above refresh + token lifetime is fine");
+    assert_eq!(
+        config.op.expect("block").signing_key.rotation_overlap_secs,
+        961
     );
 }
 
@@ -620,7 +775,12 @@ fn every_binary_resolves_the_same_methods() {
     // The worker enforces the hmac gate and the gateway serves the discovery
     // document; both must read one answer from one file.
     let env = env_for("auth-keypair-only");
-    for binary in [Binary::Gateway, Binary::Worker, Binary::ProviderTool] {
+    for binary in [
+        Binary::Gateway,
+        Binary::Worker,
+        Binary::ProviderTool,
+        Binary::Operator,
+    ] {
         let config = Config::load_with_env(Some(&base()), "auth-keypair-only", binary, &|name| {
             env.get(name).cloned()
         })

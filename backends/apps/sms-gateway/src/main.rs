@@ -4,6 +4,8 @@ mod auth_discovery;
 mod commands;
 mod dlr;
 mod health;
+mod op;
+mod token_rate_limit;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -26,6 +28,38 @@ enum Command {
     Serve(commands::serve::ServeArgs),
     /// Print the generated route table and exit. Needs no database.
     Routes,
+    /// Generate a new RSA signing key, activate it, and keep the previous one
+    /// publishing in JWKS for `op.signing_key.rotation_overlap_secs` — an
+    /// operator action, not a generated-CRUD route (`OauthSigningKey`'s own
+    /// schema comment: this is the key that signs every token the OP issues, and
+    /// it must never be reachable except as `hasRole('system')` already
+    /// restricts it to). Run it once on a fresh deployment before `serve`: a
+    /// gateway that serves `machine_tokens` refuses to start without an active
+    /// key.
+    ///
+    /// Reads the YAML configuration only to learn whether the deployment serves
+    /// `machine_tokens`. When it does not (`auth.methods` omits it, or `op:` is
+    /// not written) it refuses, `auth_method_disabled`, before touching the
+    /// database: there is no provider to sign for, and a key minted anyway
+    /// would look like a rotation.
+    RotateSigningKey(commands::rotate_signing_key::RotateSigningKeyArgs),
+    /// Mint a `private_key_jwt` machine client: an `AppClient`, an `OauthClient`
+    /// holding only the public JWK, and a fresh RSA keypair whose private half is
+    /// written to `--key-out` — an operator action, not a generated-CRUD route,
+    /// for the identical reason `RotateSigningKey` above is one: a fresh
+    /// deployment has no console key paired to an `owner` or `admin`, so nothing
+    /// an operator has at bootstrap could ask for one over HTTP. See #137, and
+    /// `sms_auth::provision` for what it writes.
+    ///
+    /// The private key is returned once and stored nowhere in this system: this
+    /// command writes it straight to `--key-out` with `0600` permissions,
+    /// refuses to overwrite an existing file, and never logs or prints it.
+    ///
+    /// A client made here gets a **token** from `/token`; it is not a signing
+    /// key, and a token is not yet accepted by the API (VSA-3b). It refuses on a
+    /// deployment that serves no tokens, `auth_method_disabled`, and points at
+    /// `register-client`, which every deployment serves.
+    ProvisionClient(commands::provision_client::ProvisionClientArgs),
     /// Registers an Ed25519 public key for an `App`'s signing client (VS-2),
     /// the only way a machine caller gets in. The caller generates the keypair
     /// and hands over only the public half; vsms never sees a private key, so
@@ -296,6 +330,14 @@ async fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Routes => commands::routes::run(),
 
+        Command::RotateSigningKey(args) => {
+            commands::rotate_signing_key::rotate_signing_key_command(args).await
+        }
+
+        Command::ProvisionClient(args) => {
+            commands::provision_client::provision_client_command(args).await
+        }
+
         Command::Serve(args) => commands::serve::serve_command(args).await,
 
         Command::RegisterClient(args) => {
@@ -374,8 +416,10 @@ mod tests {
     /// `SMS_CONFIG` and `SMS_PROFILE`); the ones that read nothing do not grow
     /// them. `seed-dispatch` has an unrelated `--config` (the provider's JSON
     /// settings), which is why this looks at the variable and not the name.
+    /// `provision-client` and `rotate-signing-key` read it since VSA-3a, to learn
+    /// whether the deployment serves `machine_tokens`.
     #[test]
-    fn exactly_serve_and_mtn_subscribe_dlr_take_the_configuration_options() {
+    fn exactly_the_commands_that_need_the_configuration_take_its_options() {
         let command = super::Cli::command();
         let mut with_config: Vec<&str> = command
             .get_subcommands()
@@ -386,7 +430,15 @@ mod tests {
             .map(Command::get_name)
             .collect();
         with_config.sort_unstable();
-        assert_eq!(with_config, ["mtn-subscribe-dlr", "serve"]);
+        assert_eq!(
+            with_config,
+            [
+                "mtn-subscribe-dlr",
+                "provision-client",
+                "rotate-signing-key",
+                "serve"
+            ]
+        );
     }
 
     /// A build without the `fake-aws` feature - every release image - has no

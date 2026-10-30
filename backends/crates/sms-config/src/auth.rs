@@ -14,7 +14,9 @@ pub enum AuthMethod {
     /// (`COSE_Sign1`): the only way in vsms serves today.
     Keypair,
     /// A bearer token the deployment's own `OpenID` Provider minted from a
-    /// `private_key_jwt` assertion. Not restored yet (VSA-3).
+    /// `private_key_jwt` assertion. The provider is back (VSA-3a); the API
+    /// accepting the token is VSA-3b, and until then a list naming this method
+    /// without `keypair` is refused as [`ConfigError::NoWayIn`].
     MachineTokens,
     /// A webhook endpoint delivered with `X-Sms-Signature`, a signature keyed by
     /// a secret both sides hold (`WebhookEndpoint.deliveryMode = hmac`).
@@ -53,8 +55,8 @@ impl AuthMethod {
     /// default permits it without serving it.
     const fn is_restored(self) -> bool {
         match self {
-            Self::Keypair | Self::HmacWebhooks => true,
-            Self::MachineTokens | Self::HumanLogin => false,
+            Self::Keypair | Self::HmacWebhooks | Self::MachineTokens => true,
+            Self::HumanLogin => false,
         }
     }
 }
@@ -104,12 +106,15 @@ impl AuthConfig {
     /// [`ConfigError::NoAuthMethods`], [`ConfigError::UnknownAuthMethod`],
     /// [`ConfigError::DuplicateAuthMethod`],
     /// [`ConfigError::AuthMethodUnavailable`] and [`ConfigError::NoWayIn`]
-    /// (rules 1 to 5 in the module docs).
+    /// (rules 1 to 5 in the module docs). The set it returns knows nothing of the
+    /// blocks, so [`AuthMethods::machine_tokens_served`] is `false`: the rules
+    /// that need `op:` run once the whole document is read.
     pub fn resolve(&self) -> Result<AuthMethods, ConfigError> {
         let Some(names) = &self.methods else {
             return Ok(AuthMethods {
                 permitted: AuthMethod::ALL.into_iter().collect(),
                 explicit: false,
+                op_block: false,
             });
         };
         if names.is_empty() {
@@ -132,6 +137,7 @@ impl AuthConfig {
         let methods = AuthMethods {
             permitted,
             explicit: true,
+            op_block: false,
         };
         if !methods.can_authenticate_a_caller() {
             return Err(ConfigError::NoWayIn);
@@ -145,6 +151,9 @@ impl AuthConfig {
 pub struct AuthMethods {
     permitted: BTreeSet<AuthMethod>,
     explicit: bool,
+    /// Whether the document has an `op:` block. Set by the one place that has seen the document; [`AuthConfig::resolve`] leaves
+    /// it `false`.
+    op_block: bool,
 }
 
 impl AuthMethods {
@@ -167,25 +176,72 @@ impl AuthMethods {
             .filter(|method| self.permits(*method))
     }
 
-    /// The permitted methods this release actually serves: what
+    /// Whether `machine_tokens` is **served**: permitted, and the `op:` block
+    /// present. The one question the token routes, the discovery document, the
+    /// signing-key boot check and the `provision-client` and `rotate-signing-key`
+    /// commands all ask, so they cannot disagree about it.
+    #[must_use]
+    pub fn machine_tokens_served(&self) -> bool {
+        self.permits(AuthMethod::MachineTokens) && self.op_block
+    }
+
+    /// The permitted methods this deployment actually serves: what
     /// `GET /.well-known/vsms-auth` tells a client.
     ///
-    /// **Permitted minus the methods this release has no code for**
-    /// (`machine_tokens` until VSA-3, `human_login` until VSA-4), and nothing
-    /// else. The absent default permits all four and serves two. **This is the
-    /// one place that changes when either is restored.**
+    /// Permitted, minus the methods this release has no code for (`human_login`
+    /// until VSA-4), and `machine_tokens` also needs its block
+    /// ([`Self::machine_tokens_served`]). The absent default permits all four and
+    /// serves two on a deployment that wrote no `op:`. **This is the one place
+    /// that changes when `human_login` is restored.**
     pub fn served(&self) -> impl Iterator<Item = AuthMethod> + '_ {
-        self.permitted().filter(|method| method.is_restored())
+        self.permitted().filter(|method| match method {
+            AuthMethod::MachineTokens => self.machine_tokens_served(),
+            other => other.is_restored(),
+        })
+    }
+
+    /// The rules that need the document, given whether it has an `op:` block
+    /// (`machine_tokens`' block), and the set that remembers the answer.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::AuthMethodNotConfigured`]: `machine_tokens` is named
+    /// explicitly and `op:` is missing. [`ConfigError::AuthMethodDisabled`]: `op:`
+    /// is present and `machine_tokens` is not permitted. An absent
+    /// `auth.methods` raises neither: it permits the method and serves it only
+    /// where the block is.
+    pub(crate) fn with_op_block(mut self, op_present: bool) -> Result<Self, ConfigError> {
+        let tokens = self.permits(AuthMethod::MachineTokens);
+        if !tokens && op_present {
+            return Err(ConfigError::AuthMethodDisabled {
+                method: AuthMethod::MachineTokens,
+                key: "op".to_owned(),
+            });
+        }
+        if tokens && self.explicit && !op_present {
+            return Err(ConfigError::AuthMethodNotConfigured {
+                method: AuthMethod::MachineTokens,
+                key: "op".to_owned(),
+            });
+        }
+        self.op_block = op_present;
+        Ok(self)
     }
 
     /// Whether something permitted can authenticate a caller of the API's `/v1`
-    /// surface: a signed request or a token. vpay's `NoWayIn` is exactly
-    /// `!keypair && !machine_tokens` and R5 holds the two repositories to the same
-    /// rule, so `human_login` does not count: it signs a person in to the console,
-    /// it does not authenticate an API caller. `hmac_webhooks` cannot either; it
-    /// authenticates what vsms sends, never who is asking.
+    /// surface. vpay's `NoWayIn` is `!keypair && !machine_tokens` and R5 holds the
+    /// two repositories to that rule once the API accepts a token; **until VSA-3b
+    /// it does not, so only `keypair` counts**: a `[machine_tokens]` list would boot
+    /// a gateway that mints tokens and answers every API call with the unsigned
+    /// 401, which is exactly what `NoWayIn` exists to refuse. VSA-3b adds
+    /// `AuthMethod::MachineTokens` back to the list below (and flips
+    /// `machine_tokens_alone_is_refused_until_vsa_3b`). `human_login` does not
+    /// count: it signs a person in to the console, it does not authenticate an API
+    /// caller. `hmac_webhooks` cannot either; it authenticates what vsms sends,
+    /// never who is asking.
     fn can_authenticate_a_caller(&self) -> bool {
-        [AuthMethod::Keypair, AuthMethod::MachineTokens]
+        // VSA-3b: add `AuthMethod::MachineTokens` here when the API accepts a bearer.
+        [AuthMethod::Keypair]
             .into_iter()
             .any(|method| self.permits(method))
     }
@@ -199,6 +255,7 @@ mod tests {
         AuthMethods {
             permitted: methods.iter().copied().collect(),
             explicit: true,
+            op_block: false,
         }
     }
 
@@ -217,8 +274,20 @@ mod tests {
     }
 
     #[test]
-    fn a_keypair_or_a_machine_token_is_a_way_in() {
+    fn a_keypair_is_a_way_in() {
         assert!(permitting(&[AuthMethod::Keypair]).can_authenticate_a_caller());
-        assert!(permitting(&[AuthMethod::MachineTokens]).can_authenticate_a_caller());
+        assert!(
+            permitting(&[AuthMethod::Keypair, AuthMethod::MachineTokens])
+                .can_authenticate_a_caller()
+        );
+    }
+
+    /// VSA-3b flips this: once the API accepts a bearer, a machine token is a way
+    /// in and this assertion becomes `assert!`. Until then a list of machine
+    /// tokens alone would boot a gateway that answers every API call with the
+    /// unsigned 401.
+    #[test]
+    fn machine_tokens_alone_is_refused_until_vsa_3b() {
+        assert!(!permitting(&[AuthMethod::MachineTokens]).can_authenticate_a_caller());
     }
 }

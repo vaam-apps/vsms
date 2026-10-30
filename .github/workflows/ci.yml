@@ -468,7 +468,7 @@ jobs:
 
     # #174: this check existed (`just deny`, `deny.toml`) but nothing in CI
     # ever ran it, so RUSTSEC-2023-0071 (Marvin Attack, in `rsa`, which authkestra's RS256 path
-    # pulled in then; only `sms-fake-aws` links it now) had been failing silently for however long it
+    # pulled in; `sms-auth`'s OpenID Provider links it again since VSA-3a) had been failing silently for however long it
     # was present. Same shape as the pre-#118 problem of live suites nobody
     # ran. `deny.toml`'s `[advisories] ignore` entry for that one advisory
     # carries the reachability analysis inline — this job fails on any

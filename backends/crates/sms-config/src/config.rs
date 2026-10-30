@@ -12,6 +12,7 @@ use crate::auth::{AuthConfig, AuthMethods};
 use crate::cli::DEFAULT_PROFILE;
 use crate::error::ConfigError;
 use crate::model::{Api, Bucket, Database, Deployment, Security};
+use crate::op::{ACCESS_TOKEN_TTL_SECS, Op};
 use crate::provider::{Providers, RawProvider, validate_providers};
 use crate::retired;
 
@@ -32,6 +33,11 @@ pub enum Binary {
     /// is a variant of its own because it is not the worker, and a command
     /// that loads as `Worker` says something false about itself.
     ProviderTool,
+    /// A one-shot `sms-gateway` command that writes to the database and needs to
+    /// know which ways of authenticating the deployment serves
+    /// (`provision-client`, `rotate-signing-key`): everything but `security`. It
+    /// never hashes a message, so it is not handed the pepper.
+    Operator,
 }
 
 impl Binary {
@@ -52,8 +58,8 @@ pub struct Config {
     /// permits (every one when the key is absent).
     pub auth_methods: AuthMethods,
     /// `security:` - `Some` for [`Binary::Gateway`], `None` for
-    /// [`Binary::Worker`] and [`Binary::ProviderTool`], which do not read or
-    /// resolve the block. Use
+    /// [`Binary::Worker`], [`Binary::ProviderTool`] and [`Binary::Operator`],
+    /// which do not read or resolve the block. Use
     /// [`Config::security`] to ask for it.
     pub security: Option<Security>,
     /// `api:`.
@@ -62,6 +68,11 @@ pub struct Config {
     pub database: Database,
     /// `providers:`, validated.
     pub providers: Providers,
+    /// `op:`, the `OpenID` Provider (`machine_tokens`' block). `Some` only on a
+    /// deployment that wrote it, and then `auth.methods` permits the method
+    /// (rule 7 of `auth.md`); ask [`AuthMethods::machine_tokens_served`] rather
+    /// than testing this.
+    pub op: Option<Op>,
 }
 
 /// What serde reads, before the rules that need more than one field.
@@ -85,6 +96,19 @@ struct Raw {
     api: Api,
     database: Database,
     providers: Vec<RawProvider>,
+    // A key that is present is a block: `op:` with every item commented out is
+    // a null, and reading that as "no provider" would leave a deployment that
+    // meant to serve tokens serving none.
+    #[serde(default, deserialize_with = "present_op")]
+    op: Option<Op>,
+}
+
+/// Reads `op` when the key is present, as a block and never as a null.
+fn present_op<'de, D>(deserializer: D) -> Result<Option<Op>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Op::deserialize(deserializer).map(Some)
 }
 
 /// Hosts that mark a URL as a stub, searched in the host only: a path may say
@@ -203,6 +227,7 @@ impl Config {
             api,
             database,
             providers,
+            op,
         } = raw;
         let livemode = deployment.livemode;
 
@@ -213,7 +238,7 @@ impl Config {
         // authenticating are permitted is a property of the whole deployment, and
         // a list that permits none is better named than whichever rule would have
         // tripped on a later key.
-        let auth_methods = auth.resolve()?;
+        let auth_methods = auth.resolve()?.with_op_block(op.is_some())?;
         require_text("deployment.name", &deployment.name)?;
         check_url(
             "deployment.public_base_url",
@@ -247,6 +272,9 @@ impl Config {
 
         let providers = validate_providers(providers)?;
         validate_provider_hosts(&providers, livemode)?;
+        if let Some(op) = &op {
+            validate_op(op, livemode)?;
+        }
 
         Ok(Self {
             deployment,
@@ -255,8 +283,45 @@ impl Config {
             api,
             database,
             providers,
+            op,
         })
     }
+}
+
+/// The rules of `op:` (`op.md`).
+fn validate_op(op: &Op, livemode: bool) -> Result<(), ConfigError> {
+    check_url("op.issuer", &op.issuer, livemode)?;
+    if op.issuer.ends_with('/') {
+        return Err(invalid(
+            "op.issuer",
+            "must not end with a slash: the discovery document appends /token and /jwks.json to it",
+        ));
+    }
+    validate_bucket("op.token_rate_limit", op.token_rate_limit)?;
+    if op.signing_key.refresh_interval_secs == 0 {
+        return Err(invalid(
+            "op.signing_key.refresh_interval_secs",
+            "must be at least 1",
+        ));
+    }
+    // A running `serve` signs with the old key until its next refresh, so the
+    // last token under it is issued as late as T + refresh_interval_secs and
+    // lives until T + refresh_interval_secs + ACCESS_TOKEN_TTL_SECS. The old key
+    // stops being published at T + rotation_overlap_secs.
+    let latest_old_key_token_expiry = op
+        .signing_key
+        .refresh_interval_secs
+        .saturating_add(ACCESS_TOKEN_TTL_SECS);
+    if op.signing_key.rotation_overlap_secs <= latest_old_key_token_expiry {
+        return Err(invalid(
+            "op.signing_key.rotation_overlap_secs",
+            &format!(
+                "must exceed refresh_interval_secs ({}) plus the {ACCESS_TOKEN_TTL_SECS}-second                  access token lifetime ({latest_old_key_token_expiry}): a running gateway keeps                  signing with the old key until its next refresh, so the last token under it                  would outlive the key's place in /jwks.json",
+                op.signing_key.refresh_interval_secs
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn invalid(key: &str, reason: &str) -> ConfigError {

@@ -12,6 +12,10 @@ members = [
   # sms-webhook above for living below both.
   "backends/crates/sms-metrics",
   "backends/crates/sms-api",
+  # VSA-3a: the embedded OpenID Provider's stores, keys and client provisioning
+  # (deleted in #446, restored for the `machine_tokens` method). The human half
+  # (login, SSO) is VSA-4 and is not in the crate.
+  "backends/crates/sms-auth",
   "backends/crates/sms-worker",
   "backends/crates/sms-provider",
   # Cleanup PR B: the connect-vs-read transport classification and the
@@ -115,6 +119,7 @@ sms-webhook = { path = "./backends/crates/sms-webhook" }
 # apart on what a given metric is called.
 sms-metrics = { path = "./backends/crates/sms-metrics" }
 sms-api = { path = "./backends/crates/sms-api" }
+sms-auth = { path = "./backends/crates/sms-auth" }
 sms-worker = { path = "./backends/crates/sms-worker" }
 sms-provider = { path = "./backends/crates/sms-provider" }
 # Cleanup PR B: the connect-vs-read transport classifier and the
@@ -161,7 +166,50 @@ sms-fake-aws = { path = "./backends/crates/sms-fake-aws" }
 cratestack = { package = "cratestack-pg", version = "=0.16.0", features = ["envelope", "cose"] }
 cratestack-codec-json = "=0.16.0"
 
-# sms-fake-aws only: the RSA key behind its fake SNS signing identity.
+# VSA-3a restored the authkestra family below exactly as #446 removed it, at
+# 0.8.0: the newest release (0.13.1, which vpay runs) carries the same
+# RUSTSEC-2026-0387 chain through jsonwebtoken 11, so moving to it clears nothing
+# and rewrites the stores' trait signatures for no gain. deny.toml records the
+# measurement.
+# OIDC provider. Pinned exactly, same reasoning as cratestack above — see
+# AGENTS.md. 0.3.2 fixed the `GrantType` serde bug that shaped early M1
+# design (#6): don't drop below it. Bumped 0.5.4 -> 0.8.0 — see AGENTS.md's
+# authkestra-0.8 section for the full audit (OpStore's `&mut self` methods,
+# ClientStore/ClientAssertionStore relocating to authkestra-engine,
+# CompositeOpStore's new 6th (DPoP) type parameter, PKCE going
+# unconditional, and AuthorizeRequest/Claims both going #[non_exhaustive]).
+#
+# `default-features = false, features = ["rustls-no-provider"]`: authkestra's
+# own reqwest 0.13 dependency otherwise defaults to `aws-lc-rs`, the only
+# path by which that crate ever entered this tree (AGENTS.md's "aws-lc-rs
+# enters this tree from authkestra alone" section — verified via
+# `cargo tree -e features -i rustls`, not assumed). `rustls-no-provider`
+# compiles neither `aws-lc-rs` nor `ring` into authkestra's own reqwest;
+# the process supplies one instead, via the explicit
+# `rustls::crypto::ring::default_provider().install_default()` call each
+# binary's `main()` makes before constructing any HTTP client — see that
+# call site's own comment for why ordering there is load-bearing, and
+# AGENTS.md for the live-TLS test that proves this path actually works
+# rather than panicking at the first outbound call. Re-verified still true
+# at 0.8.0 — the feature exists unchanged on all four crates.
+authkestra-op = { version = "=0.8.0", default-features = false, features = ["rustls-no-provider"] }
+# Underpins authkestra-op (TokenManager, Engine, the generic MemoryStore<T>
+# op.rs uses for the authorization-code/refresh-token/device-code slots
+# this deployment doesn't populate — see op.rs's own doc). Not used
+# directly by application code beyond that; pinned because the whole
+# authkestra family moves in lockstep. Same `rustls-no-provider` reasoning
+# as authkestra-op above.
+# `token` is named here because without it `TokenManager` does not exist.
+authkestra-engine = { version = "=0.8.0", default-features = false, features = ["token", "rustls-no-provider"] }
+# Wraps authkestra-op's handler functions into axum routes for the OP
+# itself (#20). Only the `op` feature: this deployment never uses the
+# `session`/`resource` extractors this crate also offers (the bearer realm of
+# VSA-3b is hand-written against the JWKS, not an authkestra extractor). Same
+# `rustls-no-provider` reasoning as authkestra-op above.
+authkestra-axum = { version = "=0.8.0", default-features = false, features = ["op", "rustls-no-provider"] }
+# sms-fake-aws: the RSA key behind its fake SNS signing identity. sms-auth
+# (VSA-3a): the OP's RS256 signing keys and the client keypairs
+# `provision-client` mints. One resolved copy, shared with authkestra-engine.
 rsa = "0.9"
 rand = "0.8"
 # sms-fake-aws only: a self-signed certificate around a generated RSA key
@@ -173,11 +221,21 @@ ring = "0.17"
 # client_keys.rs / console_keys.rs / envelope.rs: base64url public keys and
 # the PKCS#8 PEM body of the server's signing key.
 base64 = "0.22"
+# sms-gateway's machine_tokens_live_postgres.rs signs a client assertion and
+# verifies the access token the OP minted against its /jwks.json. The same
+# version authkestra-op itself requires (Cargo.lock resolves one copy, with
+# `rust_crypto`). Dev-only here; no production code of ours links it.
+jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
 axum = "0.8"
 
 # sms-provider-aws-sms and sms-fake-aws: RFC 3986 URL handling for the SNS
 # subscription and certificate endpoints.
 url = "2"
+
+# sms-gateway's token_rate_limit.rs (VSA-3a) parses `/token`'s form-urlencoded body
+# for `client_id`. Already in Cargo.lock through `url` and axum's `Form`; named
+# directly for the one crate that now calls it, so no second form parser appears.
+form_urlencoded = "1"
 
 # sms-webhook's `url_can_be_sealed`: the pattern a `sealed` WebhookEndpoint's URL
 # must match, run by the procedure that switches an endpoint's mode and by the

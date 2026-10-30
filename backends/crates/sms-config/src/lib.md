@@ -13,6 +13,7 @@ and in the environment. The split is vpay's, and the loader is modelled on
 | `RUST_LOG`                                                    | every provider's host, settings and credentials, `providers` |
 | `SMS_CONFIG`, `SMS_PROFILE`                                   | `deployment.*`                                               |
 |                                                               | which authentication methods are permitted, `auth.methods`   |
+|                                                               | the `OpenID` Provider's issuer and limits, `op.*`            |
 
 # Loading
 

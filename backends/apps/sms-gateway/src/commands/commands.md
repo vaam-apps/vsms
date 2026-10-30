@@ -23,10 +23,13 @@ rather than re-deriving their logic (see `bootstrap.rs`'s own doc for why).
 
 # Which subcommands read the YAML configuration (VSC-1)
 
-Two take `--config`/`--profile` (`SMS_CONFIG`/`SMS_PROFILE`): `serve`, whose
-pepper, pool size, rate limits and providers are in `config/application*.yml`,
-and `mtn-subscribe-dlr`, whose credentials are the `providers[code=mtn_cm]`
-entry of the same document. Every other subcommand is a one-shot operator action
+Four take `--config`/`--profile` (`SMS_CONFIG`/`SMS_PROFILE`): `serve`, whose
+pepper, pool size, rate limits and providers are in `config/application*.yml`;
+`mtn-subscribe-dlr`, whose credentials are the `providers[code=mtn_cm]` entry of
+the same document; and `provision-client` and `rotate-signing-key` (VSA-3a), which
+read it only to learn whether the deployment serves `machine_tokens` and refuse
+before the database when it does not (`Binary::Operator`, no `security:`).
+`main.rs` pins the four names. Every other subcommand is a one-shot operator action
 on the database and reads no deployment configuration; their arguments stay
 arguments. `main.rs` refuses a retired flag (`sms_config::RETIRED`) before clap
 parses.

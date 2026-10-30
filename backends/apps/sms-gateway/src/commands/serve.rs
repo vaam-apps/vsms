@@ -15,7 +15,7 @@ use sms_provider::SmsProvider;
 use tracing::{info, warn};
 
 use crate::commands::server_keys;
-use crate::{dlr, health};
+use crate::{dlr, health, op, token_rate_limit};
 use sms_api::system_context;
 
 /// `Command::Serve`'s flags. See `Command::Serve`'s own doc comment in
@@ -309,6 +309,9 @@ pub(crate) async fn serve_command(args: ServeArgs) -> Result<()> {
     // shares — cloned here, before `sms_api::router` takes `db` by value as
     // its own last use.
     let health_router = health::router(db.clone());
+    // VSA-3a: the `OpenID` Provider, mounted only when `machine_tokens` is served
+    // (permitted and `op:` written). Built before `sms_api::router` takes `db`.
+    let op_router = build_op_router(&db, &config).await?;
 
     let ServeArgs {
         listen,
@@ -337,13 +340,20 @@ pub(crate) async fn serve_command(args: ServeArgs) -> Result<()> {
     // Everything merged from here on sits OUTSIDE the envelope layer, which
     // `sms_api::router` applied to its own routes only: the provider
     // callbacks (a provider cannot sign) and the probes. See
-    // `sms_api::router::router`'s doc. There is no token endpoint, no OpenID
+    // `sms_api::router::router`'s doc. There is no token endpoint, no `OpenID`
     // discovery document and no login; the one document is the list of
     // authentication methods (`/.well-known/vsms-auth`, VSA-1), which a client
     // must be able to read before it can sign.
     .merge(dlr_router)
     .merge(health_router)
     .merge(auth_discovery);
+    // `/token`, `/jwks.json` and the discovery document sit outside the envelope
+    // too: a caller of `/token` has no key to sign with, it is asking for a
+    // token. With `machine_tokens` off they are not routes at all (404).
+    let app = match op_router {
+        Some(op_router) => app.merge(op_router),
+        None => app,
+    };
 
     let listener = tokio::net::TcpListener::bind(&listen)
         .await
@@ -404,6 +414,64 @@ async fn spawn_metrics_server(
         .with_graceful_shutdown(shutdown_signal())
         .await
     }))
+}
+
+/// Loads the OP's signing keys, assembles its state and starts the background key
+/// refresh, **when `machine_tokens` is served**; `Ok(None)` mounts nothing.
+///
+/// Fails at process start if no active signing key exists, not lazily on the
+/// first `/token` request: a gateway that cannot sign a token must not claim to
+/// issue them. Anything that waits for health before rotating a key would
+/// deadlock, so a fresh deployment runs `rotate-signing-key` first (`run --rm`,
+/// never `exec`).
+async fn build_op_router(
+    db: &Cratestack,
+    config: &sms_config::Config,
+) -> Result<Option<axum::Router>> {
+    if !config.auth_methods.machine_tokens_served() {
+        return Ok(None);
+    }
+    // The provider's own actor label, as in `29f93c4^`: it lands verbatim in
+    // `cratestack_audit.actor.sub` on every signing-key and assertion write, so
+    // those rows name the OP and not the whole `serve` process.
+    let sys = system_context("sms-gateway:op");
+    let op_config = config
+        .op
+        .as_ref()
+        .context("op: is missing although machine_tokens is served")?;
+    let (signing, jwks) = sms_auth::op::load_signing_keys(db, &sys, &op_config.issuer)
+        .await
+        .context(
+            "loading the OP signing keys — run `sms-gateway rotate-signing-key` if this is a \
+             fresh database",
+        )?;
+    let store = sms_auth::op::machine_only_store(Arc::new(db.clone()), sys.clone());
+    let state = op::OpState::new(
+        store,
+        signing,
+        sms_auth::op::machine_only_config(op_config.issuer.clone()),
+        jwks,
+    );
+    // Keeps a rotate-signing-key run against this already-running process
+    // effective without a restart.
+    op::spawn_key_refresh(
+        state.clone(),
+        db.clone(),
+        sys.clone(),
+        op_config.issuer.clone(),
+        std::time::Duration::from_secs(op_config.signing_key.refresh_interval_secs),
+    );
+    let limit =
+        token_rate_limit::TokenRateLimitState::new(cratestack::ratelimit::RateLimitConfig::new(
+            op_config.token_rate_limit.burst,
+            op_config.token_rate_limit.refill_per_second,
+        ));
+    warn!(
+        issuer = %op_config.issuer,
+        "machine_tokens is served: /token mints tokens, but the API does not accept a bearer \
+         token yet (VSA-3b), so a token is verifiable against /jwks.json and nothing else"
+    );
+    Ok(Some(op::router(state, limit)))
 }
 
 /// The boot line for `auth.methods` (VSA-1): which methods are permitted, which

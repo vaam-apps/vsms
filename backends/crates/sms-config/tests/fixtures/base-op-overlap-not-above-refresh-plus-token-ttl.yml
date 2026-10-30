@@ -1,0 +1,10 @@
+# Above the 900-second token lifetime alone, below refresh_interval_secs + 900: a running serve
+# signs with the old key until its next refresh, so the last old-key token outlives its key.
+op:
+  issuer: https://sms.example.com
+  token_rate_limit:
+    burst: 10
+    refill_per_second: 0.3333333333333333
+  signing_key:
+    refresh_interval_secs: 3600
+    rotation_overlap_secs: 1800

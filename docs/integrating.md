@@ -6,7 +6,7 @@ Everything below works against a local stack with no Orange or MTN account, no r
 
 ## 1. Get a credential
 
-vsms has no API keys, no shared secrets and no access tokens. A caller is an **`AppClient`** holding an Ed25519 private key, and every request is a COSE_Sign1 message signed with it. The gateway answers with a message signed by its own key, which you pin.
+vsms has no API keys and no shared secrets. A caller is an **`AppClient`** holding an Ed25519 private key, and every request is a COSE_Sign1 message signed with it. The gateway answers with a message signed by its own key, which you pin. (A deployment that serves other applications can also run an OpenID Provider and mint short-lived bearer tokens for a *machine client*; see [Machine clients and tokens](#machine-clients-and-tokens) below. It is off unless the operator turns it on, and a token is not yet accepted by the API.)
 
 Make your key, then give the operator its public half:
 
@@ -73,7 +73,7 @@ Runnable: [`examples/node/sms-send-example`](../examples/node/sms-send-example/s
 
 ### Other languages
 
-The operator console signs in the browser (VS-5b, `docs/design/console-pairing.md`), and `examples/node/demo-app` signs through the Node SDK. There is no compatibility mode to fall back on, and no token endpoint (the OpenID Provider was deleted in VS-4).
+The operator console signs in the browser (VS-5b, `docs/design/console-pairing.md`), and `examples/node/demo-app` signs through the Node SDK. There is no compatibility mode to fall back on. A deployment that permits `machine_tokens` and writes an `op:` block also serves a token endpoint (the OpenID Provider VS-4 deleted, restored by VSA-3a; see [Machine clients and tokens](#machine-clients-and-tokens)), and there is no human login yet.
 
 To integrate from another language today, implement the signed transport directly: a COSE_Sign1 envelope (Ed25519, `application/json` payloads only) bound to the method, route, audience `vsms`, the called operation's contract digest, a fresh nonce and the issued-at time, and verification of the answer against the pinned server keys. The wire contract is cratestack's signed transport (its ADR 0006); [`backends/crates/sms-api/src/envelope.md`](../backends/crates/sms-api/src/envelope.md) says what vsms adds to it. `sms-gateway routes` prints the full route table and needs no database.
 
@@ -215,7 +215,13 @@ The list is what the deployment offers: `hmac_webhooks` is in it when `hmac` end
 - creating an endpoint with `deliveryMode: hmac`, updating one to `hmac` or giving it a `secret` or `previous secret`, `switchWebhookDeliveryMode` to `hmac`, `rotateWebhookSecret` and `replayWebhookAttempt` of an `hmac` endpoint's attempt all answer **`422`**. The envelope's `code` is `VALIDATION_ERROR` (every `422` has it); **match the message, which starts with `auth_method_disabled:`**. Nothing is written (a replay would only reset the attempt to `pending`, where nothing claims it). A `sealed` endpoint is created, updated, switched to, replayed and deleted as ever, and so is any change to an `hmac` endpoint that touches neither its mode nor a secret (deactivating it, say).
 - **nothing is sent to an `hmac` endpoint that already exists.** Its attempts stay `pending`: no worker claims them while the method is off, so nothing is written to them. They are not counted toward the endpoint's `maxAttempts` and do not open its circuit breaker, because no request was made, and once the deployment permits `hmac` again they are delivered, with every try they had. The way out is to move the endpoint to `sealed` (above): the attempts that waited are then delivered sealed, and its receiver gets deliveries it can open.
 
-Absent from the list, `machine_tokens` and `human_login` are not served in this release: a deployment can permit them, none can use them yet.
+`machine_tokens` is in the list only when the deployment also serves the OpenID Provider (below); `human_login` is not served in this release: a deployment can permit it, none can use it yet.
+
+### Machine clients and tokens
+
+When `GET /.well-known/vsms-auth` lists `machine_tokens`, the deployment serves an OpenID Provider (`/token`, `/jwks.json`, `/.well-known/openid-configuration`). Its operator makes you a *token client* with `sms-gateway provision-client`, which hands you an `appc_…` `client_id` and an RSA private key **once**; vsms keeps only the public key, so there is no client secret anywhere. You prove the key with a signed assertion (RFC 7523, `private_key_jwt`) and get a 15-minute RS256 access token for the scopes you were provisioned with. There is no refresh token: ask again. The grant is `client_credentials`, and the discovery document says so.
+
+**A token is not yet accepted by the API.** This release mints and publishes it (verify one against `/jwks.json`), and the generated routes still answer only a signed request; accepting a bearer is VSA-3b. If you can sign, register a key with `register-client` instead, as section 1 says. A deployment that does not list `machine_tokens` has no `/token` at all (a plain 404), and `provision-client` there refuses with `auth_method_disabled`.
 
 ### Sealed mode
 

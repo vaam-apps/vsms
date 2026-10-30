@@ -1,0 +1,39 @@
+[package]
+name = "sms-auth"
+description = "The embedded OpenID Provider's stores over the CrateStack delegates (R1): oauth_clients and client_assertions, signing-key management, and provisioning a machine client (VSA-3a)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+cratestack.workspace = true
+sms-api.workspace = true
+sms-core.workspace = true
+# The access-token lifetime constant, so the rotation-overlap rule and the OP's
+# own config cannot name two different numbers.
+sms-config.workspace = true
+authkestra-op.workspace = true
+# TokenManager/MemoryStore: op.rs's key management and the stores
+# CompositeOpStore's unused (client_credentials-only) authorization
+# code/refresh/device-code slots need to type-check.
+authkestra-engine.workspace = true
+rsa.workspace = true
+rand.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+# The live suite gets its DATABASE_URL from this instead of the environment.
+sms-test-support.workspace = true
+
+[lints]
+workspace = true

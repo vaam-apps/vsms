@@ -23,7 +23,7 @@ spellings, so one operator's muscle memory covers both repositories.
 | Method           | What it permits                                                                              | Where it is enforced                                                                                                                                        |
 | ---------------- | -------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `keypair`        | requests signed by a registered key, and the sealed answers; the console's paired keys       | the envelope layer, always `Required`                                                                                                                       |
-| `machine_tokens` | `Authorization: Bearer` from the deployment's own `OpenID` Provider                          | **not restored** (VSA-3)                                                                                                                                    |
+| `machine_tokens` | `Authorization: Bearer` from the deployment's own `OpenID` Provider                          | the provider (`/token`, `/jwks.json`, discovery) is mounted when `op:` is present (VSA-3a); the API accepting its tokens is **not yet** (VSA-3b)            |
 | `hmac_webhooks`  | webhook endpoints delivered with `X-Sms-Signature` (`deliveryMode: hmac`), and their secrets | `sms_api::HmacWebhooks`: the create, update, switch, rotate and replay calls refuse; `sms-worker`'s `hooks` claims no `hmac` attempt, which stays `pending` |
 | `human_login`    | a person's password or SSO sign-in to the console                                            | **not restored** (VSA-4)                                                                                                                                    |
 
@@ -31,11 +31,14 @@ spellings, so one operator's muscle memory covers both repositories.
 
 A method on the list is *permitted*. [`AuthMethods::served`] is what a client
 may be told, and what `GET /.well-known/vsms-auth` answers: the permitted methods
-this release has code for. `machine_tokens` and `human_login` are permitted by
-the default and served by nothing, so the default lists two of the four; naming
-either explicitly is refused ([`ConfigError::AuthMethodUnavailable`]) rather than
-promising a door that is not there. Restoring one (VSA-3, VSA-4) changes
-`AuthMethod::is_restored` and nothing else here.
+this release has code for **and whose block is present**. `human_login` is
+permitted by the default and served by nothing (VSA-4); naming it explicitly is
+refused ([`ConfigError::AuthMethodUnavailable`]) rather than promising a door
+that is not there. `machine_tokens` is back (VSA-3a) and follows vpay's rule for
+a method with a block: it runs when it is permitted **and** `op:` is present
+([`AuthMethods::machine_tokens_served`], the one question every part of the
+gateway asks, so none can disagree). A deployment that never wrote `op:` keeps
+booting under the absent default and simply serves no tokens.
 
 # Rules
 
@@ -44,20 +47,26 @@ One [`ConfigError`] variant each:
 1. an empty list or a null, [`ConfigError::NoAuthMethods`];
 2. an unknown name, [`ConfigError::UnknownAuthMethod`];
 3. a duplicate, [`ConfigError::DuplicateAuthMethod`];
-4. `machine_tokens` or `human_login` named explicitly,
-   [`ConfigError::AuthMethodUnavailable`];
+4. `human_login` named explicitly, [`ConfigError::AuthMethodUnavailable`];
 5. nothing permitted can authenticate a caller of the API,
-   [`ConfigError::NoWayIn`]: vpay's rule exactly, `!keypair && !machine_tokens`
-   (R5 holds the two repositories to one rule), so `human_login` is not a way in
-   for an API caller. Today only `keypair` can be served, so `[hmac_webhooks]` alone
-   is refused: a gateway that would answer every request with the unsigned 401.
+   [`ConfigError::NoWayIn`]: vpay's rule is `!keypair && !machine_tokens` (R5
+   holds the two repositories to one rule) and `human_login` is not a way in for
+   an API caller. **Until VSA-3b the API does not accept a token, so only
+   `keypair` counts here:** `[machine_tokens]` alone, with or without its `op:`
+   block, would boot a gateway that mints tokens and answers every API call with
+   the unsigned 401, and is refused like `[hmac_webhooks]` alone. Once the API
+   accepts a bearer (VSA-3b) `machine_tokens` counts and `[machine_tokens]` alone
+   becomes a legal list. `[keypair, machine_tokens]` boots and serves `/token`.
+6. `machine_tokens` named explicitly with no `op:` block,
+   [`ConfigError::AuthMethodNotConfigured`] (the absent default never raises it);
+7. an `op:` block on a list that does not permit `machine_tokens`,
+   [`ConfigError::AuthMethodDisabled`]: dormant configuration is how an operator
+   comes to believe a door is shut that is open.
 
-vpay has a sixth, a block present for a method that is not permitted
-(`AuthMethodDisabled`). vsms has no such block yet: `keypair` has no YAML (keys
-are database rows), `hmac_webhooks` has none either (endpoints are database rows
-too, so the gate is at run time, not at boot), and the blocks `machine_tokens`
-and `human_login` will bring (`op:`, `human_login:`) do not exist, so the loader
-already refuses them as unknown keys. The rule arrives with the first of them.
+vpay has the same two for `human_login` (`staff_auth` and `dashboard_client`);
+vsms's `human_login:` block arrives with VSA-4. `keypair` has no YAML (keys are
+database rows) and `hmac_webhooks` has none either (endpoints are database rows
+too, so the gate is at run time, not at boot).
 
 # Examples
 
@@ -70,7 +79,7 @@ assert!(all.permits(AuthMethod::Keypair) && all.permits(AuthMethod::HmacWebhooks
 assert!(all.permits(AuthMethod::MachineTokens), "permitted ...");
 assert!(
     !all.served().any(|method| method == AuthMethod::MachineTokens),
-    "... and not served"
+    "... and not served without an `op:` block"
 );
 
 let keypair_only: AuthConfig =

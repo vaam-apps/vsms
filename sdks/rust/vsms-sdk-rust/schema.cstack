@@ -199,12 +199,14 @@ enum ConsentChannel {
 // that VS-4 deleted (`0009_drop_openid_provider`) and VSA-2 restores as
 // `0012_restore_openid_provider` (owner ruling R5, 2026-10-27: which ways in a
 // deployment permits is configuration, and the default keeps the legacy
-// ones). `ClientAuthMethod`, `OauthClient`, `OauthSigningKey`,
-// `ClientAssertion`, `UserCredential` and `SsoTransaction` are PERSISTENCE ONLY
-// until VSA-3 (machine tokens) and VSA-4 (human login): nothing reads or writes
-// a row, and every model carries `@@internal("all")`, so the generated REST
-// routes, RPC arms and client stubs for it do not exist either, on top of the
-// `hasRole('system')` policies restored unchanged. VSA-3/4 take that line off a
+// ones). `ClientAuthMethod`, `OauthClient`, `OauthSigningKey` and
+// `ClientAssertion` are read and written by the OpenID Provider since VSA-3a
+// (`sms-auth`, under the internal `system` context); `UserCredential` and
+// `SsoTransaction` are PERSISTENCE ONLY until VSA-4 (human login). Every model
+// carries `@@internal("all")`, so the generated REST routes, RPC arms and client
+// stubs for it do not exist, on top of the `hasRole('system')` policies restored
+// unchanged. The in-process delegates (`db.oauth_client()`) are not routes and
+// stay, which is how the OP reaches the rows. VSA-3/4 take that line off a
 // model only if a route for it is ever wanted; none was before VS-4.
 enum ClientAuthMethod {
   private_key_jwt
@@ -438,7 +440,7 @@ model ConsoleKey {
 
 // The OP's client registry: one row per `private_key_jwt` machine client or
 // public (PKCE) console client. Read and written by the OP's client store
-// under the internal system context, which VSA-3 restores.
+// under the internal system context (VSA-3a, `sms-auth`).
 model OauthClient {
   @use(Timestamps)
 

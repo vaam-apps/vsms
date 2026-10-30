@@ -274,8 +274,9 @@ auth:
 *Absent means all four*, which is what every deployment had before the key
 existed, so an upgrade changes nothing until you write it. An empty list, a null
 (`methods:` with every item commented out), an unknown name, a duplicate, a list
-without `keypair`, and the two methods this release does not have
-(`machine_tokens`, `human_login`) are each refused at start, naming the rule. The
+with neither `keypair` nor `machine_tokens`, `human_login` (this release does not
+have it), `machine_tokens` without an `op:` block and an `op:` block without
+`machine_tokens` are each refused at start, naming the rule. The
 change takes a restart of the gateway _and_ the worker, like any other key in the
 file.
 
@@ -352,6 +353,70 @@ credential:
 ----
 curl -s https://$SMS_GATEWAY_DOMAIN/.well-known/vsms-auth     # {"methods":["keypair"]}
 ----
+
+=== Machine tokens: the OpenID Provider, a token client, the signing key (VSA-3a)
+
+A deployment that serves other applications than vaam can mint short-lived bearer
+tokens for a machine client (owner ruling R5; `docs/architecture.md`, section 4.10).
+It is off unless you write the `op:` block, and vaam's `methods: [keypair]` keeps it
+off even then. *A token minted by this release is not yet accepted by the API*
+(VSA-3b): do not switch a caller to tokens until that lands.
+
+[,yaml]
+----
+op:
+  issuer: https://sms.example.org     # no trailing slash; https under livemode
+  token_rate_limit:
+    burst: 10
+    refill_per_second: 0.3333333333333333
+  signing_key:
+    refresh_interval_secs: 60
+    rotation_overlap_secs: 1800       # must exceed refresh_interval_secs + the 900-second token lifetime
+----
+
+Every key is required and there is no secret in the block. With `auth.methods`
+absent the method is permitted; with a list, it must name `machine_tokens`, and
+the list must also name `keypair`: until the API accepts a token (VSA-3b) a list
+of `machine_tokens` alone is refused at boot (`NoWayIn`), since such a gateway
+would answer every API call with the unsigned 401.
+
+*Order matters, once, on a fresh deployment.* `serve` refuses to start while no
+signing key is active, so mint one first. Run it with `run --rm`, never `exec`:
+waiting for the gateway's health check before rotating deadlocks.
+
+[,bash]
+----
+docker compose --env-file .env run --rm sms-gateway rotate-signing-key
+----
+
+It creates a new RS256 key, makes it the active one, and keeps the previous key
+publishing in `/jwks.json` for `rotation_overlap_secs`, so no token already issued
+loses its key. A *running* gateway picks the new key up within
+`refresh_interval_secs`, without a restart. Rotate on a schedule you choose and
+immediately if the database is suspected leaked (the private half is a row).
+
+*Provisioning a token client* (the private key is shown once, to a file):
+
+[,bash]
+----
+umask 077
+docker compose --env-file .env run --rm sms-gateway provision-client \
+  --app-slug my-app --label "otp sender" --scope sms:send --key-out secrets/otp-sender.pem
+----
+
+It writes an `AppClient` and an `OauthClient` that holds only the public JWK, and
+the private key to `--key-out` with mode `0600`; it refuses to overwrite an
+existing file and never prints the key. Hand the file and the printed `client_id` to
+the application, which signs an RFC 7523 client assertion with it and posts it to
+`/token` (`grant_type=client_credentials`, `client_assertion_type=…jwt-bearer`).
+There is no client secret and no refresh token. `console:pair` is refused here, as
+it is everywhere except `register-client`.
+
+Both commands read the same YAML as `serve` (`--config`, `--profile`), without the
+pepper, and *refuse on a deployment that serves no tokens*:
+`auth_method_disabled: this deployment issues no tokens`, naming `register-client`.
+Nothing is written. A client made with `register-client` signs its requests instead
+of asking for a token, and every deployment serves that.
 
 === Before deploying: the `webhook_attempts` index of migration 0011
 
@@ -434,11 +499,12 @@ the rows before the new release starts:
 
 | `oauth_clients`
 | Every OAuth client registration. Each machine client is provisioned again once
-  the release serves the token endpoint (VSA-3), with a new keypair.
+  the release serves the token endpoint (VSA-3a, `Provisioning a token client` below),
+  with a new keypair.
 
 | `oauth_signing_keys`
 | The OP's signing keys, private halves included. `rotate-signing-key` mints a new
-  one (VSA-3); a token the old key signed is not verifiable by it.
+  one (VSA-3a); a token the old key signed is not verifiable by it.
 
 | `user_credentials`
 | Every password hash. Each person is given a new password through `provision-user`
@@ -449,10 +515,10 @@ the rows before the new release starts:
   outlasts the minutes it takes to need them, and nothing is worth exporting.
 |===
 
-*Nothing serves these tables yet.* This release has no token endpoint, no
-`/login` and no SSO broker (they return in VSA-3 and VSA-4, behind `auth.methods`),
-and the tables are unreachable by any route, so a deployment that never used them
-loses nothing it can see. A deployment that is *already past* `0009` has nothing to
+*Only the first three are read, and only with `op:` written.* This release has a
+token endpoint behind `auth.methods` and `op:` (VSA-3a, below) but no `/login` and no
+SSO broker (VSA-4), and no table is reachable by any route, so a deployment that
+never used them loses nothing it can see. A deployment that is *already past* `0009` has nothing to
 keep: 0009 deleted the rows when it ran, and `0012` only ever finds the tables
 missing.
 
@@ -517,8 +583,8 @@ existed carries the same keys and hashes, and is as secret as they are.
 
 *After an import, an `oauth_clients` row blocks a hard delete of its AppClient.*
 `oauth_clients.app_client_id` is a plain `NO ACTION` foreign key (so is
-`user_credentials.user_id`, for a User), and nothing reads the imported rows until
-VSA-3 and VSA-4. Until then, deleting an AppClient from the console (or a User)
+`user_credentials.user_id`, for a User), and the imported rows are read only by
+the token endpoint (VSA-3a, when `op:` is written) and the login (VSA-4). Until then, deleting an AppClient from the console (or a User)
 fails with a foreign-key error naming `oauth_clients_app_client_id_fkey`
 (`user_credentials_user_id_fkey`). Remove the imported rows that name it first,
 then delete it again:
@@ -529,8 +595,8 @@ DELETE FROM oauth_clients WHERE app_client_id = '<app client id>';
 DELETE FROM user_credentials WHERE user_id = '<user id>';
 ----
 
-The client or the password that row stood for is gone with it; VSA-3 and VSA-4
-provision a new one.
+The client or the password that row stood for is gone with it;
+`provision-client` (below) and VSA-4 provision a new one.
 
 The statements above are the ones
 `a_provider_export_taken_before_0009_is_restored_after_0012`
