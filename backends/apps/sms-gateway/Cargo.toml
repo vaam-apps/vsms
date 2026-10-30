@@ -11,10 +11,19 @@ publish.workspace = true
 
 [dependencies]
 sms-api.workspace = true
+# VSA-3a: the OP's stores, keys and client provisioning (op.rs, the two commands).
+sms-auth.workspace = true
 # VSC-1: the YAML configuration `serve` and `mtn-subscribe-dlr` read.
 sms-config.workspace = true
 cratestack.workspace = true
 axum.workspace = true
+# op.rs hand-wires the token handler against authkestra-axum's functions, and the
+# OpState carries an authkestra TokenManager and OpConfig.
+authkestra-axum.workspace = true
+authkestra-engine.workspace = true
+authkestra-op.workspace = true
+# token_rate_limit.rs reads `client_id` out of `/token`'s form body.
+form_urlencoded.workspace = true
 # dlr.rs's real dependency: the SmsProvider trait (#34), and the concrete
 # adapters that exist to construct it from — two as of #61's MTN wiring.
 sms-provider.workspace = true
@@ -60,6 +69,9 @@ fake-aws = ["dep:sms-fake-aws"]
 # this same package) and drive it over real HTTP with sealed requests.
 async-trait.workspace = true
 base64.workspace = true
+# machine_tokens_live_postgres.rs signs a client assertion and verifies the
+# minted access token against /jwks.json.
+jsonwebtoken.workspace = true
 # pair_console_key_cli_live_postgres.rs mints a P-256 public key to enrol.
 p256.workspace = true
 rand.workspace = true

@@ -6,9 +6,10 @@ serves (VSA-1).
 ```
 
 It is `auth.methods` resolved (`sms_config::AuthMethods::served`): the permitted
-methods this release has code for, so the absent default answers two of the four
-(`machine_tokens` and `human_login` are permitted and served by nothing until
-VSA-3 and VSA-4) and vaam's `[keypair]` answers one. A console or an SDK reads
+methods this release has code for and, for `machine_tokens`, whose `op:` block is
+written. So the absent default answers two of the four on a deployment with no
+`op:` (`machine_tokens` is permitted and not served; `human_login` is permitted and
+served by nothing until VSA-4), three with one, and vaam's `[keypair]` answers one. A console or an SDK reads
 this instead of a second switch that could disagree with the server's.
 
 - **Unauthenticated and outside the envelope**, like `/healthz` and `/readyz`:
