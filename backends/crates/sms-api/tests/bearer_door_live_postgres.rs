@@ -113,6 +113,13 @@ struct Seeded {
 }
 
 async fn seed(db: &Cratestack, scopes: &str) -> Seeded {
+    seed_split(db, scopes, scopes).await
+}
+
+/// [`seed`], with the `OauthClient` row listing `oauth_scopes` apart from the
+/// `AppClient`'s `app_scopes`: a token's ceiling is the row `/token` checks.
+async fn seed_split(db: &Cratestack, app_scopes: &str, oauth_scopes: &str) -> Seeded {
+    let scopes = app_scopes;
     let tag = suffix();
     let app = db
         .app()
@@ -143,7 +150,8 @@ async fn seed(db: &Cratestack, scopes: &str) -> Seeded {
         .run(&sys())
         .await
         .expect("seeding the app client");
-    let oauth = link_oauth_client(db, &client_id, Some(app_client.id.clone())).await;
+    let oauth =
+        link_oauth_client(db, &client_id, Some(app_client.id.clone()), oauth_scopes).await;
     Seeded {
         app_client_row: app_client.id,
         client_id,
@@ -156,6 +164,7 @@ async fn link_oauth_client(
     db: &Cratestack,
     client_id: &str,
     app_client_row: Option<String>,
+    scopes: &str,
 ) -> String {
     db.oauth_client()
         .create(schema::CreateOauthClientInput {
@@ -164,7 +173,7 @@ async fn link_oauth_client(
             tokenEndpointAuthMethod: schema::ClientAuthMethod::private_key_jwt,
             jwks: Some("{\"keys\":[{\"kty\":\"RSA\",\"n\":\"AQAB\",\"e\":\"AQAB\"}]}".to_owned()),
             grantTypes: " client_credentials ".to_owned(),
-            scopes: " sms:send ".to_owned(),
+            scopes: scopes.to_owned(),
             redirectUris: " ".to_owned(),
             requirePkce: false,
         })
@@ -431,6 +440,52 @@ async fn a_scope_claim_narrows_and_never_grants() {
     );
 }
 
+/// A scope on the `AppClient` that the `OauthClient` row never listed is not
+/// granted to a token: `/token` only checks a *requested* scope against the row,
+/// so a token minted with no `scope` claim must not inherit what an admin added
+/// to the `AppClient` alone. The signed door of the same client keeps it.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn an_app_client_scope_the_oauth_client_lacks_is_not_granted_to_a_token() {
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = rig().await;
+    let seeded = seed_split(&rig.db, " sms:send job:read ", " sms:send ").await;
+
+    // No claim, a claim naming it, and a claim naming only what the row lists.
+    for claim in [None, Some("sms:send job:read"), Some("job:read")] {
+        let token = rig.table.token(&seeded.client_id, claim);
+        let (status, body, _) =
+            bearer_call(&rig, reqwest::Method::GET, "/jobs", &token, None).await;
+        assert_eq!(
+            status, 403,
+            "claim {claim:?}: job:read is on the AppClient only: {body}"
+        );
+    }
+
+    // The row's own scope still works through the same door.
+    let token = rig.table.token(&seeded.client_id, None);
+    let (status, body, _) = bearer_call(
+        &rig,
+        reqwest::Method::POST,
+        "/$procs/sendMessage",
+        &token,
+        Some(&send_body(&rig, &format!("ceiling-{}", suffix()))),
+    )
+    .await;
+    assert_eq!(status, 200, "sms:send is on both rows: {body}");
+
+    // The signed door of the same client is not capped by the OAuth row.
+    let key = TestKey::app();
+    register_app_key(&rig.db, &seeded.app_client_row, &key).await;
+    let signed = client(&rig.base, &key).request("GET", "/jobs").send().await;
+    assert_eq!(
+        signed.status,
+        200,
+        "the AppClient holds job:read: {}",
+        signed.text()
+    );
+}
+
 /// `console:pair` is dropped from a token whatever the client holds and the
 /// token claims: pairing a console is a signed act. The same client, signing,
 /// passes the scope check.
@@ -668,7 +723,7 @@ async fn a_client_without_a_live_app_client_has_no_standing() {
     .await;
 
     let unlinked_id = format!("appc_unlinked_{}", suffix());
-    link_oauth_client(&rig.db, &unlinked_id, None).await;
+    link_oauth_client(&rig.db, &unlinked_id, None, " sms:send ").await;
     assert_coarse_401(
         &rig,
         &rig.table.token(&unlinked_id, None),
@@ -680,7 +735,13 @@ async fn a_client_without_a_live_app_client_has_no_standing() {
     // `appc_crossed_*`, the row it resolves to belongs to `victim`.
     let victim = seed(&rig.db, " sms:send job:read ").await;
     let crossed_id = format!("appc_crossed_{}", suffix());
-    link_oauth_client(&rig.db, &crossed_id, Some(victim.app_client_row.clone())).await;
+    link_oauth_client(
+        &rig.db,
+        &crossed_id,
+        Some(victim.app_client_row.clone()),
+        " sms:send ",
+    )
+    .await;
     assert_coarse_401(
         &rig,
         &rig.table.token(&crossed_id, None),

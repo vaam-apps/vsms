@@ -1250,6 +1250,84 @@ async fn the_standing_is_read_from_rows_not_from_the_token() {
     gateway.kill();
 }
 
+/// A token acts with the `AppClient`'s scopes **that its `OauthClient` also
+/// lists**. `/token` checks only a requested scope against the `OauthClient`, so
+/// a token minted with no `scope` claim carries none, and an admin adding
+/// `job:read` to the `AppClient` alone must not hand it to the client's tokens.
+/// Listing it on the `OauthClient` too is what grants it.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn an_app_client_scope_the_oauth_client_lacks_is_not_granted_to_a_minted_token() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    ensure_orange_cm_provider(&db).await;
+    let port = free_port();
+    let issuer = format!("http://127.0.0.1:{port}");
+    let deployment = Deployment::on_port(port, &op_block(&issuer, 100), "ceiling").await;
+    let machine = provision(&db, &deployment, "ceiling", &["sms:send"]).await;
+    let gateway = deployment.spawn().await;
+    // Minted before the AppClient is touched, asking for no scope.
+    let token = mint(&issuer, &machine).await;
+
+    let app_client = db
+        .app_client()
+        .find_many()
+        .where_expr(FilterExpr::from(
+            sms_api::schema::app_client::clientId().eq(machine.client_id.clone()),
+        ))
+        .limit(1)
+        .run(&context("system"))
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .expect("the app client");
+    db.app_client()
+        .update(app_client.id.clone())
+        .set(schema::UpdateAppClientInput {
+            scopes: Some(" sms:send job:read ".to_owned()),
+            ..Default::default()
+        })
+        .if_match(app_client.version)
+        .run(&context("owner"))
+        .await
+        .expect("adding job:read to the AppClient alone");
+
+    let (status, _, body) = api(&issuer, reqwest::Method::GET, "/jobs", &token, None).await;
+    assert_eq!(
+        status, 403,
+        "job:read is on the AppClient only, so the token does not carry it: {body}"
+    );
+    assert_eq!(preview_with(&issuer, &token).await.0, 200, "still a live token");
+
+    // Listing it on the OauthClient row, which is read on every request, grants it.
+    let oauth = db
+        .oauth_client()
+        .find_many()
+        .where_expr(FilterExpr::from(
+            sms_api::schema::oauth_client::clientId().eq(machine.client_id.clone()),
+        ))
+        .limit(1)
+        .run(&context("system"))
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .expect("the oauth client");
+    db.oauth_client()
+        .update(oauth.id)
+        .set(schema::UpdateOauthClientInput {
+            scopes: Some(" sms:send job:read ".to_owned()),
+            ..Default::default()
+        })
+        .run(&context("system"))
+        .await
+        .expect("listing job:read on the OauthClient too");
+    let (status, _, body) = api(&issuer, reqwest::Method::GET, "/jobs", &token, None).await;
+    assert_eq!(status, 200, "both rows list job:read: {body}");
+    gateway.kill();
+}
+
 /// A key another process rotated in, noticed before the next periodic refresh does: the
 /// unknown `kid` forces one reload of the key set and the token verifies.
 #[tokio::test]

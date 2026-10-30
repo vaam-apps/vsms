@@ -2112,7 +2112,7 @@ sequenceDiagram
     end
     V-->>B: client id + the scope it asks for, or a refusal
     B->>D: bearer_standing: OauthClient active, AppClient live and the same client
-    D-->>B: App standing, scopes narrowed by the claim, never console:pair
+    D-->>B: App standing, scopes are the AppClient's that the OauthClient lists, narrowed by the claim, never console:pair
     B->>R: VerifiedPrincipal client:id, BearerCaller
     R-->>C: plain JSON
 ```
@@ -2131,7 +2131,7 @@ stateDiagram-v2
     Admitted --> [*]: client:id, one bucket, one idempotency namespace
 ```
 
-- **A token names a client and narrows; it never grants.** `iss` must be `op.issuer`, `exp` and `sub` are required, `nbf` is honoured, with 60 seconds of leeway; the header must carry a `kid` (never "the first key"); an `identity` claim (a person's token) is refused; and `aud` must contain `sub` (owner decision: no fixed `vsms` audience, so SDKs that already talk to the provider keep working). The role, app and scopes come from `OauthClient` and `AppClient`; the token's `scope` claim is intersected with the client's and `console:pair` is removed whatever either says. `perms` are never read from a token.
+- **A token names a client and narrows; it never grants.** `iss` must be `op.issuer`, `exp` and `sub` are required, `nbf` is honoured, with 60 seconds of leeway; the header must carry a `kid` (never "the first key"); an `identity` claim (a person's token) is refused; and `aud` must contain `sub` (owner decision: no fixed `vsms` audience, so SDKs that already talk to the provider keep working). The role, app and scopes come from `OauthClient` and `AppClient`: a token acts with the `AppClient`'s scopes that the `OauthClient` row also lists (`/token` checks only a *requested* scope against that row, so a token that asks for none would otherwise inherit a scope added to the `AppClient` alone), the token's `scope` claim is intersected with that when present, and `console:pair` is removed whatever any side says. `perms` are never read from a token.
 - **Standing is read from rows on every request** (`OauthClient.active`, uncached: a switched-off client stops on the next call; the `AppClient` for 60 seconds, as the signed door's). A retired or inactive `AppClient`, a client with none and an `OauthClient` linked to another client's `AppClient` all have no standing.
 - **The keys are the provider's own, in process.** The verifier reads the keyring `/jwks.json` publishes from, under the same lock, so the two cannot disagree; there is no HTTP fetch of our own JWKS and no kid-less fallback. An unknown `kid` forces one reload of the key set, single flight and at most once every five seconds, so a rotation another process ran is seen without waiting for the periodic refresh and a flood of invented `kid`s costs one read per interval.
 - **One principal.** Both doors record `client:<clientId>`, so a client that uses both shares one rate-limit bucket and one `Idempotency-Key` namespace. A refusal is one 401 with the layer's body, byte for byte, whatever failed (the reason is logged at `debug`).

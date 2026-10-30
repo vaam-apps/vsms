@@ -31,8 +31,9 @@ stateDiagram-v2
 
 A machine token is the second way to a [`Standing`]: [`SignerDirectory::bearer_standing`]
 reads the `OauthClient` (active, on every request), its `AppClient` (active, not
-retired, the token's `sub`) and narrows the scopes by the token's claim, never
-`console:pair` (`bearer.md`).
+retired, the token's `sub`) and acts with the `AppClient`'s scopes that the
+`OauthClient` row also lists, narrowed by the token's claim when it has one,
+never `console:pair` (`bearer.md`).
 
 Nothing about a key is cached. The standing of the key's owner is, for 60
 seconds, which is how long a deactivated client or person may keep acting.

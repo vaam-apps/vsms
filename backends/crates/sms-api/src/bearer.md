@@ -73,10 +73,13 @@ stateDiagram-v2
 
 A token **names** a client; it never grants anything.
 
-- **Scope is read from rows.** The client's scopes are `AppClient.scopes`. The
-  token's `scope` claim only narrows them (their intersection), and
-  `console:pair` is dropped whatever either side says: pairing a console key is
-  a signed act (`docs/architecture.md` section 4.9). `perms` are not read from a
+- **Scope is read from rows.** A token acts with `AppClient.scopes` kept only
+  where `OauthClient.scopes` also lists them: `/token` checks a *requested*
+  scope against the `OauthClient` row, but a token that asks for none carries no
+  claim, so the row is the ceiling here, not the claim. The token's `scope`
+  claim, when present, narrows that further (their intersection), and
+  `console:pair` is dropped whatever any side says: pairing a console key is a
+  signed act (`docs/architecture.md` section 4.9). `perms` are not read from a
   token at all.
 - **The audience must contain `sub`.** `authkestra` stamps `aud = client_id`
   unless the client asked for another audience, and one that did is not a token
