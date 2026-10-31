@@ -19,7 +19,7 @@
 use chrono::{Duration, Utc};
 use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::{CratestackContext, FilterExpr};
-use sms_api::auth::{Principal, PrincipalKind};
+use sms_api::auth::{Grants, Principal, PrincipalKind};
 use sms_api::schema::{
     self, Cratestack, Encoding, MessageClass, MessageState, OperatorCode, UpdateMessageInput,
     message,
@@ -53,6 +53,9 @@ fn sys() -> CratestackContext {
     .into_context()
 }
 
+/// An owner who may read messages: this suite reads receipts and messages back
+/// as a person, and both ask for the `messageRead` claim, which `GatewayAuth`
+/// sets for a role holding `sms:read` (an owner does).
 fn owner() -> CratestackContext {
     Principal {
         sub: "dlr-ingestion-test-owner".to_owned(),
@@ -60,7 +63,10 @@ fn owner() -> CratestackContext {
         role: "owner".to_owned(),
         app_id: String::new(),
     }
-    .into_context()
+    .into_context_granting(Grants {
+        message_read: true,
+        ..Grants::default()
+    })
 }
 
 fn unique_suffix() -> String {

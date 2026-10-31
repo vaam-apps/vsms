@@ -213,32 +213,26 @@ const SENDER_AND_WEBHOOK_WRITE_ROUTES: &[RoutePermission] = &[
 
 /// Reading a message needs `sms:read`, not just a signed-in person.
 ///
-/// `Message`'s `list`/`detail` policy admits `auth().kind == "user"` with no
-/// role test, and `Role.permissions` cannot be written into a policy (`hasRole`
-/// takes one literal, there is no permissions predicate), so before this gate
-/// a person in *any* role — a custom role that held only `app:read` included —
-/// read every app's `msisdn` and, while it is kept, `body` (an OTP's code).
-/// This is Layer 2 narrowing a Layer 1 that stays as it was
-/// (`appId == auth().appId` for an app, any `user`, `system`), so the contract
-/// digest does not move and an app still reads only its own rows.
+/// `Message`'s `list`/`detail` policy used to admit `auth().kind == "user"` with
+/// no role test, so a person in *any* role, a custom role holding only `app:read`
+/// included, read every app's `msisdn` and, while it is kept, `body` (an OTP's
+/// code). A policy cannot read `Role.permissions`, so the permission reaches it as
+/// the `messageRead` claim (`auth::Grants`), and the policies of `Message`,
+/// `DeliveryReceipt` and `MessagePart` ask for it. That binds every door to a
+/// message, including the ones a route gate cannot see: `?include=message` on a
+/// receipt, `?include=messages` on `App`, a relation filter and its `totalCount`,
+/// a nested include.
 ///
-/// Six routes, not two, because the other four hand a message back by another
-/// door. `DeliveryReceipt` and `MessagePart` each carry `message`, and
-/// `GET /delivery_receipts?include=message` answers with the whole `Message`
-/// row, body and all, to a person `Message`'s own routes would refuse
-/// (`tests/message_read_live_postgres.rs` replays it: a custom role holding
-/// only `app:read` got a 200 and the OTP text before this gate). A relation filter
-/// (`?message.msisdn=…`) is an oracle on the same column. `DeliveryReceipt`
-/// also holds `rawPayload`, which `listMessageReceipts` deliberately leaves out.
-/// `App` has the reverse relation (`messages`), and is not listed: its read
-/// policy admits only built-in roles, all of which carry `sms:read`, so the
-/// gate would not change an answer; `docs/architecture.md` §5.2 states the
-/// residual.
+/// This list is in front of it, for the direct routes: a caller without
+/// `sms:read` is told so (a 403 naming the permission) instead of being handed an
+/// empty page, and `DeliveryReceipt.rawPayload` and the `MessagePart` rows are
+/// refused at the route as well. Layer 1's app clause (`appId == auth().appId`) is
+/// untouched, and an app key needs the `sms:read` scope to read its own messages
+/// back (the console's scope list describes it as "Read messages and delivery
+/// receipts"); a send-only key does not.
 ///
-/// An app key now needs the `sms:read` scope to read back its own messages
-/// (the console's scope list describes it as "Read messages and delivery
-/// receipts", and its default client scopes include it); a send-only key does
-/// not.
+/// Like every list here it also gates the `HEAD` of a `GET`
+/// ([`RoutePermission::applies_to`]).
 const MESSAGE_READ_ROUTES: &[RoutePermission] = &[
     RoutePermission {
         method: Method::GET,
@@ -684,77 +678,97 @@ mod tests {
         }
     }
 
-    /// The models whose rows hold a relation to `Message`, read out of the
-    /// schema the router is generated from. `include=message` on such a model's
-    /// read route answers with the whole `Message` row.
-    fn models_relating_to_message() -> std::collections::BTreeSet<String> {
-        let schema = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../../schemas/vsms.cstack"
-        ));
-        let mut holders = std::collections::BTreeSet::new();
-        let mut current = None;
-        for line in schema.lines() {
-            let line = line.trim();
-            if let Some(rest) = line.strip_prefix("model ") {
-                current = rest.split_whitespace().next().map(str::to_owned);
-            } else if line == "}" {
-                current = None;
-            } else if let (Some(model), false) = (&current, line.starts_with("//")) {
-                let mut words = line.split_whitespace();
-                let _field = words.next();
-                let relates = words
-                    .next()
-                    .is_some_and(|ty| matches!(ty, "Message" | "Message[]" | "Message?"))
-                    && line.contains("@relation");
-                if relates {
-                    holders.insert(model.clone());
-                }
+    /// The schema, as the router is generated from it.
+    const SCHEMA: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../schemas/vsms.cstack"
+    ));
+
+    /// The text of `model <name> {` up to its closing brace.
+    fn model_block(name: &str) -> &'static str {
+        let start = SCHEMA
+            .find(&format!("\nmodel {name} {{"))
+            .unwrap_or_else(|| panic!("model {name} not found"));
+        let rest = &SCHEMA[start + 1..];
+        &rest[..rest.find("\n}\n").expect("a model block closes")]
+    }
+
+    /// The routes of `model` (its list and its `{id}` form), by the emitter's
+    /// own naive pluralisation: `MessagePart` is `/message_parts`.
+    fn paths_of(model: &str) -> [String; 2] {
+        let mut snake = String::new();
+        for (i, c) in model.chars().enumerate() {
+            if c.is_ascii_uppercase() && i > 0 {
+                snake.push('_');
             }
+            snake.push(c.to_ascii_lowercase());
         }
-        holders
+        [format!("/{snake}s"), format!("/{snake}s/{{id}}")]
     }
 
     #[test]
-    fn every_model_that_hands_a_message_back_is_gated_or_named() {
-        // `?include=message` reads the related row under `Message`'s own
-        // policy, which admits any person. So a model holding a relation to
-        // `Message` is a second way to read a message, and a new one must be
-        // gated on `sms:read` or named here with the reason it is not.
-        let holders = models_relating_to_message();
-        // `App.messages`: App's read policy admits only built-in roles, all of
-        // which carry `sms:read` (docs/architecture.md section 5.2).
-        let named_and_not_gated = ["App"];
-        for model in &holders {
-            if named_and_not_gated.contains(&model.as_str()) {
-                continue;
+    fn the_message_models_gate_their_reads_on_the_claim_and_on_the_route() {
+        // Depth, stated: this reads the schema's text, so it proves a policy line
+        // names the claim and the route table lists the gate, not that either
+        // works. `message_read_live_postgres` proves that, door by door. A model
+        // that gains a relation to `Message` needs nothing here: `?include=` and a
+        // relation filter read the related row under `Message`'s own policy, which
+        // is what the first assertion holds.
+        let claim = "auth().messageRead == \"granted\"";
+        for model in ["Message", "MessagePart", "DeliveryReceipt"] {
+            for line in model_block(model).lines() {
+                let line = line.trim();
+                let reads = line.starts_with("@@allow(\"list\"")
+                    || line.starts_with("@@allow(\"detail\"")
+                    || line.starts_with("@@allow(\"read\"");
+                if reads {
+                    assert!(
+                        line.contains(claim),
+                        "{model}: a read policy that does not ask for the messageRead claim: {line}"
+                    );
+                }
             }
-            let snake: String = model
-                .chars()
-                .flat_map(|c| {
-                    if c.is_ascii_uppercase() {
-                        vec!['_', c.to_ascii_lowercase()]
-                    } else {
-                        vec![c]
-                    }
-                })
-                .collect();
-            let path = format!("/{}s", snake.trim_start_matches('_'));
-            assert!(
-                MESSAGE_READ_ROUTES.iter().any(|requirement| {
-                    requirement.method == Method::GET
-                        && requirement.path == path
-                        && requirement.permission == "sms:read"
-                }),
-                "{model} holds a relation to Message, so GET {path} can return a message with \
-                 ?include=message, but MESSAGE_READ_ROUTES does not gate it on sms:read: \
-                 {holders:?}"
-            );
+            for path in paths_of(model) {
+                assert!(
+                    MESSAGE_READ_ROUTES
+                        .iter()
+                        .any(|requirement| requirement.method == Method::GET
+                            && requirement.path == path
+                            && requirement.permission == "sms:read"),
+                    "GET {path} is not in MESSAGE_READ_ROUTES"
+                );
+            }
         }
+        let procedure = SCHEMA
+            .lines()
+            .position(|line| line.starts_with("procedure listMessagesPage("))
+            .expect("listMessagesPage is declared");
+        let policy = SCHEMA
+            .lines()
+            .nth(procedure + 1)
+            .expect("a policy line")
+            .trim();
+        assert_eq!(policy, format!("@allow({claim})"));
+    }
+
+    #[test]
+    fn the_claim_the_policies_read_is_declared_and_the_permission_is_the_routes() {
         assert!(
-            holders.contains("DeliveryReceipt") && holders.contains("MessagePart"),
-            "the scan found no holder it should have: the parser has drifted: {holders:?}"
+            model_block_auth().contains("messageRead String"),
+            "the auth Principal block does not declare messageRead"
         );
+        assert_eq!(crate::auth::MESSAGE_READ_PERMISSION, "sms:read");
+        assert!(
+            MESSAGE_READ_ROUTES
+                .iter()
+                .all(|requirement| requirement.permission == crate::auth::MESSAGE_READ_PERMISSION)
+        );
+    }
+
+    fn model_block_auth() -> &'static str {
+        let start = SCHEMA.find("\nauth Principal {").expect("the auth block");
+        let rest = &SCHEMA[start + 1..];
+        &rest[..rest.find("\n}\n").expect("the auth block closes")]
     }
 
     fn lazy_db() -> schema::Cratestack {

@@ -50,6 +50,22 @@ pub struct RoutePermission {
     pub permission: &'static str,
 }
 
+impl RoutePermission {
+    /// Whether this requirement gates a request of `method` to `path`.
+    ///
+    /// A `HEAD` is a `GET`: axum answers it with the `GET` handler, drops the
+    /// body and keeps the `Content-Length` of the full answer, and the envelope
+    /// layer resolves a signed `HEAD` to the `GET` contract. Matching the method
+    /// exactly let `HEAD /messages` past a gate that refused `GET /messages`, and
+    /// the length alone is an oracle (`HEAD /messages?body__startsWith=…`).
+    #[must_use]
+    pub fn applies_to(&self, method: &Method, path: &str) -> bool {
+        let same_method =
+            self.method == *method || (self.method == Method::GET && *method == Method::HEAD);
+        same_method && path_matches(self.path, path)
+    }
+}
+
 pub(crate) fn path_matches(template: &str, actual: &str) -> bool {
     let mut template_segments = template.split('/');
     let mut actual_segments = actual.split('/');
@@ -159,7 +175,7 @@ pub async fn enforce_route_permission(
     let Some(requirement) = state
         .requirements
         .iter()
-        .find(|requirement| requirement.method == method && path_matches(requirement.path, &path))
+        .find(|requirement| requirement.applies_to(&method, &path))
     else {
         return next.run(request).await;
     };
@@ -277,6 +293,28 @@ mod tests {
             require_permission(&ctx, "provider:update"),
             Err(CratestackError::Forbidden(_))
         ));
+    }
+
+    #[test]
+    fn a_head_is_gated_as_the_get_it_is_answered_by() {
+        let get = RoutePermission {
+            method: Method::GET,
+            path: "/messages/{id}",
+            permission: "sms:read",
+        };
+        assert!(get.applies_to(&Method::GET, "/messages/m1"));
+        assert!(get.applies_to(&Method::HEAD, "/messages/m1"));
+        assert!(!get.applies_to(&Method::POST, "/messages/m1"));
+        assert!(!get.applies_to(&Method::HEAD, "/messages"));
+        // The other direction is not widened: a HEAD requirement does not
+        // exist, and a write route is not a GET.
+        let patch = RoutePermission {
+            method: Method::PATCH,
+            path: "/providers/{id}",
+            permission: "provider:update",
+        };
+        assert!(!patch.applies_to(&Method::HEAD, "/providers/p1"));
+        assert!(patch.applies_to(&Method::PATCH, "/providers/p1"));
     }
 
     #[test]

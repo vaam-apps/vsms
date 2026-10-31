@@ -984,9 +984,10 @@ async fn a_minted_token_calls_a_real_procedure() {
     let machine = provision(&db, &deployment, "call", &["sms:send", "sms:read"]).await;
     let sender = sealed_fixtures::seed_sender(&db).await;
     let gateway = deployment.spawn().await;
-    // Unscoped, so it acts with all the client holds. `mint` asks `sms:send`
-    // alone, and reading a message back needs `sms:read` (`MESSAGE_READ_ROUTES`):
-    // that narrower token is refused below.
+    // The send is made with the token that asked for `sms:send` alone (`mint`),
+    // as before; reading the message back needs `sms:read`, so that is done with
+    // an unscoped token, which acts with all the client holds. The narrower one
+    // is refused the read below.
     let token = mint_unscoped(&issuer, &machine).await;
     let send_only = mint(&issuer, &machine).await;
 
@@ -995,7 +996,7 @@ async fn a_minted_token_calls_a_real_procedure() {
         &issuer,
         reqwest::Method::POST,
         "/$procs/sendMessage",
-        &token,
+        &send_only,
         Some(&serde_json::json!({"args": {
             "to": sealed_fixtures::unique_mtn_msisdn(),
             "body": "sent with a minted token",

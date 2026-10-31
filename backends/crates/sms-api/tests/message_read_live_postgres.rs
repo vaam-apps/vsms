@@ -18,7 +18,16 @@
 //! - **a person's token is the same person**: a token and a console key for the
 //!   same non-device-only role get the same answer;
 //! - **an app key**: with `sms:read` it reads its own messages and none of
-//!   another app's; without it (a send-only key, or none) it is refused.
+//!   another app's; without it (a send-only key, or none) it is refused;
+//! - **HEAD is GET**: a `HEAD` answers with the `GET` handler and the full
+//!   `Content-Length`, so it is gated as the `GET` (and so are the `Job`,
+//!   `Provider` and `Route` read gates, which a `HEAD` used to walk past);
+//! - **the doors through other models**: `GET /apps?include=messages`, a relation
+//!   filter (`?messages.some.msisdn=`) and a nested include
+//!   (`/consent_records?include=app,app.messages`) read `Message` under its own
+//!   policy, which asks for the `messageRead` claim, so a caller without
+//!   `sms:read` gets no message from them, each with a positive control;
+//! - **opt-outs**: an app key reads them only with `optout:read`.
 //!
 //! Ignored by default, like this workspace's other live suites:
 //!
@@ -34,12 +43,13 @@ use std::sync::{Arc, Mutex};
 
 use chrono::{Duration, Utc};
 use cratestack::CratestackContext;
+use cratestack::FilterExpr;
 use cratestack::sqlx::postgres::PgPoolOptions;
 use sealed_fixtures::{
     api_router_doors, client, owner, register_app_key, seed_user_with_console_key, serve,
 };
 use sms_api::auth::system_context;
-use sms_api::schema::{self, Cratestack, Encoding, MessageClass, OperatorCode};
+use sms_api::schema::{self, Cratestack, Encoding, MessageClass, OperatorCode, role};
 use sms_api::{ApiDoors, BearerRefusal, BearerVerifier, HmacWebhooks, VerifiedBearer};
 use sms_test_support::sealed::{Reply, SealedClient, TestKey};
 
@@ -227,8 +237,39 @@ async fn seed_console_client(db: &Cratestack) -> String {
         .clientId
 }
 
+/// What `0002_bootstrap` seeds for `developer`.
+const DEVELOPER_PERMISSIONS: [&str; 4] = ["app:read", "webhook:manage", "sms:read", "sms:send"];
+
+/// Sets a built-in role's permissions (the console's role editor, as an owner).
+/// A fresh router has a fresh standing cache, so the edit is seen by the next
+/// `rig()`'s requests and not by a stale one.
+async fn set_role_permissions(db: &Cratestack, key: &str, permissions: &[&str]) {
+    let current = db
+        .role()
+        .find_many()
+        .where_expr(FilterExpr::from(role::key().eq(key.to_owned())))
+        .run(&sys())
+        .await
+        .expect("reading the role")
+        .into_iter()
+        .next()
+        .expect("a built-in role is seeded");
+    db.role()
+        .update(current.id)
+        .set(schema::UpdateRoleInput {
+            permissions: Some(sms_core::pack(permissions).expect("no space in a permission")),
+            ..Default::default()
+        })
+        .if_match(current.version)
+        .run(&owner())
+        .await
+        .expect("editing the role");
+}
+
 async fn rig() -> Rig {
     let db = db().await;
+    // A test that strips `developer` restores it; this holds if one died first.
+    set_role_permissions(&db, "developer", &DEVELOPER_PERMISSIONS).await;
     let table = Arc::new(Table::default());
     let doors = ApiDoors::new(true, Some(table.clone() as Arc<dyn BearerVerifier>))
         .expect("a door is open");
@@ -371,7 +412,7 @@ fn mine_part(s: &Seeded) -> &str {
 /// Every route a message can come back by: the two of `Message` itself, and the
 /// two models that carry a `message` relation, each plain and with the whole row
 /// asked for by `include`.
-const PROBES: [Probe; 10] = [
+const PROBES: [Probe; 11] = [
     Probe {
         method: "GET",
         template: "/messages",
@@ -411,6 +452,12 @@ const PROBES: [Probe; 10] = [
     Probe {
         method: "GET",
         template: "/message_parts",
+        query: None,
+        id: mine_part,
+    },
+    Probe {
+        method: "GET",
+        template: "/message_parts",
         query: Some("include=message"),
         id: mine_part,
     },
@@ -435,7 +482,12 @@ const PROBES: [Probe; 10] = [
 ];
 
 async fn call(api: &SealedClient, probe: &Probe, seeded: &Seeded) -> Reply {
-    let mut request = api.request(probe.method, probe.template);
+    call_as(api, probe.method, probe, seeded).await
+}
+
+/// [`call`] with the method replaced: a `HEAD` for the `GET` it is answered by.
+async fn call_as(api: &SealedClient, method: &str, probe: &Probe, seeded: &Seeded) -> Reply {
+    let mut request = api.request(method, probe.template);
     let id = (probe.id)(seeded).to_owned();
     if probe.template.contains("{id}") {
         request = request.params(&[id.as_str()]);
@@ -443,7 +495,17 @@ async fn call(api: &SealedClient, probe: &Probe, seeded: &Seeded) -> Reply {
     if let Some(query) = probe.query {
         request = request.query(query);
     }
-    request.send().await
+    deliver(request, method).await
+}
+
+/// Sends `request`. A `HEAD` answer is sealed but carries no body to open, so
+/// it is delivered raw: its status and headers are what is under test.
+async fn deliver(request: sms_test_support::sealed::CallBuilder<'_>, method: &str) -> Reply {
+    if method == "HEAD" {
+        request.seal().await.resend().await
+    } else {
+        request.send().await
+    }
 }
 
 fn describe(probe: &Probe) -> String {
@@ -658,5 +720,293 @@ async fn an_app_key_reads_its_own_messages_with_sms_read_and_not_without_it() {
             let reply = call(&api, probe, &rig.mine).await;
             assert_refused_naming_sms_read(&reply, &rig, label, probe);
         }
+    }
+}
+
+/// A `HEAD` is answered by the `GET` handler with the full `Content-Length`, so
+/// before it was gated as the `GET` it was a way past every gate and an oracle on
+/// the body (`HEAD /messages?body__startsWith=…`: the length differs by whether
+/// anything matched). A role without `sms:read` is refused every probe as a
+/// `HEAD`, and the refusal's length does not depend on the question asked.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn a_head_is_refused_where_the_get_is() {
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = rig().await;
+    let role = custom_role(&rig.db, &["sms:send", "app:read"]).await;
+    let api = rig.person_by_key(&role).await;
+    for probe in &PROBES {
+        let reply = call_as(&api, "HEAD", probe, &rig.mine).await;
+        assert_eq!(
+            reply.status,
+            403,
+            "HEAD {} -> {}",
+            describe(probe),
+            reply.text()
+        );
+    }
+
+    let first = rig.mine.body_text.chars().take(6).collect::<String>();
+    let length_of = |reply: &Reply| {
+        reply
+            .headers
+            .get("content-length")
+            .map(|value| value.to_str().unwrap_or_default().to_owned())
+    };
+    let hit = deliver(
+        api.request("HEAD", "/messages")
+            .query(&format!("body__startsWith={}", first.replace(' ', "%20"))),
+        "HEAD",
+    )
+    .await;
+    let miss = deliver(
+        api.request("HEAD", "/messages")
+            .query("body__startsWith=zzzzzz"),
+        "HEAD",
+    )
+    .await;
+    assert_eq!((hit.status, miss.status), (403, 403));
+    assert_eq!(
+        length_of(&hit),
+        length_of(&miss),
+        "a refused HEAD tells nothing about whether the body matched"
+    );
+
+    // The method works for a role that may read, so the 403s above are the gate's.
+    let reader = rig.person_by_key("support").await;
+    let ok = deliver(reader.request("HEAD", "/messages"), "HEAD").await;
+    assert_eq!(ok.status, 200, "{}", ok.text());
+}
+
+/// `HEAD` walked past `JOB_READ_ROUTES` and `PROVIDER_ROUTE_READ_ROUTES` too,
+/// for an app key (their real perimeter): refused as a `HEAD` now, and a key
+/// holding the scope still passes.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn a_head_does_not_walk_past_the_job_and_provider_read_gates() {
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = rig().await;
+    let bare = rig.app_key(&rig.mine.app_id, " sms:send ").await;
+    for path in ["/jobs", "/providers", "/routes"] {
+        let get = bare.request("GET", path).send().await;
+        let head = deliver(bare.request("HEAD", path), "HEAD").await;
+        assert_eq!(
+            (get.status, head.status),
+            (403, 403),
+            "{path}: GET {} / HEAD {}",
+            get.text(),
+            head.text()
+        );
+    }
+    let scoped = rig
+        .app_key(&rig.mine.app_id, " sms:send job:read provider:read ")
+        .await;
+    for path in ["/jobs", "/providers"] {
+        let head = deliver(scoped.request("HEAD", path), "HEAD").await;
+        assert_eq!(head.status, 200, "{path}: {}", head.text());
+    }
+}
+
+/// The doors that reach a message from another model are shut by the message
+/// policy itself, not by a route gate: `?include=`, a relation filter and its
+/// `totalCount`, and a nested include read `Message` under its own `list`
+/// policy, which asks for the `messageRead` claim. Each is run for a caller
+/// without `sms:read` and, as the positive control that proves the request is
+/// well formed, for one with it.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn another_models_include_and_filter_read_the_message_under_its_policy() {
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = rig().await;
+    let mine = rig.mine.app_id.clone();
+    let mine = mine.as_str();
+    let body = rig.mine.body_text.clone();
+    let body = body.as_str();
+
+    // `developer` passes `App`'s read policy (it names roles) and is made to lack
+    // `sms:read` the way an owner would in the role editor.
+    set_role_permissions(
+        &rig.db,
+        "developer",
+        &["app:read", "webhook:manage", "sms:send"],
+    )
+    .await;
+    let stripped = rig.person_by_key("developer").await;
+    let granted_role = custom_role(&rig.db, &["app:read", "sms:read"]).await;
+    let granted = rig.person_by_key("owner").await;
+
+    let include = "include=messages";
+    let filter = "messages.some.msisdn=%2B237677123456";
+    // The same questions, put to `/apps` (a role-named policy) and, for the
+    // nested include, to `/consent_records` (any person).
+    let consent = rig
+        .db
+        .consent_record()
+        .create(schema::CreateConsentRecordInput {
+            appId: mine.to_owned(),
+            msisdnHash: format!("hmac-sha256-v1:consent-{}", suffix()),
+            msisdn: "+237677123456".to_owned(),
+            scope: MessageClass::otp,
+            channel: schema::ConsentChannel::web_form,
+            consentedAt: Utc::now(),
+            evidenceRef: None,
+        })
+        .run(&sys())
+        .await
+        .expect("seeding a consent record");
+    let _ = consent;
+    let nested = "include=app,app.messages";
+    let nobody = rig
+        .person_by_key(&custom_role(&rig.db, &["app:read"]).await)
+        .await;
+    let _ = granted_role;
+
+    // Controls: a caller who may read sees the message through every door.
+    let with = granted.request("GET", "/apps").query(include).send().await;
+    assert_eq!(with.status, 200, "{}", with.text());
+    assert!(
+        with.text().contains(body),
+        "control, include: {}",
+        with.text()
+    );
+    let with = granted.request("GET", "/apps").query(filter).send().await;
+    assert!(
+        with.text().contains(mine),
+        "control, relation filter finds the app: {}",
+        with.text()
+    );
+    let with = granted
+        .request("GET", "/consent_records")
+        .query(nested)
+        .send()
+        .await;
+    assert_eq!(with.status, 200, "{}", with.text());
+    assert!(
+        with.text().contains(body),
+        "control, nested: {}",
+        with.text()
+    );
+
+    // The doors, for callers without `sms:read`.
+    let shut = stripped.request("GET", "/apps").query(include).send().await;
+    assert_eq!(shut.status, 200, "{}", shut.text());
+    assert!(
+        !shut.text().contains(body) && !shut.text().contains("+237677123456"),
+        "include=messages leaked a message: {}",
+        shut.text()
+    );
+    let shut = stripped.request("GET", "/apps").query(filter).send().await;
+    assert_eq!(shut.status, 200, "{}", shut.text());
+    assert!(
+        !shut.text().contains(mine) && shut.json()["totalCount"] == 0,
+        "a relation filter on a message column matched, or counted: {}",
+        shut.text()
+    );
+    let shut = nobody
+        .request("GET", "/consent_records")
+        .query(nested)
+        .send()
+        .await;
+    assert_eq!(shut.status, 200, "{}", shut.text());
+    assert!(
+        !shut.text().contains(body) && !shut.text().contains("+237677123456\",\"app\""),
+        "a nested include leaked a message: {}",
+        shut.text()
+    );
+    let shut = deliver(stripped.request("HEAD", "/apps").query(include), "HEAD").await;
+    assert_eq!(shut.status, 200, "{}", shut.text());
+
+    set_role_permissions(&rig.db, "developer", &DEVELOPER_PERMISSIONS).await;
+}
+
+/// `listMessagesPage` is a stub today (it answers with its milestone) and its
+/// policy was `auth() != null`: the day it is implemented it would have been a
+/// door. It asks for the claim now.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn list_messages_page_asks_for_the_claim() {
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = rig().await;
+    let body = serde_json::json!({"args": {}});
+    let denied_role = custom_role(&rig.db, &["app:read"]).await;
+    let denied = rig.person_by_key(&denied_role).await;
+    let reply = denied
+        .request("POST", "/$procs/listMessagesPage")
+        .json(&body)
+        .send()
+        .await;
+    assert_eq!(reply.status, 403, "{}", reply.text());
+    let allowed = rig.person_by_key("support").await;
+    let reply = allowed
+        .request("POST", "/$procs/listMessagesPage")
+        .json(&body)
+        .send()
+        .await;
+    assert_ne!(
+        reply.status,
+        403,
+        "a caller with sms:read is not refused by the policy: {}",
+        reply.text()
+    );
+}
+
+/// A person reads opt-outs as any `user` (the owner's decision to take: no
+/// built-in role holds `optout:read`); an app key reads them only with the
+/// `optout:read` scope, because each row is a raw number and the model has no
+/// owning app to scope by. Before, any app key of any tenant listed them all.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn an_app_key_reads_opt_outs_only_with_optout_read() {
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = rig().await;
+    let number = format!(
+        "+23767{:07}",
+        u128::from_le_bytes(*cratestack::uuid::Uuid::new_v4().as_bytes()) % 10_000_000
+    );
+    let row = rig
+        .db
+        .opt_out()
+        .create(schema::CreateOptOutInput {
+            msisdnHash: format!("hmac-sha256-v1:optout-{}", suffix()),
+            msisdn: number.clone(),
+            source: schema::OptOutSource::inbound_stop,
+            scope: "all".to_owned(),
+            reason: None,
+            optedOutAt: Utc::now(),
+        })
+        .run(&sys())
+        .await
+        .expect("seeding the opt-out");
+
+    // An app of another tenant, with every scope but `optout:read`.
+    let other_tenant = rig
+        .app_key(&rig.other.app_id, " sms:send sms:read job:read ")
+        .await;
+    let list = other_tenant.request("GET", "/opt_outs").send().await;
+    assert_eq!(list.status, 200, "{}", list.text());
+    assert!(
+        !list.text().contains(&number) && list.json()["items"].as_array().map(Vec::len) == Some(0),
+        "an app without optout:read listed a number: {}",
+        list.text()
+    );
+    let one = other_tenant
+        .request("GET", "/opt_outs/{id}")
+        .params(&[row.id.as_str()])
+        .send()
+        .await;
+    assert_eq!(one.status, 404, "{}", one.text());
+
+    let reader = rig.app_key(&rig.other.app_id, " optout:read ").await;
+    let list = reader.request("GET", "/opt_outs").send().await;
+    assert!(list.text().contains(&number), "control: {}", list.text());
+
+    for role in ["support", "operator"] {
+        let api = rig.person_by_key(role).await;
+        let list = api.request("GET", "/opt_outs").send().await;
+        assert!(
+            list.text().contains(&number),
+            "{role} still reads opt-outs: {}",
+            list.text()
+        );
     }
 }

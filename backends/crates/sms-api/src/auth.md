@@ -1,10 +1,21 @@
 Turning a verified signature into a policy-evaluable identity.
 
-Every `@@allow` in the schema resolves against the four fields of the
-`auth Principal` block — `sub`, `kind`, `role`, `appId`. `hasRole('admin')`
-reads `role`; `auth().kind == "app"` reads `kind`; `appId == auth().appId`
-reads `appId`. [`Principal::into_context`] is the single place those names
-are produced, so a rename in the schema breaks exactly one function.
+Every `@@allow` in the schema resolves against the fields of the
+`auth Principal` block — `sub`, `kind`, `role`, `appId`, and the two permission
+claims `messageRead` and `optOutRead`. `hasRole('admin')` reads `role`;
+`auth().kind == "app"` reads `kind`; `appId == auth().appId` reads `appId`.
+[`Principal::into_context_granting`] is the single place those names are
+produced, so a rename in the schema breaks exactly one function.
+
+A policy can read a claim and cannot read `Role.permissions` or a scope, so a
+read that must follow a permission is a claim. [`Grants::of`] projects the two
+that are needed from the same `perms` and `scope` `require_permission` checks:
+`messageRead` is `granted` when the caller holds `sms:read` (a person's role or
+an app key's effective scope), and `optOutRead` when it holds `optout:read`. A
+context built by [`Principal::into_context`] (the system's, a test's) is
+`denied` on both. A claim is evaluated wherever the policy is, so `?include=`, a
+relation filter, its `totalCount` and a nested include of a message from another
+model are bound by it; a route gate cannot say that.
 
 # VS-3, VSA-3b: two ways in, each verified before this runs
 
@@ -91,7 +102,8 @@ stops acting within one window.
 
 `perms` and `scope` are Layer 2's vocabulary (`require_permission`); they live
 in the context's `extensions`, not in `auth.fields`, so a typo'd extra can
-never match a `hasRole(...)` clause it was never meant to.
+never match a `hasRole(...)` clause it was never meant to. The two claims above
+are the exception, projected on purpose and named in the schema's `auth` block.
 
 # #71: this is also where the correlation id enters `CratestackContext`
 

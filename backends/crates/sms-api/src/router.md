@@ -14,9 +14,8 @@ told about the deployment's methods. `hmac_gate.md` has the reasoning.
 Five independent `enforce_route_permission` layers gate generated routes by permission,
 one slice each (`PROVIDER_WRITE_ROUTES`, `JOB_READ_ROUTES`, `PROVIDER_ROUTE_READ_ROUTES`,
 `SENDER_AND_WEBHOOK_WRITE_ROUTES`, `MESSAGE_READ_ROUTES`), for the reason `rbac.md` gives.
-`MESSAGE_READ_ROUTES` asks `sms:read` of the message, receipt and part reads, because
-`Message`'s own policy admits any person and a model with a `message` relation returns the
-row with `?include=message`. A unit test reads the schema and fails when a model gains such
-a relation with no gate and no named exception.
+`MESSAGE_READ_ROUTES` asks `sms:read` of the message, receipt and part reads and answers a
+403 that names it; the schema's `messageRead` claim is what binds the other doors (an
+`include`, a relation filter), see `rbac.md`. A requirement on a `GET` gates the `HEAD` too.
 
 <!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->

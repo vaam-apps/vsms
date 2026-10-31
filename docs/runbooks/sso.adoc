@@ -33,9 +33,9 @@ lock the operators out of the system that sends their OTPs.
 **A person who signs in through SSO is a person with a role, and the role decides
 what they can read as well as what they can do.** Reading a message (the number and,
 while it is kept, the body: an OTP's code) needs the `sms:read` permission, on the
-messages routes and on the receipt and part routes that can return a message. Before
-that was enforced, `Message`'s policy admitted any signed-in person, so any role
-read every app's messages.
+messages routes, the receipt and part routes, and every other way a message can be
+included or filtered through another model. Before that was enforced, `Message`'s
+policy admitted any signed-in person, so any role read every app's messages.
 
 Every built-in role carries `sms:read`, `support` (the role a first sign-in is
 created in unless you set another) and `developer` included, so **a person in

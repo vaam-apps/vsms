@@ -244,6 +244,8 @@ auth Principal {
   kind String
   role String
   appId Cuid
+  messageRead String
+  optOutRead String
 }
 
 model App {
@@ -950,19 +952,18 @@ model Message {
   // any test that only checked those models: nothing exercised dispatch's
   // own query end to end against Postgres until now.
   //
-  // `auth().kind == "user"` is any person in any role, and a policy cannot ask
-  // for a permission (`hasRole` takes one literal), so this clause is not what
-  // decides who may read a message: `sms:read` is, at Layer 2
-  // (`sms_api::router::MESSAGE_READ_ROUTES`, which also gates `DeliveryReceipt`
-  // and `MessagePart`, the two models whose `?include=message` returns this
-  // row). It is a Layer 2 gate on purpose: a policy-only change here would
-  // have to list roles and so lock out a custom role that holds the permission.
-  // docs/architecture.md section 5.2, "Implementation, message reads".
+  // Reading a message needs the `messageRead` claim, which `sms_api::auth::Grants`
+  // sets from `sms:read` (a person's role, an app key's scope). Before it,
+  // `auth().kind == "user"` admitted a person in any role. It is a claim and not
+  // a route gate because `?include=message` on a receipt, `?include=messages` on
+  // `App`, a relation filter and a nested include read this model under THIS
+  // policy. The system context is admitted by role. docs/architecture.md section
+  // 5.2, "Implementation, message reads".
   @@audit
   @@paged
   @@retain(days: 90)
-  @@allow("list", auth().kind == "user" || appId == auth().appId || hasRole('system'))
-  @@allow("detail", auth().kind == "user" || appId == auth().appId || hasRole('system'))
+  @@allow("list", (auth().messageRead == "granted" && (auth().kind == "user" || appId == auth().appId)) || hasRole('system'))
+  @@allow("detail", (auth().messageRead == "granted" && (auth().kind == "user" || appId == auth().appId)) || hasRole('system'))
   @@allow("create", hasRole('system'))
   @@allow("update", hasRole('system'))
   @@emit(created, updated)
@@ -981,12 +982,11 @@ model MessagePart {
   submittedAt DateTime?
   deliveredAt DateTime?
 
-  // Any person at Layer 1; `GET /message_parts` needs `sms:read` at Layer 2
-  // (`MESSAGE_READ_ROUTES`), because `?include=message` returns the whole
-  // `Message` row under `Message`'s own, wider, policy.
+  // Delivery state only, but "anything about a message" asks for `messageRead`
+  // like the message does; `GET /message_parts` is also gated on `sms:read`.
   @@paged
-  @@allow("list", auth().kind == "user")
-  @@allow("detail", auth().kind == "user")
+  @@allow("list", auth().kind == "user" && auth().messageRead == "granted")
+  @@allow("detail", auth().kind == "user" && auth().messageRead == "granted")
   @@allow("create", hasRole('system'))
   @@allow("update", hasRole('system'))
 }
@@ -1017,11 +1017,10 @@ model DeliveryReceipt {
   // reconciliation job, or a test proving `dlr::ingest` actually wrote a
   // receipt, needs — silently returned zero rows instead of the rows that
   // really exist.
-  // Any person at Layer 1; `GET /delivery_receipts` needs `sms:read` at Layer 2
-  // (`MESSAGE_READ_ROUTES`): `rawPayload` is the provider's own callback, and
-  // `?include=message` returns the whole `Message` row.
-  @@allow("list", auth().kind == "user" || hasRole('system'))
-  @@allow("detail", auth().kind == "user" || hasRole('system'))
+  // `rawPayload` is the provider's own callback, which `listMessageReceipts`
+  // leaves out on purpose, so a receipt asks for `messageRead` like the message.
+  @@allow("list", (auth().kind == "user" && auth().messageRead == "granted") || hasRole('system'))
+  @@allow("detail", (auth().kind == "user" && auth().messageRead == "granted") || hasRole('system'))
   @@allow("create", hasRole('system'))
   // #67: `purge_retention` deletes a receipt past its own 90-day
   // `@@retain` window (backends/crates/sms-worker/src/jobs/purge_retention.rs) — the
@@ -1087,7 +1086,13 @@ model OptOut {
 
   @@audit
   @@paged
-  @@allow("read", auth().kind == "user" || auth().kind == "app")
+  // A person reads opt-outs as any `user` (decision for the owner: no built-in
+  // role holds `optout:read`, and `support` and `operator` manage opt-outs).
+  // An app key reads them only with the `optout:read` scope: each row is a raw
+  // number, and an app has no tenant filter here, so before this clause any
+  // app key of any tenant listed every opted-out number. The system context's
+  // `kind` is "app" too, which the old clause admitted by accident: it is named.
+  @@allow("read", auth().kind == "user" || (auth().kind == "app" && auth().optOutRead == "granted") || hasRole('system'))
   @@allow("create", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('system'))
   @@allow("delete", hasRole('owner') || hasRole('admin'))
   @@emit(created, deleted)
@@ -1727,7 +1732,7 @@ procedure previewMessage(args: PreviewInput): PreviewResult
   @allow(auth() != null)
 
 procedure listMessagesPage(appId: Cuid?, state: MessageState?, limit: Int?, offset: Int?): Page<Message>
-  @allow(auth() != null)
+  @allow(auth().messageRead == "granted")
 
 mutation procedure cancelMessage(args: CancelInput): Message
   @allow(hasRole('owner') || hasRole('admin') || hasRole('operator'))
