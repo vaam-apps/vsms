@@ -984,14 +984,19 @@ async fn a_minted_token_calls_a_real_procedure() {
     let machine = provision(&db, &deployment, "call", &["sms:send", "sms:read"]).await;
     let sender = sealed_fixtures::seed_sender(&db).await;
     let gateway = deployment.spawn().await;
-    let token = mint(&issuer, &machine).await;
+    // The send is made with the token that asked for `sms:send` alone (`mint`),
+    // as before; reading the message back needs `sms:read`, so that is done with
+    // an unscoped token, which acts with all the client holds. The narrower one
+    // is refused the read below.
+    let token = mint_unscoped(&issuer, &machine).await;
+    let send_only = mint(&issuer, &machine).await;
 
     let client_ref = format!("minted-{}", unique_suffix());
     let (status, content_type, body) = api(
         &issuer,
         reqwest::Method::POST,
         "/$procs/sendMessage",
-        &token,
+        &send_only,
         Some(&serde_json::json!({"args": {
             "to": sealed_fixtures::unique_mtn_msisdn(),
             "body": "sent with a minted token",
@@ -1025,6 +1030,12 @@ async fn a_minted_token_calls_a_real_procedure() {
     // Nothing it was not given.
     let (status, _, body) = api(&issuer, reqwest::Method::GET, "/jobs", &token, None).await;
     assert_eq!(status, 403, "job:read was never provisioned: {body}");
+
+    // A token that asked for `sms:send` alone sends but cannot read the
+    // message back, though the client holds `sms:read`: a scope narrows.
+    let (status, _, body) = api(&issuer, reqwest::Method::GET, "/messages", &send_only, None).await;
+    assert_eq!(status, 403, "{body}");
+    assert!(body.contains("sms:read"), "{body}");
     gateway.kill();
 }
 

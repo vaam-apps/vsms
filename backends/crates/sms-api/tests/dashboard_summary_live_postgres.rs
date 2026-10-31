@@ -26,7 +26,7 @@
 use chrono::Utc;
 use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::{CratestackContext, CratestackError, Value};
-use sms_api::auth::{Principal, PrincipalKind};
+use sms_api::auth::{Grants, Principal, PrincipalKind};
 use sms_api::schema::{
     self, Cratestack, Encoding, Message, MessageClass, MessageState, OperatorCode,
     procedures::ProcedureRegistry, procedures::dashboard_summary,
@@ -61,30 +61,30 @@ fn sys() -> CratestackContext {
 /// The console's own real shape: `kind == "app"`, scoped to one `appId`,
 /// carrying the `dashboard:read` scope `require_permission` checks.
 fn app_caller_with_dashboard_read(app_id: &str) -> CratestackContext {
+    // The message tiles count the messages the caller may read, so the
+    // caller's claims are set from its scope the way `GatewayAuth` sets them.
+    let scope = Value::String(" sms:send sms:read dashboard:read ".to_owned());
     let mut ctx = Principal {
         sub: "dashboard-summary-test-console-client".to_owned(),
         kind: PrincipalKind::App,
         role: "app".to_owned(),
         app_id: app_id.to_owned(),
     }
-    .into_context();
-    ctx.extensions.insert(
-        "scope".to_owned(),
-        Value::String("sms:send dashboard:read".to_owned()),
-    );
+    .into_context_granting(Grants::of(&[], &scope));
+    ctx.extensions.insert("scope".to_owned(), scope);
     ctx
 }
 
 fn app_caller_without_dashboard_read(app_id: &str) -> CratestackContext {
+    let scope = Value::String(" sms:send ".to_owned());
     let mut ctx = Principal {
         sub: "dashboard-summary-test-console-client-no-scope".to_owned(),
         kind: PrincipalKind::App,
         role: "app".to_owned(),
         app_id: app_id.to_owned(),
     }
-    .into_context();
-    ctx.extensions
-        .insert("scope".to_owned(), Value::String("sms:send".to_owned()));
+    .into_context_granting(Grants::of(&[], &scope));
+    ctx.extensions.insert("scope".to_owned(), scope);
     ctx
 }
 

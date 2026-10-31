@@ -418,6 +418,9 @@ docker compose --env-file .env run --rm sms-gateway provision-client \
   --app-slug my-app --label "otp sender" --scope sms:send --key-out secrets/otp-sender.pem
 ----
 
+A client that reads its own messages back (`GET /messages`) also needs
+`--scope sms:read`; `--scope sms:send` alone sends and reads nothing.
+
 It writes an `AppClient` and an `OauthClient` that holds only the public JWK, and
 the private key to `--key-out` with mode `0600`; it refuses to overwrite an
 existing file and never prints the key. Hand the file and the printed `client_id` to

@@ -41,6 +41,18 @@ then asks of them. The gate is no longer defense in depth for the `PATCH
 /providers/{id}` route: an `admin` who holds a role without the permission is
 refused here, which Layer 1 alone would let through.
 
+# A read that follows a permission: a claim, with Layer 2 in front of it
+
+A policy lists roles (`hasRole` takes one literal) and cannot read `Role.permissions`, so a
+route gate alone cannot bind a read that reaches the same rows by another door: `?include=`,
+a relation filter and a nested include read the related model under *its own* policy. Reading
+a message therefore asks twice. The policy asks for the `messageRead` claim
+(`auth::Grants`, set from the same `perms` and `scope` this module checks), which binds every
+door. `router::MESSAGE_READ_ROUTES` asks `sms:read` as well, in front of it, so the direct
+routes answer a 403 that names the permission and not an empty page. A requirement on a
+`GET` also gates the `HEAD` ([`RoutePermission::applies_to`]): `HEAD` is answered by the
+`GET` handler with the full `Content-Length`.
+
 # A second kind of Layer-2 middleware: guarding the *value* written
 
 `enforce_route_permission` asks "may this caller use this route at all". Some

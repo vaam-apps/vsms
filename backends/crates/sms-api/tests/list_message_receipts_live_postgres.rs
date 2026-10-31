@@ -24,7 +24,7 @@
 use chrono::{Duration, Utc};
 use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::{CratestackContext, CratestackError, Value};
-use sms_api::auth::{Principal, PrincipalKind};
+use sms_api::auth::{Grants, Principal, PrincipalKind};
 use sms_api::schema::{
     self, Cratestack, Encoding, MessageClass, MessageState, OperatorCode, UpdateMessageInput,
     procedures::ProcedureRegistry, procedures::list_message_receipts,
@@ -80,17 +80,18 @@ fn owner() -> CratestackContext {
 /// bug hid it. Fixed at the root — every caller of this function now
 /// passes the actual seeded app id.
 fn app_caller_with_sms_read(app_id: &str) -> CratestackContext {
+    // `@authorize(Message, detail, ...)` runs `Message`'s policy as this caller,
+    // which asks for the `messageRead` claim: set from the scope, as
+    // `GatewayAuth` does.
+    let scope = Value::String(" sms:send sms:read ".to_owned());
     let mut ctx = Principal {
         sub: "list-message-receipts-test-console-client".to_owned(),
         kind: PrincipalKind::App,
         role: "app".to_owned(),
         app_id: app_id.to_owned(),
     }
-    .into_context();
-    ctx.extensions.insert(
-        "scope".to_owned(),
-        Value::String("sms:send sms:read".to_owned()),
-    );
+    .into_context_granting(Grants::of(&[], &scope));
+    ctx.extensions.insert("scope".to_owned(), scope);
     ctx
 }
 
@@ -99,15 +100,15 @@ fn app_caller_with_sms_read(app_id: &str) -> CratestackContext {
 /// [`app_caller_with_sms_read`]'s own doc for why `app_id` is now a real
 /// parameter.
 fn app_caller_without_sms_read(app_id: &str) -> CratestackContext {
+    let scope = Value::String(" sms:send ".to_owned());
     let mut ctx = Principal {
         sub: "list-message-receipts-test-console-client-no-scope".to_owned(),
         kind: PrincipalKind::App,
         role: "app".to_owned(),
         app_id: app_id.to_owned(),
     }
-    .into_context();
-    ctx.extensions
-        .insert("scope".to_owned(), Value::String("sms:send".to_owned()));
+    .into_context_granting(Grants::of(&[], &scope));
+    ctx.extensions.insert("scope".to_owned(), scope);
     ctx
 }
 
@@ -448,7 +449,7 @@ async fn denies_a_caller_with_no_sms_read_scope() {
     // `invoke_with_db`, which runs the real Layer 1 `@allow`/`@authorize`
     // checks first — `auth().kind == "app"` and `appId == auth().appId`
     // both admit this caller (`schema.cstack`'s `listMessageReceipts`
-    // `@allow`, `Message.detail`'s own `@@allow`), so this reaches Layer 2.
+    // `@allow`, `Message.detail`'s own `@@allow`), so this reached Layer 2 before the `messageRead` claim; see the end of this test.
     let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let ctx = app_caller_without_sms_read(&app_id);
     let args = list_message_receipts::Args {
@@ -466,10 +467,15 @@ async fn denies_a_caller_with_no_sms_read_scope() {
         matches!(error, CratestackError::Forbidden(_)),
         "expected Forbidden, got {error:?}"
     );
+    // Since reading a message asks for the `messageRead` claim (set from the
+    // same `sms:read` scope), `@authorize(Message, detail, ...)` denies this
+    // caller before the procedure's own `require_permission(ctx, "sms:read")`
+    // is reached, so the denial is the policy's and no longer names the
+    // permission. Both ask the same literal; the claim is the one that binds.
     if let CratestackError::Forbidden(message) = error {
         assert!(
-            message.contains("sms:read"),
-            "expected the denial to name the missing permission: {message}"
+            message.contains("sms:read") || message.contains("detail policy denied"),
+            "expected the policy's or the permission's denial: {message}"
         );
     }
 }

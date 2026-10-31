@@ -54,6 +54,18 @@ impl Principal {
     /// mode §13 of the architecture doc calls out by name.
     #[must_use]
     pub fn into_context(self) -> CratestackContext {
+        self.into_context_granting(Grants::default())
+    }
+
+    /// [`Self::into_context`] with the permission claims set, each `granted` or
+    /// `denied`. The schema's `Message`, `DeliveryReceipt`, `MessagePart`,
+    /// `OptOut` and `listMessagesPage` policies ask for them, so a context built
+    /// by [`Self::into_context`] (the system's own, a test's) is `denied` on
+    /// both: reading a message is something a request earns, never a default.
+    #[must_use]
+    pub fn into_context_granting(self, grants: Grants) -> CratestackContext {
+        let claim =
+            |granted: bool| Value::String(if granted { "granted" } else { "denied" }.to_owned());
         CratestackContext::authenticated([
             ("sub".to_owned(), Value::String(self.sub)),
             (
@@ -62,7 +74,46 @@ impl Principal {
             ),
             ("role".to_owned(), Value::String(self.role)),
             ("appId".to_owned(), Value::String(self.app_id)),
+            ("messageRead".to_owned(), claim(grants.message_read)),
+            ("optOutRead".to_owned(), claim(grants.opt_out_read)),
         ])
+    }
+}
+
+/// The permission (a person's role) or scope (an app key's) that means "may
+/// read a message". `router::MESSAGE_READ_ROUTES` asks the same literal.
+pub const MESSAGE_READ_PERMISSION: &str = "sms:read";
+
+/// What a policy may be told a caller holds: the two permissions the schema
+/// asks for by claim rather than by role, because a policy can read a claim
+/// and cannot read `Role.permissions`. Built from the same `perms` / `scope`
+/// [`require_permission`](crate::rbac::require_permission) checks.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Grants {
+    /// `sms:read`: the claim `messageRead`, asked by `Message`, `MessagePart`,
+    /// `DeliveryReceipt` and `listMessagesPage`.
+    pub message_read: bool,
+    /// `optout:read`: the claim `optOutRead`, asked of an **app** by `OptOut`.
+    /// No built-in role holds it (a person reads opt-outs as `kind == "user"`).
+    pub opt_out_read: bool,
+}
+
+impl Grants {
+    /// The grants of a caller holding `perms` (a person's role) and `scope` (an
+    /// app key's packed scope, or null).
+    #[must_use]
+    pub fn of(perms: &[String], scope: &Value) -> Self {
+        let scope = match scope {
+            Value::String(scope) => Some(scope.as_str()),
+            _ => None,
+        };
+        let holds = |permission: &str| {
+            crate::rbac::holds(perms.iter().map(String::as_str), scope, permission)
+        };
+        Self {
+            message_read: holds(MESSAGE_READ_PERMISSION),
+            opt_out_read: holds("optout:read"),
+        }
     }
 }
 
@@ -115,12 +166,15 @@ impl GatewayAuth {
     /// The context of `standing`, with Layer 2's `perms` and `scope` set.
     ///
     /// `perms` and `scope` are stashed in `extensions`, not folded into
-    /// [`Principal::into_context`]'s four `auth.fields`: those are Layer 1's
+    /// [`Principal::into_context`]'s `auth.fields`: those are Layer 1's
     /// vocabulary (`hasRole`, `inTenant`, `appId ==`), fixed by the schema's
     /// own `auth Principal` block, and the extras are read only by
     /// `require_permission`. Keeping them out of `auth.fields` means a typo'd
     /// extra can never start matching a `hasRole(...)` clause it was never
-    /// meant to.
+    /// meant to. The one permission a policy needs, `sms:read`, is projected
+    /// into the single claim `messageRead` instead, so the message policies can
+    /// ask for it and every route that reaches a message (an `include`, a
+    /// relation filter) is bound by it.
     ///
     /// ```
     /// use sms_api::auth::GatewayAuth;
@@ -163,7 +217,7 @@ impl GatewayAuth {
                 Value::Null,
             ),
         };
-        let mut ctx = principal.into_context();
+        let mut ctx = principal.into_context_granting(Grants::of(&perms, &scope));
         ctx.extensions.insert(
             "perms".to_owned(),
             Value::List(perms.into_iter().map(Value::String).collect()),
@@ -380,6 +434,69 @@ pub fn refuse_device_only_role(person: &UserStanding) -> Result<(), CratestackEr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn claim(ctx: &CratestackContext, name: &str) -> Option<String> {
+        ctx.auth_field(name).and_then(|value| match value {
+            Value::String(text) => Some(text.clone()),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn a_person_is_granted_message_read_by_the_permission_and_an_app_by_the_scope() {
+        let perms = ["app:read".to_owned(), "sms:read".to_owned()];
+        assert!(Grants::of(&perms, &Value::Null).message_read);
+        assert!(!Grants::of(&["app:read".to_owned()], &Value::Null).message_read);
+        let scope = |text: &str| Value::String(text.to_owned());
+        assert!(Grants::of(&[], &scope(" sms:send sms:read ")).message_read);
+        assert!(!Grants::of(&[], &scope(" sms:send ")).message_read);
+        // The prefix trap `sms_core::contains` exists for.
+        assert!(!Grants::of(&[], &scope(" sms:readall ")).message_read);
+        assert!(!Grants::of(&perms, &Value::Null).opt_out_read);
+        assert!(Grants::of(&[], &scope(" optout:read ")).opt_out_read);
+    }
+
+    #[test]
+    fn a_context_is_denied_both_claims_unless_it_was_granted_them() {
+        let plain = principal().into_context();
+        assert_eq!(claim(&plain, "messageRead").as_deref(), Some("denied"));
+        assert_eq!(claim(&plain, "optOutRead").as_deref(), Some("denied"));
+        let granted = principal().into_context_granting(Grants {
+            message_read: true,
+            opt_out_read: false,
+        });
+        assert_eq!(claim(&granted, "messageRead").as_deref(), Some("granted"));
+        assert_eq!(claim(&granted, "optOutRead").as_deref(), Some("denied"));
+        // The system context is admitted by role, never by the claim.
+        assert_eq!(
+            claim(&system_context("claims-test"), "messageRead").as_deref(),
+            Some("denied")
+        );
+    }
+
+    #[test]
+    fn context_for_projects_the_claim_from_the_standing() {
+        let reader = GatewayAuth::context_for(Standing::App(crate::signers::AppStanding {
+            client_id: "appc_x".to_owned(),
+            app_id: "app1".to_owned(),
+            scopes: " sms:send sms:read ".to_owned(),
+        }));
+        assert_eq!(claim(&reader, "messageRead").as_deref(), Some("granted"));
+        let sender = GatewayAuth::context_for(Standing::App(crate::signers::AppStanding {
+            client_id: "appc_x".to_owned(),
+            app_id: "app1".to_owned(),
+            scopes: " sms:send ".to_owned(),
+        }));
+        assert_eq!(claim(&sender, "messageRead").as_deref(), Some("denied"));
+        assert!(require_permission_matches(&reader, &sender));
+    }
+
+    /// The claim and the Layer 2 check read the same permission: one grants
+    /// exactly when `require_permission` does.
+    fn require_permission_matches(reader: &CratestackContext, sender: &CratestackContext) -> bool {
+        crate::rbac::require_permission(reader, MESSAGE_READ_PERMISSION).is_ok()
+            && crate::rbac::require_permission(sender, MESSAGE_READ_PERMISSION).is_err()
+    }
 
     fn principal() -> Principal {
         Principal {

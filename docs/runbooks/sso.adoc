@@ -30,15 +30,21 @@ lock the operators out of the system that sends their OTPs.
 
 [WARNING]
 ====
-**A person who signs in through SSO is a person with a role, and the role limits
-what they can do, not what they can read.** `Message`'s list and detail
-policies admit any signed-in person (`auth().kind == "user"`, no role test), so
-anyone whose token the API accepts -- including a `support` account created by
-a first sign-in -- can list every app's messages through the generated routes,
-the phone numbers and bodies included. Nothing about SSO adds this (a paired
-console key of any role reads the same), but it means *membership of the
-required group is the access decision*. Put in `required_group` only people
-you would give the console to.
+**A person who signs in through SSO is a person with a role, and the role decides
+what they can read as well as what they can do.** Reading a message (the number and,
+while it is kept, the body: an OTP's code) needs the `sms:read` permission, on the
+messages routes, the receipt and part routes, and every other way a message can be
+included or filtered through another model. Before that was enforced, `Message`'s
+policy admitted any signed-in person, so any role read every app's messages.
+
+Every built-in role carries `sms:read`, `support` (the role a first sign-in is
+created in unless you set another) and `developer` included, so **a person in
+the required group still reads every app's messages by default**: membership of the
+group is still an access decision. To withhold it, create a role without `sms:read`
+(an `owner` creates it in the console under Users and roles) and name it as
+`human_login.sso.jit_role`; a person created by a sign-in then reads no message
+until you promote them. A role you edit takes effect within the 60-second standing
+cache.
 ====
 
 == What you get

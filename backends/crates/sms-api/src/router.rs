@@ -211,6 +211,61 @@ const SENDER_AND_WEBHOOK_WRITE_ROUTES: &[RoutePermission] = &[
     },
 ];
 
+/// Reading a message needs `sms:read`, not just a signed-in person.
+///
+/// `Message`'s `list`/`detail` policy used to admit `auth().kind == "user"` with
+/// no role test, so a person in *any* role, a custom role holding only `app:read`
+/// included, read every app's `msisdn` and, while it is kept, `body` (an OTP's
+/// code). A policy cannot read `Role.permissions`, so the permission reaches it as
+/// the `messageRead` claim (`auth::Grants`), and the policies of `Message`,
+/// `DeliveryReceipt` and `MessagePart` ask for it. That binds every door to a
+/// message, including the ones a route gate cannot see: `?include=message` on a
+/// receipt, `?include=messages` on `App`, a relation filter and its `totalCount`,
+/// a nested include.
+///
+/// This list is in front of it, for the direct routes: a caller without
+/// `sms:read` is told so (a 403 naming the permission) instead of being handed an
+/// empty page, and `DeliveryReceipt.rawPayload` and the `MessagePart` rows are
+/// refused at the route as well. Layer 1's app clause (`appId == auth().appId`) is
+/// untouched, and an app key needs the `sms:read` scope to read its own messages
+/// back (the console's scope list describes it as "Read messages and delivery
+/// receipts"); a send-only key does not.
+///
+/// Like every list here it also gates the `HEAD` of a `GET`
+/// ([`RoutePermission::applies_to`]).
+const MESSAGE_READ_ROUTES: &[RoutePermission] = &[
+    RoutePermission {
+        method: Method::GET,
+        path: "/messages",
+        permission: "sms:read",
+    },
+    RoutePermission {
+        method: Method::GET,
+        path: "/messages/{id}",
+        permission: "sms:read",
+    },
+    RoutePermission {
+        method: Method::GET,
+        path: "/delivery_receipts",
+        permission: "sms:read",
+    },
+    RoutePermission {
+        method: Method::GET,
+        path: "/delivery_receipts/{id}",
+        permission: "sms:read",
+    },
+    RoutePermission {
+        method: Method::GET,
+        path: "/message_parts",
+        permission: "sms:read",
+    },
+    RoutePermission {
+        method: Method::GET,
+        path: "/message_parts/{id}",
+        permission: "sms:read",
+    },
+];
+
 /// #153: the TTL a cached `Idempotency-Key` response stays replayable —
 /// matches `docs/architecture.md` §4.5's own figure, 24 hours. Exposed so
 /// every construction site (the real `sms-gateway serve` command and the
@@ -492,6 +547,11 @@ pub fn router(
         auth: gateway_auth.clone(),
         requirements: SENDER_AND_WEBHOOK_WRITE_ROUTES,
     };
+    // Reading a message needs `sms:read`: a fifth, independent instance.
+    let message_read_rbac_state = RbacState {
+        auth: gateway_auth.clone(),
+        requirements: MESSAGE_READ_ROUTES,
+    };
     // Who may hand out `owner`: the write-path half of the guard whose
     // schema half is `User`'s `@@allow("create"/"update")` — see
     // `owner_grant.md`. Another independent layer, for the reason every
@@ -532,6 +592,10 @@ pub fn router(
     ))
     .layer(from_fn_with_state(
         sender_and_webhook_rbac_state,
+        enforce_route_permission,
+    ))
+    .layer(from_fn_with_state(
+        message_read_rbac_state,
         enforce_route_permission,
     ))
     .layer(from_fn_with_state(
@@ -594,6 +658,128 @@ mod tests {
             routes.iter().any(|(_, path)| path.contains("messages")),
             "expected a /messages path, got: {routes:?}"
         );
+    }
+
+    #[test]
+    fn every_message_read_route_is_a_generated_route() {
+        // A gate on a path the emitter never produced gates nothing, and says
+        // nothing: the `pluralize()` trap again, this time as a silent hole.
+        let routes = route_table();
+        for requirement in MESSAGE_READ_ROUTES {
+            assert!(
+                routes.iter().any(|(method, path)| {
+                    *method == requirement.method.as_str() && *path == requirement.path
+                }),
+                "{} {} is gated on {} but is not a generated route: {routes:?}",
+                requirement.method,
+                requirement.path,
+                requirement.permission
+            );
+        }
+    }
+
+    /// The schema, as the router is generated from it.
+    const SCHEMA: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../schemas/vsms.cstack"
+    ));
+
+    /// The text of `model <name> {` up to its closing brace.
+    fn model_block(name: &str) -> &'static str {
+        let start = SCHEMA
+            .find(&format!("\nmodel {name} {{"))
+            .unwrap_or_else(|| panic!("model {name} not found"));
+        let rest = &SCHEMA[start + 1..];
+        &rest[..rest.find("\n}\n").expect("a model block closes")]
+    }
+
+    /// The routes of `model` (its list and its `{id}` form), by the emitter's
+    /// own naive pluralisation: `MessagePart` is `/message_parts`.
+    fn paths_of(model: &str) -> [String; 2] {
+        let mut snake = String::new();
+        for (i, c) in model.chars().enumerate() {
+            if c.is_ascii_uppercase() && i > 0 {
+                snake.push('_');
+            }
+            snake.push(c.to_ascii_lowercase());
+        }
+        [format!("/{snake}s"), format!("/{snake}s/{{id}}")]
+    }
+
+    #[test]
+    fn the_message_models_gate_their_reads_on_the_claim_and_on_the_route() {
+        // Depth, stated: this reads the schema's text, so it proves a policy line
+        // names the claim and the route table lists the gate, not that either
+        // works. `message_read_live_postgres` proves that, door by door. A model
+        // that gains a relation to `Message` needs nothing here: `?include=` and a
+        // relation filter read the related row under `Message`'s own policy, which
+        // is what the first assertion holds.
+        let claim = "auth().messageRead == \"granted\"";
+        for model in ["Message", "MessagePart", "DeliveryReceipt"] {
+            for line in model_block(model).lines() {
+                let line = line.trim();
+                let reads = line.starts_with("@@allow(\"list\"")
+                    || line.starts_with("@@allow(\"detail\"")
+                    || line.starts_with("@@allow(\"read\"");
+                if reads {
+                    assert!(
+                        line.contains(claim),
+                        "{model}: a read policy that does not ask for the messageRead claim: {line}"
+                    );
+                }
+            }
+            for path in paths_of(model) {
+                assert!(
+                    MESSAGE_READ_ROUTES
+                        .iter()
+                        .any(|requirement| requirement.method == Method::GET
+                            && requirement.path == path
+                            && requirement.permission == "sms:read"),
+                    "GET {path} is not in MESSAGE_READ_ROUTES"
+                );
+            }
+        }
+        // `WebhookAttempt.payload` is message data, and no route gate is on it (an
+        // app reads its own attempts, with no scope), so its policy alone must ask.
+        for line in model_block("WebhookAttempt").lines() {
+            let line = line.trim();
+            if line.starts_with("@@allow(\"list\"") || line.starts_with("@@allow(\"detail\"") {
+                assert!(
+                    line.contains(claim),
+                    "WebhookAttempt: a read policy that does not ask for the messageRead claim: {line}"
+                );
+            }
+        }
+        let procedure = SCHEMA
+            .lines()
+            .position(|line| line.starts_with("procedure listMessagesPage("))
+            .expect("listMessagesPage is declared");
+        let policy = SCHEMA
+            .lines()
+            .nth(procedure + 1)
+            .expect("a policy line")
+            .trim();
+        assert_eq!(policy, format!("@allow({claim})"));
+    }
+
+    #[test]
+    fn the_claim_the_policies_read_is_declared_and_the_permission_is_the_routes() {
+        assert!(
+            model_block_auth().contains("messageRead String"),
+            "the auth Principal block does not declare messageRead"
+        );
+        assert_eq!(crate::auth::MESSAGE_READ_PERMISSION, "sms:read");
+        assert!(
+            MESSAGE_READ_ROUTES
+                .iter()
+                .all(|requirement| requirement.permission == crate::auth::MESSAGE_READ_PERMISSION)
+        );
+    }
+
+    fn model_block_auth() -> &'static str {
+        let start = SCHEMA.find("\nauth Principal {").expect("the auth block");
+        let rest = &SCHEMA[start + 1..];
+        &rest[..rest.find("\n}\n").expect("the auth block closes")]
     }
 
     fn lazy_db() -> schema::Cratestack {

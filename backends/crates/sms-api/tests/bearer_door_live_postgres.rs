@@ -412,7 +412,9 @@ async fn messages_with_client_ref(db: &Cratestack, app_id: &str, client_ref: &st
 async fn a_token_and_a_signature_from_the_same_client_get_the_same_answers() {
     let _guard = TEST_MUTEX.lock().await;
     let rig = rig().await;
-    let seeded = seed(&rig.db, " sms:send job:read ").await;
+    // `sms:read` since reading a message needs it (`MESSAGE_READ_ROUTES`): this
+    // client used to read its own messages holding only `sms:send`.
+    let seeded = seed(&rig.db, " sms:send sms:read job:read ").await;
     let key = TestKey::app();
     register_app_key(&rig.db, &seeded.app_client_row, &key).await;
     let api = client(&rig.base, &key);
