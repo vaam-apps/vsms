@@ -1321,8 +1321,15 @@ model WebhookAttempt {
   // Guarded by `backends/crates/sms-api/tests/system_context_golden_list_live_postgres.rs`.
   @@paged
   @@retain(days: 30)
-  @@allow("list", auth().kind == "user" || endpoint.appId == auth().appId || hasRole('system'))
-  @@allow("detail", auth().kind == "user" || endpoint.appId == auth().appId || hasRole('system'))
+  //
+  // `payload` is message data (messageId, appId, clientRef, state, operator,
+  // segments, cost, and `to`, the full number when the endpoint's `maskRecipient`
+  // is false), so a person reads attempts only with the `messageRead` claim, as
+  // for the message itself. An app keeps reading its own endpoints' attempts: it
+  // already sent those messages. The system context (the outbox, `hooks`) is
+  // admitted by role.
+  @@allow("list", (auth().kind == "user" && auth().messageRead == "granted") || endpoint.appId == auth().appId || hasRole('system'))
+  @@allow("detail", (auth().kind == "user" && auth().messageRead == "granted") || endpoint.appId == auth().appId || hasRole('system'))
   @@allow("create", hasRole('system'))
   @@allow("update", hasRole('system'))
 }

@@ -103,9 +103,12 @@ impl Grants {
     /// app key's packed scope, or null).
     #[must_use]
     pub fn of(perms: &[String], scope: &Value) -> Self {
+        let scope = match scope {
+            Value::String(scope) => Some(scope.as_str()),
+            _ => None,
+        };
         let holds = |permission: &str| {
-            perms.iter().any(|perm| perm == permission)
-                || matches!(scope, Value::String(scope) if sms_core::contains(scope, permission))
+            crate::rbac::holds(perms.iter().map(String::as_str), scope, permission)
         };
         Self {
             message_read: holds(MESSAGE_READ_PERMISSION),

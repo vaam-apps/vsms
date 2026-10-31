@@ -739,6 +739,17 @@ mod tests {
                 );
             }
         }
+        // `WebhookAttempt.payload` is message data, and no route gate is on it (an
+        // app reads its own attempts, with no scope), so its policy alone must ask.
+        for line in model_block("WebhookAttempt").lines() {
+            let line = line.trim();
+            if line.starts_with("@@allow(\"list\"") || line.starts_with("@@allow(\"detail\"") {
+                assert!(
+                    line.contains(claim),
+                    "WebhookAttempt: a read policy that does not ask for the messageRead claim: {line}"
+                );
+            }
+        }
         let procedure = SCHEMA
             .lines()
             .position(|line| line.starts_with("procedure listMessagesPage("))

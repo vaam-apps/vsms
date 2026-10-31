@@ -832,35 +832,10 @@ async fn another_models_include_and_filter_read_the_message_under_its_policy() {
     )
     .await;
     let stripped = rig.person_by_key("developer").await;
-    let granted_role = custom_role(&rig.db, &["app:read", "sms:read"]).await;
     let granted = rig.person_by_key("owner").await;
 
     let include = "include=messages";
     let filter = "messages.some.msisdn=%2B237677123456";
-    // The same questions, put to `/apps` (a role-named policy) and, for the
-    // nested include, to `/consent_records` (any person).
-    let consent = rig
-        .db
-        .consent_record()
-        .create(schema::CreateConsentRecordInput {
-            appId: mine.to_owned(),
-            msisdnHash: format!("hmac-sha256-v1:consent-{}", suffix()),
-            msisdn: "+237677123456".to_owned(),
-            scope: MessageClass::otp,
-            channel: schema::ConsentChannel::web_form,
-            consentedAt: Utc::now(),
-            evidenceRef: None,
-        })
-        .run(&sys())
-        .await
-        .expect("seeding a consent record");
-    let _ = consent;
-    let nested = "include=app,app.messages";
-    let nobody = rig
-        .person_by_key(&custom_role(&rig.db, &["app:read"]).await)
-        .await;
-    let _ = granted_role;
-
     // Controls: a caller who may read sees the message through every door.
     let with = granted.request("GET", "/apps").query(include).send().await;
     assert_eq!(with.status, 200, "{}", with.text());
@@ -875,18 +850,6 @@ async fn another_models_include_and_filter_read_the_message_under_its_policy() {
         "control, relation filter finds the app: {}",
         with.text()
     );
-    let with = granted
-        .request("GET", "/consent_records")
-        .query(nested)
-        .send()
-        .await;
-    assert_eq!(with.status, 200, "{}", with.text());
-    assert!(
-        with.text().contains(body),
-        "control, nested: {}",
-        with.text()
-    );
-
     // The doors, for callers without `sms:read`.
     let shut = stripped.request("GET", "/apps").query(include).send().await;
     assert_eq!(shut.status, 200, "{}", shut.text());
@@ -902,19 +865,85 @@ async fn another_models_include_and_filter_read_the_message_under_its_policy() {
         "a relation filter on a message column matched, or counted: {}",
         shut.text()
     );
-    let shut = nobody
+    let shut = deliver(stripped.request("HEAD", "/apps").query(include), "HEAD").await;
+    assert_eq!(shut.status, 200, "{}", shut.text());
+
+    set_role_permissions(&rig.db, "developer", &DEVELOPER_PERMISSIONS).await;
+}
+
+/// A nested include (`/consent_records?include=app,app.messages`) reaches a
+/// message through two relations. It runs as a caller that LOADS `app`: `App`'s
+/// read policy names built-in roles, so a custom role would get `app: null` and
+/// `app.messages` would never be reached whatever `Message`'s policy says. The
+/// stripped `developer` does load it, the app object is asserted present, and an
+/// empty `messages` under it is the message policy's doing: this test fails when
+/// that policy is reverted.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn a_nested_include_reads_the_message_under_its_policy() {
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = rig().await;
+    let mine = rig.mine.app_id.clone();
+    let mine = mine.as_str();
+    let body = rig.mine.body_text.clone();
+    let body = body.as_str();
+    set_role_permissions(
+        &rig.db,
+        "developer",
+        &["app:read", "webhook:manage", "sms:send"],
+    )
+    .await;
+    let stripped = rig.person_by_key("developer").await;
+    let granted = rig.person_by_key("owner").await;
+    rig.db
+        .consent_record()
+        .create(schema::CreateConsentRecordInput {
+            appId: mine.to_owned(),
+            msisdnHash: format!("hmac-sha256-v1:consent-{}", suffix()),
+            msisdn: "+237677123456".to_owned(),
+            scope: MessageClass::otp,
+            channel: schema::ConsentChannel::web_form,
+            consentedAt: Utc::now(),
+            evidenceRef: None,
+        })
+        .run(&sys())
+        .await
+        .expect("seeding a consent record");
+    let nested = "include=app,app.messages";
+
+    // Control: a caller who may read sees the message through the nested include.
+    let with = granted
+        .request("GET", "/consent_records")
+        .query(nested)
+        .send()
+        .await;
+    assert_eq!(with.status, 200, "{}", with.text());
+    assert!(
+        with.text().contains(body),
+        "control, nested: {}",
+        with.text()
+    );
+
+    let shut = stripped
         .request("GET", "/consent_records")
         .query(nested)
         .send()
         .await;
     assert_eq!(shut.status, 200, "{}", shut.text());
+    let record = shut.json()["items"]
+        .as_array()
+        .and_then(|items| items.iter().find(|item| item["appId"] == mine))
+        .cloned()
+        .expect("the seeded consent record is listed");
+    assert_eq!(
+        record["app"]["id"], mine,
+        "the include loaded the app, so the probe reaches app.messages: {record}"
+    );
     assert!(
-        !shut.text().contains(body) && !shut.text().contains("+237677123456\",\"app\""),
+        !shut.text().contains(body) && !shut.text().contains(&rig.mine.message_id),
         "a nested include leaked a message: {}",
         shut.text()
     );
-    let shut = deliver(stripped.request("HEAD", "/apps").query(include), "HEAD").await;
-    assert_eq!(shut.status, 200, "{}", shut.text());
 
     set_role_permissions(&rig.db, "developer", &DEVELOPER_PERMISSIONS).await;
 }
@@ -1009,4 +1038,111 @@ async fn an_app_key_reads_opt_outs_only_with_optout_read() {
             list.text()
         );
     }
+}
+
+/// A webhook attempt's `payload` is message data (`messageId`, `appId`,
+/// `clientRef`, `state`, `operator`, `to`, which is the full number when the
+/// endpoint's `maskRecipient` is false), so a person reads attempts only with
+/// `sms:read`, as for the message. An app keeps reading its own endpoints'
+/// attempts and not another tenant's.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn a_webhook_attempt_is_message_data_and_asks_for_the_claim() {
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = rig().await;
+    let number = "+237677123456";
+
+    let mut attempts = Vec::new();
+    for app_id in [&rig.mine.app_id, &rig.other.app_id] {
+        let endpoint = rig
+            .db
+            .webhook_endpoint()
+            .create(schema::CreateWebhookEndpointInput {
+                appId: app_id.clone(),
+                url: format!("https://example.test/webhooks/{}", suffix()),
+                deliveryMode: schema::WebhookDeliveryMode::hmac,
+                audience: None,
+                eventTypes: " message.delivered ".to_owned(),
+                secret: Some(format!("whsec_{}{}{}", suffix(), suffix(), suffix())),
+                prevSecret: None,
+                secretRotatedAt: None,
+                maskRecipient: false,
+                maxAttempts: 8,
+                circuitOpenUntil: None,
+            })
+            .run(&owner())
+            .await
+            .expect("seeding the endpoint");
+        let attempt = rig
+            .db
+            .webhook_attempt()
+            .create(schema::CreateWebhookAttemptInput {
+                endpointId: endpoint.id,
+                sourceEventId: cratestack::uuid::Uuid::new_v4(),
+                aggregateId: format!("message-read-{}", suffix()),
+                eventType: "message.delivered".to_owned(),
+                payload: format!("{{\"to\":\"{number}\",\"state\":\"delivered\"}}"),
+                leaseOwner: None,
+                leaseUntil: None,
+                nextAttemptAt: None,
+                lastStatusCode: None,
+                lastError: None,
+                lastAttemptAt: None,
+                deliveredAt: None,
+            })
+            .run(&sys())
+            .await
+            .expect("seeding the attempt");
+        attempts.push(attempt.id);
+    }
+    let (mine, theirs) = (attempts[0].as_str(), attempts[1].as_str());
+
+    // A person without `sms:read`: no attempt, no number.
+    let role = custom_role(&rig.db, &["webhook:manage", "app:read"]).await;
+    let nobody = rig.person_by_key(&role).await;
+    let list = nobody.request("GET", "/webhook_attempts").send().await;
+    assert_eq!(list.status, 200, "{}", list.text());
+    assert!(
+        !list.text().contains(mine) && !list.text().contains(number),
+        "a person without sms:read read an attempt: {}",
+        list.text()
+    );
+    let one = nobody
+        .request("GET", "/webhook_attempts/{id}")
+        .params(&[mine])
+        .send()
+        .await;
+    assert_eq!(one.status, 404, "{}", one.text());
+
+    // Control: a person with it reads both tenants' attempts.
+    let reader = rig.person_by_key("support").await;
+    let list = reader.request("GET", "/webhook_attempts").send().await;
+    assert!(
+        list.text().contains(mine) && list.text().contains(theirs) && list.text().contains(number),
+        "control: {}",
+        list.text()
+    );
+
+    // An app reads its own endpoints' attempts, with no scope for it, and not
+    // another tenant's.
+    let app = rig.app_key(&rig.mine.app_id, " sms:send ").await;
+    let list = app.request("GET", "/webhook_attempts").send().await;
+    assert_eq!(list.status, 200, "{}", list.text());
+    assert!(
+        list.text().contains(mine) && !list.text().contains(theirs),
+        "an app reads its own attempts and only those: {}",
+        list.text()
+    );
+    let other = app
+        .request("GET", "/webhook_attempts/{id}")
+        .params(&[theirs])
+        .send()
+        .await;
+    assert_eq!(other.status, 404, "{}", other.text());
+    let own = app
+        .request("GET", "/webhook_attempts/{id}")
+        .params(&[mine])
+        .send()
+        .await;
+    assert_eq!(own.status, 200, "{}", own.text());
 }

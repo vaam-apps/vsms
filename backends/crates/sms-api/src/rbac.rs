@@ -21,23 +21,42 @@ use crate::auth::GatewayAuth;
 ///
 /// [`CratestackError::Forbidden`] when `required` is in neither claim.
 pub fn require_permission(ctx: &CratestackContext, required: &str) -> Result<(), CratestackError> {
-    let has_perm = matches!(
-        ctx.extensions.get("perms"),
-        Some(Value::List(items))
-            if items.iter().any(|item| matches!(item, Value::String(s) if s == required))
-    );
-    let has_scope = matches!(
-        ctx.extensions.get("scope"),
-        Some(Value::String(scope)) if sms_core::contains(scope, required)
-    );
+    let perms = match ctx.extensions.get("perms") {
+        Some(Value::List(items)) => items
+            .iter()
+            .filter_map(|item| match item {
+                Value::String(permission) => Some(permission.as_str()),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    let scope = match ctx.extensions.get("scope") {
+        Some(Value::String(scope)) => Some(scope.as_str()),
+        _ => None,
+    };
 
-    if has_perm || has_scope {
+    if holds(perms, scope, required) {
         Ok(())
     } else {
         Err(CratestackError::Forbidden(format!(
             "missing required permission {required:?}"
         )))
     }
+}
+
+/// Whether a caller holds `permission`: it is one of a person's `perms`, or it
+/// is in an app key's packed `scope` (matched by whole token, so `sms:sendall`
+/// does not satisfy `sms:send`). The one membership rule: [`require_permission`]
+/// (Layer 2) and [`crate::auth::Grants::of`] (the claims the policies read) both
+/// ask it, so a route gate and a policy cannot disagree about who holds what.
+pub(crate) fn holds<'a>(
+    perms: impl IntoIterator<Item = &'a str>,
+    scope: Option<&str>,
+    permission: &str,
+) -> bool {
+    perms.into_iter().any(|perm| perm == permission)
+        || scope.is_some_and(|scope| sms_core::contains(scope, permission))
 }
 
 /// One HTTP route gated beyond whatever Layer 1's `@@allow` already
@@ -293,6 +312,19 @@ mod tests {
             require_permission(&ctx, "provider:update"),
             Err(CratestackError::Forbidden(_))
         ));
+    }
+
+    #[test]
+    fn holds_is_the_one_membership_rule_for_perms_and_scope() {
+        let perms = ["app:read", "sms:read"];
+        assert!(holds(perms, None, "sms:read"));
+        assert!(!holds(perms, None, "sms:send"));
+        assert!(holds([], Some(" sms:send sms:read "), "sms:read"));
+        // Whole token, case-sensitive: neither a prefix nor another case matches.
+        assert!(!holds([], Some(" sms:readall "), "sms:read"));
+        assert!(!holds([], Some(" SMS:READ "), "sms:read"));
+        assert!(!holds(["sms:readall"], None, "sms:read"));
+        assert!(!holds([], None, "sms:read"));
     }
 
     #[test]

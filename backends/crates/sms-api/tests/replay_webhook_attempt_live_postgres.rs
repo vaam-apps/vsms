@@ -20,7 +20,7 @@
 use chrono::Utc;
 use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::{CratestackContext, CratestackError, FilterExpr, Value};
-use sms_api::auth::{Principal, PrincipalKind};
+use sms_api::auth::{Grants, Principal, PrincipalKind};
 use sms_api::schema::{
     self, AttemptState, Cratestack, CreateWebhookAttemptInput, CreateWebhookEndpointInput,
     UpdateWebhookAttemptInput, UpdateWebhookEndpointInput, procedures::ProcedureRegistry,
@@ -44,7 +44,12 @@ fn owner() -> CratestackContext {
         role: "owner".to_owned(),
         app_id: String::new(),
     }
-    .into_context()
+    // Reads attempts back as a person: `WebhookAttempt`'s policy asks for the
+    // `messageRead` claim, which `GatewayAuth` sets for a role holding `sms:read`.
+    .into_context_granting(Grants {
+        message_read: true,
+        ..Grants::default()
+    })
 }
 
 fn sys() -> CratestackContext {
@@ -65,16 +70,19 @@ fn sys() -> CratestackContext {
 /// carry the claim by hand, the same way `send_message_live_postgres.rs`'s
 /// own `app_caller` does for `scope`.
 fn developer_with_webhook_manage() -> CratestackContext {
+    // The seeded developer also holds `sms:read`, which `@authorize(WebhookAttempt,
+    // detail, ...)` needs as the `messageRead` claim.
+    let perms = vec!["webhook:manage".to_owned(), "sms:read".to_owned()];
     let mut ctx = Principal {
         sub: "replay-webhook-attempt-test-developer".to_owned(),
         kind: PrincipalKind::User,
         role: "developer".to_owned(),
         app_id: String::new(),
     }
-    .into_context();
+    .into_context_granting(Grants::of(&perms, &Value::Null));
     ctx.extensions.insert(
         "perms".to_owned(),
-        Value::List(vec![Value::String("webhook:manage".to_owned())]),
+        Value::List(perms.into_iter().map(Value::String).collect()),
     );
     ctx
 }
@@ -89,7 +97,13 @@ fn developer_without_permission() -> CratestackContext {
         role: "developer".to_owned(),
         app_id: String::new(),
     }
-    .into_context()
+    // Holds `sms:read` (the seeded developer does) and not `webhook:manage`, so
+    // `@authorize(WebhookAttempt, detail, ...)` passes the `messageRead` claim and
+    // this reaches Layer 2's `webhook:manage` check, which is what is under test.
+    .into_context_granting(Grants {
+        message_read: true,
+        ..Grants::default()
+    })
 }
 
 fn test_pepper() -> HashPepper {

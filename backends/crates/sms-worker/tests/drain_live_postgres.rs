@@ -33,7 +33,7 @@
 use chrono::{Duration as ChronoDuration, Utc};
 use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::{CratestackContext, CratestackError, FilterExpr};
-use sms_api::auth::{Principal, PrincipalKind};
+use sms_api::auth::{Grants, Principal, PrincipalKind};
 use sms_api::schema::{
     self, Cratestack, Encoding, Message, MessageClass, MessageState, OperatorCode, webhook_attempt,
 };
@@ -61,7 +61,12 @@ fn owner() -> CratestackContext {
         role: "owner".to_owned(),
         app_id: String::new(),
     }
-    .into_context()
+    // Reads attempts back as a person: `WebhookAttempt`'s policy asks for the
+    // `messageRead` claim, which `GatewayAuth` sets for a role holding `sms:read`.
+    .into_context_granting(Grants {
+        message_read: true,
+        ..Grants::default()
+    })
 }
 
 fn unique_suffix() -> String {

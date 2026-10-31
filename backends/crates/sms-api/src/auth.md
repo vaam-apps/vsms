@@ -17,6 +17,11 @@ context built by [`Principal::into_context`] (the system's, a test's) is
 relation filter, its `totalCount` and a nested include of a message from another
 model are bound by it; a route gate cannot say that.
 
+A context a test builds by hand must go through [`GatewayAuth::context_for`], or
+[`Principal::into_context_granting`] with [`Grants::of`] over the `perms` / `scope`
+it also sets, to hold the claims; a bare [`Principal::into_context`] reads no
+message, which is the default and the point.
+
 # VS-3, VSA-3b: two ways in, each verified before this runs
 
 [`GatewayAuth`] is the generated router's one `AuthProvider`. It verifies
