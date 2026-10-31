@@ -1,5 +1,91 @@
 # Changelog
 
+## [0.10.0](https://github.com/vaam-apps/vsms/compare/v0.9.0...v0.10.0) (2026-10-31)
+
+
+### ⚠ BREAKING CHANGES
+
+* **api:** an app key now needs the `optout:read` scope to list opt-outs; without it the list is empty and a detail is 404.
+* **auth:** the eleven SMS_SSO_* environment variables are retired. A gateway that sets one its configuration does not reference as `${VAR}` refuses to start; move the settings into `human_login.sso`. A Helm release that still sets the old top-level `sso:` values is refused by the retired-values guard.
+* **auth:** [keypair, human_login] deployments are now envelope-Optional and accept a person's bearer, where every unsigned request used to be refused. A password session acts as its non-admin role; owner and admin must pair a console key. bootstrap --owner-password-out yields a password that opens nothing at the API for the owner it creates. The console must ask for `openid profile`. A deactivation or promotion takes effect within the 60-second standing cache. Migration: none; contract digest identical.
+* **login:** no per-peer bucket; per_email and aggregate buckets; the cheap checks first (VSA-4a)
+* **db:** No release tag contains 0009 yet; the latest is v0.9.0. The next release therefore runs 0009 and 0012 together on every deployment that upgrades from v0.9.0 or earlier. That upgrade deletes the deployment's OAuth clients, the OP's signing keys, its Argon2id password hashes and its in-flight SSO sign-ins. The tables come back empty, and nothing serves them until VSA-3 and VSA-4.
+* **config:** vsms reads its deployment configuration from YAML ([#449](https://github.com/vaam-apps/vsms/issues/449))
+* **webhooks:** deliver sealed or HMAC, chosen per endpoint ([#447](https://github.com/vaam-apps/vsms/issues/447))
+* **auth:** no token endpoint or login exists; machine clients register a public key (register-client), consoles pair a key (pair-console-key), and bootstrap creates the user row only.
+* **console:** the OIDC code leg, cookie session, SSO discovery and seven console env vars are deleted, with no compatibility mode.
+* **sdk-node:** VsmsClient.privateKeyJwt, PrivateKeyJwtTokenStore, TokenStore, the tokenStore accessor and every token option are removed. Build a VsmsClient with a key and serverKeys. Needs Node 22.11 or newer.
+* **auth:** every non-OP route requires a signed request; bearer access tokens are no longer accepted. The Next.js console and the Node SDK cannot reach a live gateway until VS-5b and VS-7 move them to signing.
+
+### Features
+
+* **auth:** accept a machine token beside the envelope (VSA-3b) ([#455](https://github.com/vaam-apps/vsms/issues/455)) ([81cdc0a](https://github.com/vaam-apps/vsms/commit/81cdc0a3ece2bcc68e1b4c0c1b487560d918e4c5))
+* **auth:** ClientKey and register-client, an app client's signing public key (VS-2) ([#441](https://github.com/vaam-apps/vsms/issues/441)) ([c15ab28](https://github.com/vaam-apps/vsms/commit/c15ab2817d21e1427714b0d4ff92ff2365d15627))
+* **auth:** ConsoleKey, registerConsoleKey and pair-console-key, a human console's signing public key (VS-5a) ([#442](https://github.com/vaam-apps/vsms/issues/442)) ([515bdc2](https://github.com/vaam-apps/vsms/commit/515bdc263dd5c053cc11558c00dd374ac5937947))
+* **auth:** seal every route in a signed envelope, and the Rust SDK signs (VS-3, VS-6) ([#443](https://github.com/vaam-apps/vsms/issues/443)) ([8403d4b](https://github.com/vaam-apps/vsms/commit/8403d4bbb23b24a9e81c13908a3ef64338c4824b))
+* **auth:** serve machine tokens again behind the op: block (VSA-3a) ([#454](https://github.com/vaam-apps/vsms/issues/454)) ([fb62c4d](https://github.com/vaam-apps/vsms/commit/fb62c4d245adcb01694d9df51b5f61d37d28269d))
+* **auth:** single sign-on comes back under human_login.sso (VSA-4c) ([#458](https://github.com/vaam-apps/vsms/issues/458)) ([47cb94b](https://github.com/vaam-apps/vsms/commit/47cb94b5b183b116f80192ec19652b1d29d908f5))
+* **auth:** the API accepts a person's token from human_login, never as owner or admin (VSA-4b) ([#457](https://github.com/vaam-apps/vsms/issues/457)) ([56d662d](https://github.com/vaam-apps/vsms/commit/56d662dbfd5610a80c15c6e3ba74830c7d88ac0a))
+* **auth:** the password login, the console client row and the human_login gate (VSA-4a) ([e04bda2](https://github.com/vaam-apps/vsms/commit/e04bda296408563542a79089cf9b5b6e277a835c))
+* **config:** auth.methods, and a deployment that does not permit hmac_webhooks ([#451](https://github.com/vaam-apps/vsms/issues/451)) ([d41108b](https://github.com/vaam-apps/vsms/commit/d41108b8d03cdbd570bce2574dd73d2cf7301965))
+* **config:** the human_login: block, and the rules that serve it (VSA-4a) ([df85a0a](https://github.com/vaam-apps/vsms/commit/df85a0a7d39daa9ed01b38834359741349d69dde))
+* **config:** vsms reads its deployment configuration from YAML ([#449](https://github.com/vaam-apps/vsms/issues/449)) ([ca689ab](https://github.com/vaam-apps/vsms/commit/ca689ab5a71b329f64dce1769509ddc97699d879))
+* **console:** sign in with a paired browser key, delete the OIDC session ([#445](https://github.com/vaam-apps/vsms/issues/445)) ([1fbc14e](https://github.com/vaam-apps/vsms/commit/1fbc14e940c6dab4c22e11728e59171a9d18c682))
+* **core:** Argon2id password hashing and the one-time password generator (VSA-4a) ([7e4467a](https://github.com/vaam-apps/vsms/commit/7e4467ab6b0b93c4735296b106fcc5ddcc93e312))
+* **db:** restore the OpenID Provider tables, empty (migration 0012, VSA-2) ([#453](https://github.com/vaam-apps/vsms/issues/453)) ([773240f](https://github.com/vaam-apps/vsms/commit/773240f5b7ffdd39a6fd011f6dc5d3b43c0a4ace))
+* **gateway:** POST /login, the grant gate and a provider that serves either method (VSA-4a) ([bae6c3c](https://github.com/vaam-apps/vsms/commit/bae6c3cac7f4297f4a2b6418748e54f2d143023e))
+* **gateway:** seed-console-client, and a password for provision-user and bootstrap (VSA-4a) ([f1496fd](https://github.com/vaam-apps/vsms/commit/f1496fd4a70d98504702e50071d06c07d3cf1845))
+* **sdk-node:** sign every request through the Rust sealer compiled to WebAssembly (VS-7) ([#444](https://github.com/vaam-apps/vsms/issues/444)) ([88d7d1a](https://github.com/vaam-apps/vsms/commit/88d7d1af5efd4ae45af8501c7e6aeaceb066fb41))
+* **webhooks:** deliver sealed or HMAC, chosen per endpoint ([#447](https://github.com/vaam-apps/vsms/issues/447)) ([47b8f1a](https://github.com/vaam-apps/vsms/commit/47b8f1a4d3e730753dcc8d04f796dad726f8a3ad))
+
+
+### Bug Fixes
+
+* **api:** reading messages needs a permission, not just a signed-in person ([#469](https://github.com/vaam-apps/vsms/issues/469)) ([edae701](https://github.com/vaam-apps/vsms/commit/edae7012ca332d3918129dca59d054ac17fa0e4c))
+* **auth:** stamp lastLoginAt after the code, do the same database work on every refusal, no fixed dummy password (VSA-4a) ([5321e2b](https://github.com/vaam-apps/vsms/commit/5321e2b4028af5a6958282bde891e064dd8e51d3))
+* clippy 1.99.0 on the review round's code (VSA-4a) ([3efc3ec](https://github.com/vaam-apps/vsms/commit/3efc3ec257d555546fb79acef84bacd83d5adc32))
+* **config:** the chart keeps an operator's ConfigMaps, and no error repeats part of a secret ([#450](https://github.com/vaam-apps/vsms/issues/450)) ([49bb45c](https://github.com/vaam-apps/vsms/commit/49bb45cdc5b9f62650edff3e17ba79c984163f27))
+* **console-client:** seed-console-client and serve refuse a machine client's row (VSA-4a) ([994a990](https://github.com/vaam-apps/vsms/commit/994a99031e38985b5ed09ca0b6937d0b8a3edaed))
+* **deploy:** an edge zone for /login and /token, and a Caddyfile comment that is true again (VSA-4a) ([539ee57](https://github.com/vaam-apps/vsms/commit/539ee57650f5b8032d847fe42cf8b154472c796d))
+* **deps:** clear the 2026-10-30 Dependabot alerts by re-resolution ([#452](https://github.com/vaam-apps/vsms/issues/452)) ([eb8418f](https://github.com/vaam-apps/vsms/commit/eb8418f05a89713f08d7ff822b9feaf55832c27f))
+* **gateway:** announce an account without sharing a variable with the password file (VSA-4a) ([012e084](https://github.com/vaam-apps/vsms/commit/012e0846282f693a0705d31e271c17590fb29ed7))
+* **login:** no per-peer bucket; per_email and aggregate buckets; the cheap checks first (VSA-4a) ([e0959c5](https://github.com/vaam-apps/vsms/commit/e0959c51829eded5e41479f95399121266f0ad6e))
+* **token:** key the authorization_code grant on its code, not the public client_id (VSA-4a) ([73ab9e5](https://github.com/vaam-apps/vsms/commit/73ab9e58f6dce73df3dd6e3559dc407e332de20b))
+
+
+### Performance
+
+* **worker:** a keyless claim costs the hmac work, not the sealed backlog ([#448](https://github.com/vaam-apps/vsms/issues/448)) ([a6ac007](https://github.com/vaam-apps/vsms/commit/a6ac0071a96eb8ac4a0e31fc2181fc5e57773d22))
+
+
+### Refactoring
+
+* **auth:** delete the embedded OpenID Provider and the human OAuth plane ([#446](https://github.com/vaam-apps/vsms/issues/446)) ([29f93c4](https://github.com/vaam-apps/vsms/commit/29f93c4c873c5b48e6478258042f7c7f6d480e76))
+* **gateway:** announce a new account's id without a user_id binding (VSA-4a) ([e191730](https://github.com/vaam-apps/vsms/commit/e1917303091a3f45196dc4ec67c0fb3e9a3225e0))
+
+
+### Documentation
+
+* **agents:** the review round's five non-obvious findings (VSA-4a) ([5b8e9fa](https://github.com/vaam-apps/vsms/commit/5b8e9fab0dcc1d70d6bc018ba07cb3277a01c3cf))
+* align four tables Super-linter's MD060 refused (VSA-4a) ([d20c7d3](https://github.com/vaam-apps/vsms/commit/d20c7d3bfa57cc7e8acb4aca8ae849b49f423c14))
+* align the rate-limit table Super-linter's MD060 wants aligned (VSA-4a) ([0c799a0](https://github.com/vaam-apps/vsms/commit/0c799a0c7aa4adc29ba3e8862ea53855db702ace))
+* **auth:** the console sign-in in the architecture, the runbook, the example config and AGENTS.md (VSA-4a) ([25099ad](https://github.com/vaam-apps/vsms/commit/25099ad33fe3479d84281f9fbb32145fcdaa78c0))
+* the edge diagram names the new zone (VSA-4a) ([add5ec7](https://github.com/vaam-apps/vsms/commit/add5ec772970ad6654f2094e36ba0766aeb41c43))
+* the limiter split, the edge zone, and one sentence about what a password may be (VSA-4a) ([7c499c7](https://github.com/vaam-apps/vsms/commit/7c499c799cf34c453995975a584220e99ef5dc4f))
+
+
+### Tests
+
+* **auth:** compare the statement counts before asserting the count is plausible (VSA-4a) ([74310a5](https://github.com/vaam-apps/vsms/commit/74310a5ea43a11b135acb5ee885da190042e6dfe))
+* **auth:** do not spell the driver's path where the R1 scan reads it (VSA-4a) ([a7f09c1](https://github.com/vaam-apps/vsms/commit/a7f09c15d0d83a853032d43a9ea28274cec23bce))
+* **auth:** the login suites, the grant gate, serve's boot check and the commands (VSA-4a) ([5f095c5](https://github.com/vaam-apps/vsms/commit/5f095c5adf83c6979b79562a8278ee8c32cf3b9f))
+* **gateway:** a throttled sign-in is observably never authenticated (VSA-4a) ([cdc8270](https://github.com/vaam-apps/vsms/commit/cdc8270b36349d6c84cfdebc24f495b33e2c61ce))
+
+
+### Chores
+
+* **deps:** cratestack 0.16.0 with envelope and cose (VS-1); clear the advisories cargo deny fails on ([#439](https://github.com/vaam-apps/vsms/issues/439)) ([e3e38ff](https://github.com/vaam-apps/vsms/commit/e3e38ffa8d2c0380169dc5df23c82d9654285c7f))
+
 ## [0.9.0](https://github.com/vaam-apps/vsms/compare/v0.8.0...v0.9.0) (2026-10-22)
 
 
