@@ -13,10 +13,16 @@
 //!   a hash, a full number, a cost or a provider's own text;
 //! - **whose messages**: an app key with the scope sees its own app and none other;
 //!   a foreign id is an empty answer, not an error;
-//! - **the number oracle**: equality on the whole number only, one audit row per
-//!   answered call holding a hash and never the number, and the 61st number lookup
-//!   in an hour refused;
+//! - **the number oracle**: equality on the whole number only, never a purged row
+//!   and never further back than the retention period, one audit row per lookup
+//!   holding a hash and never the number;
+//! - **the budget**: 60 lookups an hour by number (or, for a person, by client
+//!   reference), keyed on the caller's subject *and* kind, an hour wide, held under
+//!   a concurrent burst, and a refusal recorded as one;
 //! - **fail closed**: a lookup whose audit row cannot be written is not answered.
+//!
+//! No assertion message in this file interpolates a number, a reference, a hash, a
+//! body or a response: a failure names the call by a fixed label or an index.
 //!
 //! ```bash
 //! cargo test -p sms-api --test delivery_status_live_postgres -- --ignored --test-threads=1
@@ -35,8 +41,8 @@ use sealed_fixtures::{
 use serde_json::{Value, json};
 use sms_api::auth::{Principal, PrincipalKind, system_context};
 use sms_api::schema::{
-    self, Cratestack, Encoding, MessageClass, MessageState, OperatorCode, UpdateMessageInput,
-    delivery_lookup, role,
+    self, Cratestack, DeliveryLookupKey, DeliveryLookupOutcome, Encoding, MessageClass,
+    MessageState, OperatorCode, UpdateMessageInput, delivery_lookup, role,
 };
 use sms_api::{HashPepper, audit_log, delivery_status, hmac_sha256_hex};
 use sms_test_support::sealed::{Reply, SealedClient, TestKey};
@@ -62,6 +68,20 @@ const FORBIDDEN_KEYS: [&str; 15] = [
     "routeId",
     "excludedRouteIds",
     "leaseOwner",
+];
+
+/// What each entry of `the_answer_never_carries_what_a_message_keeps_private`'s
+/// `secrets` is, in order, so a failure names it without printing it.
+const SECRET_NAMES: [&str; 9] = [
+    "body",
+    "state reason",
+    "body hash",
+    "number hash",
+    "provider reference",
+    "client reference",
+    "number",
+    "national number",
+    "raw payload marker",
 ];
 
 fn sys() -> CratestackContext {
@@ -315,6 +335,59 @@ impl Rig {
         client(&self.base, &key)
     }
 
+    /// `n` answered budgeted-looking rows for `sub`, as if it had spent them just now.
+    async fn seed_lookups(&self, sub: &str, kind: &str, key_kind: DeliveryLookupKey, n: usize) {
+        for i in 0..n {
+            self.db
+                .delivery_lookup()
+                .create(schema::CreateDeliveryLookupInput {
+                    actorSub: sub.to_owned(),
+                    actorKind: kind.to_owned(),
+                    actorRole: "support".to_owned(),
+                    actorAppId: None,
+                    keyKind: key_kind,
+                    keyValue: format!("seeded-{i}"),
+                    appIdFilter: None,
+                    outcome: DeliveryLookupOutcome::answered,
+                    resultCount: Some(0),
+                })
+                .run(&sys())
+                .await
+                .expect("seeding a lookup");
+        }
+    }
+
+    /// How many lookup rows `sub` has, of one outcome or of any.
+    async fn count_of(&self, sub: &str, outcome: Option<DeliveryLookupOutcome>) -> i64 {
+        let mut filter = FilterExpr::from(delivery_lookup::actorSub().eq(sub.to_owned()));
+        if let Some(outcome) = outcome {
+            filter = filter.and(delivery_lookup::outcome().eq(outcome));
+        }
+        self.db
+            .delivery_lookup()
+            .aggregate()
+            .count()
+            .where_expr(filter)
+            .run(&sys())
+            .await
+            .expect("counting lookups")
+    }
+
+    /// Make `row` look `age` old.
+    async fn backdate(&self, row: &schema::Message, age: Duration) {
+        self.db
+            .message()
+            .update(row.id.clone())
+            .set(UpdateMessageInput {
+                createdAt: Some(Utc::now() - age),
+                ..Default::default()
+            })
+            .if_match(row.version)
+            .run(&sys())
+            .await
+            .expect("backdating the message");
+    }
+
     /// The `DeliveryLookup` rows whose `keyValue` is exactly `key_value`.
     async fn lookups(&self, key_value: &str) -> Vec<schema::DeliveryLookup> {
         self.db
@@ -326,6 +399,44 @@ impl Rig {
             .run(&sys())
             .await
             .expect("reading lookups")
+    }
+}
+
+fn blank_query() -> schema::DeliveryStatusQuery {
+    schema::DeliveryStatusQuery {
+        messageId: None,
+        appId: None,
+        clientRef: None,
+        msisdn: None,
+        since: None,
+        until: None,
+        limit: None,
+    }
+}
+
+fn by_number(msisdn: &str) -> schema::DeliveryStatusQuery {
+    schema::DeliveryStatusQuery {
+        msisdn: Some(msisdn.to_owned()),
+        ..blank_query()
+    }
+}
+
+/// The name of an error's variant, for a failure message that must not carry what
+/// the error says.
+fn error_kind(error: &CratestackError) -> &'static str {
+    match error {
+        CratestackError::Validation(_) => "Validation",
+        CratestackError::Forbidden(_) => "Forbidden",
+        CratestackError::Database(_) => "Database",
+        CratestackError::Internal(_) => "Internal",
+        _ => "another error",
+    }
+}
+
+fn result_kind(result: &Result<schema::DeliveryStatusResult, CratestackError>) -> &'static str {
+    match result {
+        Ok(_) => "answered",
+        Err(error) => error_kind(error),
     }
 }
 
@@ -355,8 +466,15 @@ fn one(id: &str) -> Vec<String> {
     vec![id.to_owned()]
 }
 
+/// The status code, and nothing of the body: a lookup's answer holds a masked
+/// number and a refusal may quote a field, and an assertion message is a log line.
+/// `what` is a fixed label for the call.
+fn assert_status(reply: &Reply, want: u16, what: &str) {
+    assert_eq!(reply.status, want, "{what}: unexpected status");
+}
+
 fn statuses(reply: &Reply) -> Vec<Value> {
-    assert_eq!(reply.status, 200, "{}", reply.text());
+    assert_status(reply, 200, "a lookup");
     reply.json()["statuses"]
         .as_array()
         .expect("statuses")
@@ -371,9 +489,11 @@ fn ids(reply: &Reply) -> Vec<String> {
 }
 
 fn assert_refused_naming_delivery_read(reply: &Reply, who: &str) {
-    let text = reply.text();
-    assert_eq!(reply.status, 403, "{who}: {text}");
-    assert!(text.contains("delivery:read"), "{who}: {text}");
+    assert_status(reply, 403, who);
+    assert!(
+        reply.text().contains("delivery:read"),
+        "{who}: the refusal does not name delivery:read"
+    );
 }
 
 fn permissions_text(permissions: &str) -> Vec<&str> {
@@ -452,7 +572,7 @@ async fn support_cannot_read_receipts_and_can_look_up_the_status() {
         .json(&json!({ "args": { "messageId": message.id } }))
         .send()
         .await;
-    assert_eq!(receipts.status, 403, "{}", receipts.text());
+    assert_status(&receipts, 403, "support listing receipts");
 
     let reply = lookup(&support, json!({ "messageId": message.id })).await;
     let all = statuses(&reply);
@@ -501,7 +621,7 @@ async fn the_status_is_found_by_id_by_client_reference_and_by_number_newest_firs
     // By number: the whole number, both apps, newest first.
     let by_number = lookup(&support, json!({ "msisdn": number })).await;
     let found = ids(&by_number);
-    assert_eq!(found.len(), 3, "{}", by_number.text());
+    assert_eq!(found.len(), 3, "a number finds the three messages");
     assert_eq!(found[1], newer.id, "newest first: {found:?}");
     assert_eq!(found[2], older.id);
     let all = statuses(&by_number);
@@ -525,7 +645,7 @@ async fn the_status_is_found_by_id_by_client_reference_and_by_number_newest_firs
     assert_eq!(ids(&by_ref), one(&newer.id));
     // A person has to say which app a reference belongs to.
     let unscoped = lookup(&support, json!({ "clientRef": reference })).await;
-    assert_eq!(unscoped.status, 422, "{}", unscoped.text());
+    assert_status(&unscoped, 422, "a reference without an app");
 
     // By id, and the person's optional app filter.
     assert_eq!(
@@ -579,14 +699,17 @@ async fn the_answer_never_carries_what_a_message_keeps_private() {
         json!({ "msisdn": number }),
         json!({ "clientRef": reference, "appId": rig.app_a }),
     ];
-    for ask in asks {
+    // The key kind names a call in a failure message; the number, the reference
+    // and the answer never go into one.
+    for (ask, kind) in asks.into_iter().zip(["id", "number", "client reference"]) {
         let reply = lookup(&support, ask.clone()).await;
-        assert_eq!(reply.status, 200, "{ask}: {}", reply.text());
+        assert_status(&reply, 200, kind);
         let text = reply.text();
-        for secret in &secrets {
+        for (index, secret) in secrets.iter().enumerate() {
             assert!(
                 !text.contains(secret),
-                "{ask}: the answer carries {secret}: {text}"
+                "by {kind}: the answer carries secret #{index} ({})",
+                SECRET_NAMES[index]
             );
         }
         let mut keys = Vec::new();
@@ -594,7 +717,7 @@ async fn the_answer_never_carries_what_a_message_keeps_private() {
         for forbidden in FORBIDDEN_KEYS {
             assert!(
                 !keys.iter().any(|key| key == forbidden),
-                "{ask}: the answer has a `{forbidden}` key: {keys:?}"
+                "by {kind}: the answer has a `{forbidden}` key"
             );
         }
         // The nested receipt is a summary, and nothing else about the message.
@@ -676,7 +799,7 @@ async fn an_app_key_with_the_scope_sees_its_own_app_and_no_other() {
     );
     // Another app's id: an empty answer, as if it did not exist.
     let foreign = lookup(&key_a, json!({ "messageId": theirs.id })).await;
-    assert_eq!(foreign.status, 200, "{}", foreign.text());
+    assert_status(&foreign, 200, "another app's id");
     assert_eq!(ids(&foreign), Vec::<String>::new());
     // A number both apps messaged: only the key's own app's message.
     assert_eq!(
@@ -694,7 +817,7 @@ async fn an_app_key_with_the_scope_sees_its_own_app_and_no_other() {
         json!({ "clientRef": reference, "appId": rig.app_b }),
     )
     .await;
-    assert_eq!(named.status, 422, "{}", named.text());
+    assert_status(&named, 422, "naming another app");
     assert!(!named.text().contains(&theirs.id));
     // Naming its own is fine.
     assert_eq!(
@@ -743,9 +866,17 @@ async fn a_number_is_matched_whole() {
         one(&at_x.id)
     );
     // A prefix, a suffix, a partial number: refused, never a search.
-    for partial in [&x[..x.len() - 3], &x[x.len() - 6..], "+2376", ""] {
+    for (index, partial) in [&x[..x.len() - 3], &x[x.len() - 6..], "+2376", ""]
+        .into_iter()
+        .enumerate()
+    {
         let reply = lookup(&support, json!({ "msisdn": partial })).await;
-        assert_eq!(reply.status, 422, "{partial}: {}", reply.text());
+        assert_status(&reply, 422, &format!("partial number #{index}"));
+        // The refusal never quotes what was typed.
+        assert!(
+            partial.is_empty() || !reply.text().contains(partial),
+            "partial number #{index} was quoted back"
+        );
     }
     // A number nobody messaged: empty, not an error.
     let unknown = lookup(&support, json!({ "msisdn": unique_mtn_msisdn() })).await;
@@ -788,7 +919,8 @@ async fn every_answered_call_leaves_one_account_of_it_holding_a_hash_and_never_t
     assert_eq!(row.actorRole, "support");
     assert_eq!(row.actorAppId, None);
     assert_eq!(row.appIdFilter, None);
-    assert_eq!(row.resultCount, 1);
+    assert_eq!(row.outcome, DeliveryLookupOutcome::answered);
+    assert_eq!(row.resultCount, Some(1));
 
     // By number, by a person: the row holds the keyed hash.
     assert_eq!(
@@ -829,8 +961,14 @@ async fn every_answered_call_leaves_one_account_of_it_holding_a_hash_and_never_t
         .collect();
     for row in &all {
         let text = format!("{row:?}");
-        assert!(!text.contains(&number[4..]), "{text}");
-        assert!(!text.contains(&reference), "{text}");
+        assert!(
+            !text.contains(&number[4..]),
+            "an audit row holds the number"
+        );
+        assert!(
+            !text.contains(&reference),
+            "an audit row holds the reference"
+        );
     }
     let page = audit_log::list_audit_entries(
         &rig.db,
@@ -847,16 +985,44 @@ async fn every_answered_call_leaves_one_account_of_it_holding_a_hash_and_never_t
     .await
     .expect("reading the audit trail");
     for row in &all {
-        let entry = page
+        let entries: Vec<_> = page
             .entries
             .iter()
-            .find(|entry| entry.primary_key.contains(&row.id))
-            .unwrap_or_else(|| panic!("no cratestack_audit entry for lookup {}", row.id));
-        assert_eq!(entry.operation, "create");
-        let after = entry.after.clone().unwrap_or_default();
-        assert!(after.contains(&row.keyValue), "{after}");
-        assert!(!after.contains(&number[4..]), "{after}");
-        assert!(!after.contains(&reference), "{after}");
+            .filter(|entry| entry.primary_key.contains(&row.id))
+            .collect();
+        // A lookup by id is written once. A budgeted one is claimed (`create`, as
+        // pending) and settled (`update`): two entries, in the hash chain both.
+        // (Here the number is the only budgeted key: the reference was an app key's.)
+        let budgeted = row.keyKind == schema::DeliveryLookupKey::msisdn;
+        let operations: Vec<&str> = entries
+            .iter()
+            .map(|entry| entry.operation.as_str())
+            .collect();
+        assert_eq!(
+            operations.iter().filter(|op| **op == "create").count(),
+            1,
+            "one create entry per row"
+        );
+        assert_eq!(
+            operations.iter().filter(|op| **op == "update").count(),
+            usize::from(budgeted),
+            "a budgeted row is settled once, an unbudgeted one never"
+        );
+        for entry in entries {
+            let after = entry.after.clone().unwrap_or_default();
+            assert!(
+                after.contains(&row.keyValue),
+                "an audit snapshot lacks its row's key"
+            );
+            assert!(
+                !after.contains(&number[4..]),
+                "an audit snapshot holds the number"
+            );
+            assert!(
+                !after.contains(&reference),
+                "an audit snapshot holds the reference"
+            );
+        }
     }
 }
 
@@ -892,7 +1058,7 @@ async fn refused_and_malformed_calls_leave_no_account_behind() {
 
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres - see module docs"]
-async fn the_sixty_first_number_lookup_in_an_hour_is_refused_and_ids_are_not_counted() {
+async fn the_sixty_first_budgeted_lookup_in_an_hour_is_refused_and_recorded_as_such() {
     let _guard = TEST_MUTEX.lock().await;
     let rig = Rig::new().await;
     let number = unique_mtn_msisdn();
@@ -907,27 +1073,14 @@ async fn the_sixty_first_number_lookup_in_an_hour_is_refused_and_ids_are_not_cou
     );
     let first = rig.lookups(&rig.hash(&number)).await;
     assert_eq!(first.len(), 1);
+    assert_eq!(first[0].outcome, DeliveryLookupOutcome::answered);
+    assert_eq!(first[0].resultCount, Some(1));
     let actor = first[0].actorSub.clone();
 
-    // Fill the hour up to 59 (the first, and 58 more), by id lookups too: those are
-    // not number lookups and must not count.
-    for i in 0..58 {
-        rig.db
-            .delivery_lookup()
-            .create(schema::CreateDeliveryLookupInput {
-                actorSub: actor.clone(),
-                actorKind: "user".to_owned(),
-                actorRole: "support".to_owned(),
-                actorAppId: None,
-                keyKind: schema::DeliveryLookupKey::msisdn,
-                keyValue: format!("seeded-{i}"),
-                appIdFilter: None,
-                resultCount: 0,
-            })
-            .run(&sys())
-            .await
-            .expect("seeding a lookup");
-    }
+    // Fill the hour up to 59 (the first, and 58 more), and look up by id too: ids
+    // are not budgeted and must not count, nor insert a pending row.
+    rig.seed_lookups(&actor, "user", DeliveryLookupKey::msisdn, 58)
+        .await;
     for _ in 0..3 {
         assert_eq!(
             ids(&lookup(&support, json!({ "messageId": message.id })).await).len(),
@@ -941,28 +1094,53 @@ async fn the_sixty_first_number_lookup_in_an_hour_is_refused_and_ids_are_not_cou
         1
     );
     let refused = lookup(&support, json!({ "msisdn": number })).await;
-    assert_eq!(refused.status, 403, "{}", refused.text());
+    assert_status(&refused, 403, "the 61st budgeted lookup");
     assert!(
-        refused
-            .text()
-            .contains("delivery lookup budget exhausted: 60 number lookups per hour"),
-        "{}",
-        refused.text()
+        refused.text().contains(
+            "delivery lookup budget exhausted: 60 lookups by number or reference per hour"
+        ),
+        "the refusal does not carry the budget message"
     );
-    // The refusal is not an answer: it left no row. Ids still work for the same caller.
-    let counted = rig
+    // The refusal is recorded honestly: one over_budget row with no count, and the
+    // sixty admitted rows are the ones that count. Ids still work for the caller.
+    assert_eq!(
+        rig.count_of(&actor, Some(DeliveryLookupOutcome::over_budget))
+            .await,
+        1
+    );
+    // Sixty admitted by number, plus the three by id.
+    assert_eq!(
+        rig.count_of(&actor, Some(DeliveryLookupOutcome::answered))
+            .await,
+        63
+    );
+    assert_eq!(
+        rig.count_of(&actor, Some(DeliveryLookupOutcome::pending))
+            .await,
+        0
+    );
+    let refusals = rig
         .db
         .delivery_lookup()
-        .aggregate()
-        .count()
+        .find_many()
         .where_expr(
             FilterExpr::from(delivery_lookup::actorSub().eq(actor.clone()))
-                .and(delivery_lookup::keyKind().eq(schema::DeliveryLookupKey::msisdn)),
+                .and(delivery_lookup::outcome().eq(DeliveryLookupOutcome::over_budget)),
         )
         .run(&sys())
         .await
-        .expect("counting");
-    assert_eq!(counted, 60);
+        .expect("reading the refusal");
+    assert_eq!(refusals[0].resultCount, None);
+    assert_eq!(refusals[0].keyKind, DeliveryLookupKey::msisdn);
+    // A refused attempt is not counted, so a retry is refused again and the caller
+    // is not locked out by its own retries for longer than its admitted calls say.
+    let again = lookup(&support, json!({ "msisdn": number })).await;
+    assert_status(&again, 403, "a retry while over budget");
+    assert_eq!(
+        rig.count_of(&actor, Some(DeliveryLookupOutcome::over_budget))
+            .await,
+        2
+    );
     assert_eq!(
         ids(&lookup(&support, json!({ "messageId": message.id })).await).len(),
         1
@@ -976,11 +1154,240 @@ async fn the_sixty_first_number_lookup_in_an_hour_is_refused_and_ids_are_not_cou
 
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres - see module docs"]
-async fn a_purged_message_shows_no_recipient() {
+async fn the_budget_is_an_hour_wide() {
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = Rig::new().await;
+    let number = unique_mtn_msisdn();
+    rig.message(&rig.app_a, &Spec::to(&number)).await;
+    let pepper = HashPepper::new(&rig.pepper).unwrap();
+    let sub = format!("hour-{}", tag());
+    let ctx = person_ctx(&sub);
+    let run = |now| delivery_status::lookup(&pepper, &rig.db, &ctx, by_number(&number), now);
+    // The caller has made exactly the budget just now.
+    rig.seed_lookups(&sub, "user", DeliveryLookupKey::msisdn, 60)
+        .await;
+
+    let now = Utc::now();
+    assert!(matches!(run(now).await, Err(CratestackError::Forbidden(_))));
+    // Fifty-nine minutes later the same lookups are still inside the hour...
+    let almost = run(now + Duration::minutes(59)).await;
+    assert!(matches!(almost, Err(CratestackError::Forbidden(_))));
+    // ...and sixty-one minutes later they are not: the budget is available again.
+    let later = run(now + Duration::minutes(61)).await;
+    assert_eq!(later.expect("the hour has passed").statuses.len(), 1);
+}
+
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn a_persons_reference_lookups_share_the_budget_and_an_app_keys_own_are_free() {
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = Rig::new().await;
+    let number = unique_mtn_msisdn();
+    let reference = format!("guessable-{}", tag());
+    let message = rig
+        .message(
+            &rig.app_a,
+            &Spec {
+                client_ref: Some(reference.clone()),
+                ..Spec::to(&number)
+            },
+        )
+        .await;
+    let pepper = HashPepper::new(&rig.pepper).unwrap();
+    let by_reference = || schema::DeliveryStatusQuery {
+        clientRef: Some(reference.clone()),
+        appId: Some(rig.app_a.clone()),
+        ..blank_query()
+    };
+
+    // A person: 59 references already looked up this hour, so one more fits, and
+    // the next, whether by reference or by number, does not.
+    let sub = format!("person-{}", tag());
+    let person = person_ctx(&sub);
+    rig.seed_lookups(&sub, "user", DeliveryLookupKey::client_ref, 59)
+        .await;
+    let now = Utc::now();
+    let fits = delivery_status::lookup(&pepper, &rig.db, &person, by_reference(), now).await;
+    assert_eq!(fits.expect("the 60th fits").statuses.len(), 1);
+    for (what, args) in [
+        ("a reference", by_reference()),
+        ("a number", by_number(&number)),
+    ] {
+        let over = delivery_status::lookup(&pepper, &rig.db, &person, args, now).await;
+        assert!(
+            matches!(over, Err(CratestackError::Forbidden(_))),
+            "{what} past the shared budget was not refused"
+        );
+    }
+    // A message id is never counted.
+    let by_id = schema::DeliveryStatusQuery {
+        messageId: Some(message.id.clone()),
+        ..blank_query()
+    };
+    delivery_status::lookup(&pepper, &rig.db, &person, by_id, now)
+        .await
+        .expect("an id is not budgeted");
+
+    // An app key: its own references are its own, however many it has looked up,
+    // and they do not eat its number budget either.
+    let key_sub = format!("key-{}", tag());
+    let key = app_ctx(&key_sub, &rig.app_a);
+    rig.seed_lookups(&key_sub, "app", DeliveryLookupKey::client_ref, 80)
+        .await;
+    let own = schema::DeliveryStatusQuery {
+        clientRef: Some(reference.clone()),
+        ..blank_query()
+    };
+    let answered = delivery_status::lookup(&pepper, &rig.db, &key, own, now)
+        .await
+        .expect("an app key's own reference is not budgeted");
+    assert_eq!(answered.statuses.len(), 1);
+    let by_number_now = delivery_status::lookup(&pepper, &rig.db, &key, by_number(&number), now)
+        .await
+        .expect("references do not count against an app key's number budget");
+    assert_eq!(by_number_now.statuses.len(), 1);
+}
+
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn the_budget_is_keyed_on_the_kind_of_caller_as_well_as_its_subject() {
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = Rig::new().await;
+    let number = unique_mtn_msisdn();
+    rig.message(&rig.app_a, &Spec::to(&number)).await;
+    let pepper = HashPepper::new(&rig.pepper).unwrap();
+    let now = Utc::now();
+
+    // One subject string, held by an app key that spent its whole hour: a person
+    // with the same `sub` has spent nothing.
+    let shared = format!("shared-sub-{}", tag());
+    rig.seed_lookups(&shared, "app", DeliveryLookupKey::msisdn, 60)
+        .await;
+    let person = person_ctx(&shared);
+    let served = delivery_status::lookup(&pepper, &rig.db, &person, by_number(&number), now).await;
+    assert_eq!(
+        served
+            .expect("another kind's hour is not this one's")
+            .statuses
+            .len(),
+        1
+    );
+    // And the other way round, which also shows the count reads the kind it is given.
+    let other = format!("shared-sub-{}", tag());
+    rig.seed_lookups(&other, "user", DeliveryLookupKey::msisdn, 60)
+        .await;
+    let key = app_ctx(&other, &rig.app_a);
+    let served = delivery_status::lookup(&pepper, &rig.db, &key, by_number(&number), now).await;
+    assert_eq!(
+        served
+            .expect("another kind's hour is not this one's")
+            .statuses
+            .len(),
+        1
+    );
+    let own_kind = person_ctx(&other);
+    let refused =
+        delivery_status::lookup(&pepper, &rig.db, &own_kind, by_number(&number), now).await;
+    assert!(matches!(refused, Err(CratestackError::Forbidden(_))));
+}
+
+/// The race the order of the two statements decides. Eighty calls from one caller
+/// with a fresh budget, started together over forty connections: at most sixty may
+/// be answered, whatever interleaving the database produces. A budget that counts
+/// before it inserts lets every call in a burst count before any of them insert.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn a_burst_of_eighty_number_lookups_is_admitted_sixty_at_most() {
+    const BURST: usize = 80;
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = Rig::new().await;
+    let number = unique_mtn_msisdn();
+    rig.message(&rig.app_a, &Spec::to(&number)).await;
+    let url = sms_test_support::database_url().await;
+    let pool = PgPoolOptions::new()
+        .max_connections(40)
+        .connect(&url)
+        .await
+        .expect("connecting a wider pool");
+    let burst_db = std::sync::Arc::new(Cratestack::builder(pool).build());
+    let pepper = std::sync::Arc::new(HashPepper::new(&rig.pepper).unwrap());
+    let sub = format!("burst-{}", tag());
+    let start = std::sync::Arc::new(tokio::sync::Barrier::new(BURST));
+
+    let calls: Vec<_> = (0..BURST)
+        .map(|_| {
+            let (db, pepper, start) = (burst_db.clone(), pepper.clone(), start.clone());
+            let ctx = person_ctx(&sub);
+            let args = by_number(&number);
+            tokio::spawn(async move {
+                start.wait().await;
+                delivery_status::lookup(&pepper, &db, &ctx, args, Utc::now()).await
+            })
+        })
+        .collect();
+    let (mut answered, mut refused) = (0_usize, 0_usize);
+    for call in calls {
+        match call.await.expect("a lookup task panicked") {
+            Ok(result) => {
+                assert_eq!(result.statuses.len(), 1);
+                answered += 1;
+            }
+            Err(CratestackError::Forbidden(_)) => refused += 1,
+            Err(other) => panic!("a lookup failed with {}", error_kind(&other)),
+        }
+    }
+    eprintln!("burst of {BURST}: {answered} answered, {refused} refused");
+
+    assert!(
+        answered <= 60,
+        "{answered} of {BURST} were answered, past the budget of 60"
+    );
+    assert!(
+        answered >= 1,
+        "nothing was answered: the budget refuses everyone"
+    );
+    assert_eq!(answered + refused, BURST);
+    // Every attempt is on the trail, and the trail agrees with what the callers saw.
+    assert_eq!(rig.count_of(&sub, None).await, BURST as i64);
+    assert_eq!(
+        rig.count_of(&sub, Some(DeliveryLookupOutcome::answered))
+            .await,
+        answered as i64
+    );
+    assert_eq!(
+        rig.count_of(&sub, Some(DeliveryLookupOutcome::over_budget))
+            .await,
+        refused as i64
+    );
+    assert_eq!(
+        rig.count_of(&sub, Some(DeliveryLookupOutcome::pending))
+            .await,
+        0
+    );
+    let answered_rows = rig
+        .db
+        .delivery_lookup()
+        .find_many()
+        .where_expr(
+            FilterExpr::from(delivery_lookup::actorSub().eq(sub.clone()))
+                .and(delivery_lookup::outcome().eq(DeliveryLookupOutcome::answered)),
+        )
+        .limit(200)
+        .run(&sys())
+        .await
+        .expect("reading the answered rows");
+    assert!(answered_rows.iter().all(|row| row.resultCount == Some(1)));
+}
+
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn a_purged_message_is_found_by_its_id_and_never_by_its_number() {
     let _guard = TEST_MUTEX.lock().await;
     let rig = Rig::new().await;
     let number = unique_mtn_msisdn();
     let live = rig.message(&rig.app_a, &Spec::to(&number)).await;
+    // Purged early (an erasure): `purge_retention` keeps `msisdnHash`, and the keyed
+    // hash is what de-identifies the row, so the number must not find it.
     let purged = rig
         .message(
             &rig.app_a,
@@ -993,16 +1400,107 @@ async fn a_purged_message_shows_no_recipient() {
         .await;
     let support = rig.person("support").await;
 
-    // A purge keeps msisdnHash, so the number still finds both; only the purged one
-    // loses its recipient.
-    let all = statuses(&lookup(&support, json!({ "msisdn": number })).await);
-    assert_eq!(all.len(), 2);
-    let gone = all.iter().find(|s| s["messageId"] == purged.id).unwrap();
-    assert_eq!(gone["purged"], true);
-    assert!(gone["recipient"].is_null(), "{gone}");
-    let kept = all.iter().find(|s| s["messageId"] == live.id).unwrap();
+    let by_number = lookup(&support, json!({ "msisdn": number })).await;
+    assert_eq!(
+        ids(&by_number),
+        one(&live.id),
+        "the number finds the live row only"
+    );
+    let kept = &statuses(&by_number)[0];
     assert_eq!(kept["purged"], false);
     assert!(kept["recipient"].as_str().unwrap().starts_with("+237"));
+
+    // Its id still answers, and says it was purged and shows no recipient.
+    let by_id = statuses(&lookup(&support, json!({ "messageId": purged.id })).await);
+    assert_eq!(by_id.len(), 1);
+    assert_eq!(by_id[0]["messageId"], purged.id);
+    assert_eq!(by_id[0]["purged"], true);
+    assert!(
+        by_id[0]["recipient"].is_null(),
+        "a purged row shows a recipient"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn a_lookup_by_number_does_not_reach_back_past_the_retention_period() {
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = Rig::new().await;
+    let number = unique_mtn_msisdn();
+    // Two rows a hundred days old: one purged as the retention job does it, one
+    // the job has not reached yet.
+    let mut old = Vec::new();
+    for purged in [true, false] {
+        let row = rig
+            .message(
+                &rig.app_a,
+                &Spec {
+                    purged,
+                    state_reason: None,
+                    ..Spec::to(&number)
+                },
+            )
+            .await;
+        rig.backdate(&row, Duration::days(100)).await;
+        old.push(row);
+    }
+    let pepper = HashPepper::new(&rig.pepper).unwrap();
+    let sub = format!("history-{}", tag());
+    let ctx = person_ctx(&sub);
+    let now = Utc::now();
+    let run = |since, until| {
+        let args = schema::DeliveryStatusQuery {
+            since: Some(since),
+            until: Some(until),
+            ..by_number(&number)
+        };
+        delivery_status::lookup(&pepper, &rig.db, &ctx, args, now)
+    };
+
+    // A window that reaches the old rows is refused, with a message that is fixed
+    // and quotes nothing, and leaves no account behind (it is refused before the
+    // database is touched).
+    let before = rig.count_of(&sub, None).await;
+    for (since, until) in [
+        (now - Duration::days(120), now - Duration::days(60)),
+        (now - Duration::days(105), now - Duration::days(95)),
+        (now - Duration::days(91), now - Duration::days(5)),
+    ] {
+        match run(since, until).await {
+            Err(CratestackError::Validation(message)) => assert_eq!(
+                message,
+                "a lookup by number may not start more than 90 days ago"
+            ),
+            other => panic!("a window into purged history was {}", result_kind(&other)),
+        }
+    }
+    assert_eq!(rig.count_of(&sub, None).await, before);
+    // The widest allowed window ends where the rows begin: nothing found.
+    let widest = run(now - Duration::days(90), now)
+        .await
+        .expect("90 days is allowed");
+    assert!(widest.statuses.is_empty());
+    // The default window is no different.
+    let default_window = delivery_status::lookup(&pepper, &rig.db, &ctx, by_number(&number), now)
+        .await
+        .expect("the default window");
+    assert!(default_window.statuses.is_empty());
+    // By id, both are still there: the purged one with no recipient.
+    for row in &old {
+        let args = schema::DeliveryStatusQuery {
+            messageId: Some(row.id.clone()),
+            ..blank_query()
+        };
+        let found = delivery_status::lookup(&pepper, &rig.db, &ctx, args, now)
+            .await
+            .expect("an id reaches any age");
+        assert_eq!(found.statuses.len(), 1);
+        assert_eq!(found.statuses[0].purged, row.purgedAt.is_some());
+        assert_eq!(
+            found.statuses[0].recipient.is_none(),
+            row.purgedAt.is_some()
+        );
+    }
 }
 
 fn person_ctx(sub: &str) -> CratestackContext {
@@ -1011,6 +1509,16 @@ fn person_ctx(sub: &str) -> CratestackContext {
         kind: PrincipalKind::User,
         role: "support".to_owned(),
         app_id: String::new(),
+    }
+    .into_context()
+}
+
+fn app_ctx(sub: &str, app_id: &str) -> CratestackContext {
+    Principal {
+        sub: sub.to_owned(),
+        kind: PrincipalKind::App,
+        role: "app".to_owned(),
+        app_id: app_id.to_owned(),
     }
     .into_context()
 }
@@ -1104,9 +1612,31 @@ async fn a_lookup_that_cannot_be_recorded_is_not_answered() {
                 | CratestackError::Database(_)
                 | CratestackError::Internal(_))
         ),
-        "a lookup that cannot be accounted for must fail, got {refused:?}"
+        "a lookup that cannot be accounted for must fail, got {}",
+        result_kind(&refused)
     );
     assert_eq!(rig.lookups(&message.id).await.len(), before);
+
+    // A budgeted lookup claims its row before it reads anything: with the row
+    // unwritable it fails there, and answers nothing either.
+    let by_number_refused = delivery_status::lookup(
+        &pepper,
+        &rig.db,
+        &unrecordable,
+        by_number(&unique_mtn_msisdn()),
+        Utc::now(),
+    )
+    .await;
+    assert!(
+        matches!(
+            by_number_refused,
+            Err(CratestackError::Validation(_)
+                | CratestackError::Database(_)
+                | CratestackError::Internal(_))
+        ),
+        "a budgeted lookup that cannot be accounted for must fail, got {}",
+        result_kind(&by_number_refused)
+    );
 }
 
 /// What an `Idempotency-Key` does to a lookup, measured and not assumed: the
@@ -1135,8 +1665,8 @@ async fn an_idempotency_key_replays_the_first_answer_and_the_first_call_is_recor
     };
     let first = ask().await;
     let second = ask().await;
-    assert_eq!(first.status, 200, "{}", first.text());
-    assert_eq!(second.status, 200, "{}", second.text());
+    assert_status(&first, 200, "the first call");
+    assert_status(&second, 200, "the replayed call");
     assert_eq!(first.json(), second.json(), "the same answer");
     // Measured: the layer answers the second call itself, so the procedure ran, and
     // was recorded, once.

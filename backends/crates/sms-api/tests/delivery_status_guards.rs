@@ -237,9 +237,17 @@ fn the_audit_model_has_no_route_no_other_reader_and_is_audited() {
         .collect();
     assert_eq!(
         policies.len(),
-        2,
-        "read and create, nothing else: {policies:?}"
+        3,
+        "read, create and update (the settling of a pending row), nothing else: {policies:?}"
     );
+    for action in ["read", "create", "update"] {
+        assert!(
+            policies
+                .iter()
+                .any(|policy| policy.starts_with(&format!(r#"@@allow("{action}", "#))),
+            "DeliveryLookup has no {action} policy"
+        );
+    }
     for policy in policies {
         assert!(
             policy.starts_with("@@allow(")
@@ -252,10 +260,10 @@ fn the_audit_model_has_no_route_no_other_reader_and_is_audited() {
         );
     }
     assert!(
-        !lines.iter().any(
-            |line| line.contains(r#"@@allow("update""#) || line.contains(r#"@@allow("delete""#)
-        ),
-        "a lookup row is written once and never edited or removed"
+        !lines
+            .iter()
+            .any(|line| line.contains(r#"@@allow("delete""#)),
+        "a lookup row is never removed; it is only settled once, from pending"
     );
 }
 
@@ -282,6 +290,6 @@ fn the_procedure_is_routed_and_its_audit_table_is_not() {
 }
 
 #[test]
-fn the_budget_is_sixty_number_lookups_an_hour() {
-    assert_eq!(sms_api::delivery_status::MSISDN_LOOKUPS_PER_HOUR, 60);
+fn the_budget_is_sixty_lookups_by_number_or_reference_an_hour() {
+    assert_eq!(sms_api::delivery_status::BUDGETED_LOOKUPS_PER_HOUR, 60);
 }

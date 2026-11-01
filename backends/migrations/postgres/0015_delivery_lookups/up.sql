@@ -1,10 +1,13 @@
 -- 0015_delivery_lookups / up.sql
 --
 -- The body-free delivery-status lookup (`lookupDeliveryStatus`, gated on
--- `delivery:read`): the `DeliveryLookup` model, one row per answered lookup. It
--- records who asked, by which kind of key, and how many messages came back. It
--- also is the procedure's budget: a caller's number lookups in the last hour are
--- counted from it (`MSISDN_LOOKUPS_PER_HOUR`). 0001_init has already been applied
+-- `delivery:read`): the `DeliveryLookup` model, one row per lookup that reached
+-- the database. It records who asked, by which kind of key, how the lookup ended
+-- (`pending`, `answered`, `over_budget`) and, if answered, how many messages came
+-- back. It also is the procedure's budget: a caller's budgeted lookups in the last
+-- hour are counted from it (`BUDGETED_LOOKUPS_PER_HOUR`), after the lookup has
+-- inserted its own row, which is what makes the budget hold under concurrency
+-- (schemas/vsms.cstack, the model's comment). 0001_init has already been applied
 -- to deployed databases and `sms-migrate` records migrations by name, so the new
 -- table ships as a forward migration, like 0005 to 0008, and
 -- `cargo xtask migrations-current` knows that (ADDED_BY_LATER in
@@ -33,19 +36,22 @@ CREATE TABLE delivery_lookups (
     key_kind TEXT NOT NULL,
     key_value TEXT NOT NULL,
     app_id_filter TEXT,
-    result_count BIGINT NOT NULL,
+    outcome TEXT NOT NULL,
+    result_count BIGINT,
     created_at TIMESTAMPTZ NOT NULL,
     PRIMARY KEY (id)
 );
 
 ALTER TABLE delivery_lookups ADD CONSTRAINT delivery_lookups_key_kind_enum_check CHECK (key_kind IN ('message_id', 'client_ref', 'msisdn'));
 
+ALTER TABLE delivery_lookups ADD CONSTRAINT delivery_lookups_outcome_enum_check CHECK (outcome IN ('pending', 'answered', 'over_budget'));
+
 -- Hand-written from here (the emitter writes none of it).
 
 ALTER TABLE delivery_lookups ALTER COLUMN id SET DEFAULT cs_cuid();
 
--- Insert-only (no `update` action exists), so there is no `updated_at` and no
--- `touch_updated_at` trigger.
+-- Only `outcome` and `result_count` are ever updated (below), so there is no
+-- `updated_at` and no `touch_updated_at` trigger.
 ALTER TABLE delivery_lookups ALTER COLUMN created_at SET DEFAULT now();
 
 -- `@length` is validated by the generated input type, not by the database; a row
@@ -61,7 +67,38 @@ ALTER TABLE delivery_lookups ADD CONSTRAINT delivery_lookups_key_value_length_ch
 ALTER TABLE delivery_lookups ADD CONSTRAINT delivery_lookups_result_count_check
     CHECK (result_count >= 0);
 
--- The budget's query: "this caller's number lookups since an hour ago" is an
+-- A count is the answer's size: it exists exactly when the lookup was answered.
+ALTER TABLE delivery_lookups ADD CONSTRAINT delivery_lookups_outcome_count_check
+    CHECK ((outcome = 'answered') = (result_count IS NOT NULL));
+
+-- The one edge a lookup row may take, decided by Postgres like a message's state
+-- (R2): `pending` to `answered` or `over_budget`, changing `outcome` and
+-- `result_count` and nothing else. The model allows `update` to the system context
+-- (the schema has no column-level grant), so this is what keeps "who asked, whom
+-- about" from being rewritten by a bug in the one code path that holds that right.
+CREATE OR REPLACE FUNCTION delivery_lookups_update_guard() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+BEGIN
+    IF OLD.outcome <> 'pending' OR NEW.outcome = 'pending' THEN
+        RAISE EXCEPTION 'delivery_lookups: only a pending lookup may be settled, once'
+            USING ERRCODE = 'SM001';
+    END IF;
+    IF (NEW.id, NEW.actor_sub, NEW.actor_kind, NEW.actor_role, NEW.actor_app_id,
+        NEW.key_kind, NEW.key_value, NEW.app_id_filter, NEW.created_at)
+       IS DISTINCT FROM
+       (OLD.id, OLD.actor_sub, OLD.actor_kind, OLD.actor_role, OLD.actor_app_id,
+        OLD.key_kind, OLD.key_value, OLD.app_id_filter, OLD.created_at) THEN
+        RAISE EXCEPTION 'delivery_lookups: a lookup row may change its outcome and count only'
+            USING ERRCODE = 'SM001';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER delivery_lookups_update_guard BEFORE UPDATE ON delivery_lookups
+    FOR EACH ROW EXECUTE FUNCTION delivery_lookups_update_guard();
+
+-- The budget's query: "this caller's budgeted lookups since an hour ago" is an
 -- equality on the caller and a range on time, newest first. Also "what has this
 -- person looked up" for an auditor reading the table.
 CREATE INDEX delivery_lookups_actor_created_idx ON delivery_lookups (actor_sub, created_at DESC);

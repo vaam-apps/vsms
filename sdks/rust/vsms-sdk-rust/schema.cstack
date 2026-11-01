@@ -1629,10 +1629,22 @@ enum DeliveryLookupKey {
   msisdn
 }
 
-// One answered `lookupDeliveryStatus` call: who asked, by which kind of key, and
-// how many messages came back. Written by the procedure, in the same call that
-// answers, and **the call fails if the row cannot be written** (a lookup nobody
-// can later account for is not served). `@@audit` anchors it in
+// How a lookup ended. `pending` is a budgeted lookup that has claimed its place
+// in the hour and not yet been answered or refused; one that stays `pending` was
+// admitted and never answered (the call failed after it, so nothing was handed
+// over).
+enum DeliveryLookupOutcome {
+  pending
+  answered
+  over_budget
+}
+
+// One `lookupDeliveryStatus` call that got as far as the database: who asked, by
+// which kind of key, how it ended and, if it was answered, how many messages came
+// back. A refused attempt (`over_budget`) is a row too, so the trail shows who
+// asked past their budget, not only who was served. The row is written BEFORE the
+// answer and **the call fails if it cannot be written** (a lookup nobody can
+// later account for is not served). `@@audit` anchors every write in
 // `cratestack_audit` as well, so a deleted row is still a hash-chained fact.
 //
 // **`keyValue` is never the thing typed.** It is the message id (an opaque id,
@@ -1643,11 +1655,20 @@ enum DeliveryLookupKey {
 // a number unfindable after a rotation makes "who looked up X" need the pepper:
 // an auditor answers it by hashing X, not by reading a plaintext.
 //
-// The row also counts the caller's number lookups in the last hour, which is the
-// procedure's budget (`MSISDN_LOOKUPS_PER_HOUR`). No `@@retain`: kept indefinitely.
-// Every action is `hasRole('system')` only and `@@internal("all")` removes the
-// generated routes, so no HTTP caller reads or writes it. There is no `update`
-// and no `delete`.
+// **The rows are the budget** (`BUDGETED_LOOKUPS_PER_HOUR`), and the order is what
+// makes it hold under concurrency: a budgeted lookup INSERTS its `pending` row
+// first and counts the caller's rows AFTER, its own included, admitting itself
+// only if the count is at most the budget. Every write autocommits, so the k-th
+// row to commit sees a count of at least k and at most 60 are ever admitted,
+// with no lock. A refused attempt then marks its row `over_budget`, an admitted
+// one marks it `answered` with the count. Those are the only updates: the
+// `delivery_lookups_update_guard` trigger refuses any other change. A lookup that
+// is not budgeted (by message id, or an app key's own client reference) is
+// written once, as `answered`, after the read.
+//
+// No `@@retain`: kept indefinitely. Every action is `hasRole('system')` only and
+// `@@internal("all")` removes the generated routes, so no HTTP caller reads or
+// writes it. There is no `delete`.
 model DeliveryLookup {
   id Cuid @id @default(dbgenerated())
   actorSub String @length(min: 1, max: 255)
@@ -1657,13 +1678,15 @@ model DeliveryLookup {
   keyKind DeliveryLookupKey
   keyValue String @length(min: 1, max: 255)
   appIdFilter Cuid?
-  resultCount Int
+  outcome DeliveryLookupOutcome
+  resultCount Int?
   createdAt DateTime @default(dbgenerated())
 
   @@audit
   @@internal("all")
   @@allow("read", hasRole('system'))
   @@allow("create", hasRole('system'))
+  @@allow("update", hasRole('system'))
 }
 
 type SendMessageInput {
@@ -2119,7 +2142,10 @@ procedure listMessageReceipts(args: MessageReceiptsInput): MessageReceiptsResult
 // A message is found by its id, by an app's own `clientRef`, or by the whole
 // recipient number (equality on the keyed hash; a number is never listed, and a
 // rotated pepper finds nothing, as with `searchOptOutByMsisdn`). Exactly one key
-// per call. Every answered call writes one `DeliveryLookup` row first.
+// per call. A number finds unpurged messages of the last 90 days only: the keyed
+// hash is what de-identifies a purged row, so a number never links to one. A
+// lookup by number, or by a person's client reference, is counted against an
+// hourly budget; every lookup writes one `DeliveryLookup` row before it answers.
 type DeliveryStatusQuery {
   messageId Cuid?
   appId Cuid?

@@ -7,8 +7,14 @@
 -- Roll the procedure back first: while it is served, a missing table makes every
 -- lookup fail closed, by design.
 
+DROP TRIGGER delivery_lookups_update_guard ON delivery_lookups;
+
+DROP FUNCTION delivery_lookups_update_guard();
+
 DROP INDEX delivery_lookups_actor_created_idx;
 
 ALTER TABLE delivery_lookups DROP CONSTRAINT delivery_lookups_key_kind_enum_check;
+
+ALTER TABLE delivery_lookups DROP CONSTRAINT delivery_lookups_outcome_enum_check;
 
 DROP TABLE delivery_lookups;
