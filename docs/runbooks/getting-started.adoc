@@ -260,7 +260,7 @@ DATABASE_URL=postgres://localhost/vsms_dev ./target/debug/sms-gateway provision-
   --email you@example.com --display-name "Your Name" --role-key owner
 ----
 
-`--role-key` accepts any of §5.2's six built-in roles, all seeded by `0002_bootstrap`. (`provision-user` creates the account only: it holds no credential and prints none.)
+`--role-key` accepts any of §5.2's built-in roles: the six seeded by `0002_bootstrap` and `pending` (no permission), seeded by `0013_role_read_scope`. (`provision-user` creates the account only: it holds no credential and prints none.)
 
 [,bash]
 ----

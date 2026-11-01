@@ -1421,7 +1421,7 @@ fn a_complete_sso_block_loads_and_is_read_whole() {
     assert_eq!(sso.groups_claim, "groups");
     assert_eq!(sso.accepted_amr, ["otp"]);
     assert_eq!(sso.accepted_acr, Vec::<String>::new());
-    assert_eq!(sso.jit_role, "support");
+    assert_eq!(sso.jit_role, "pending");
     assert_eq!(sso.jwks_min_refresh_secs, 30);
     assert_eq!(sso.rate_limit.burst, 30);
     // A `Debug` print of the whole configuration never carries the secret.
@@ -1639,6 +1639,12 @@ fn the_refused_roles_are_the_four_a_sign_in_must_never_create() {
     assert_eq!(
         sms_config::REFUSED_JIT_ROLES,
         ["system", "app", "owner", "admin"]
+    ); // `pending` (migration 0013_role_read_scope) is the recommended value: it holds
+    // no permission, and the example in config/application.yml names it.
+    assert!(!sms_config::REFUSED_JIT_ROLES.contains(&"pending"));
+    assert_eq!(
+        load("sso-valid").unwrap().sso().unwrap().jit_role,
+        "pending"
     );
 }
 

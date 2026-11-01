@@ -185,7 +185,7 @@ impl SsoYaml {
             issuer: issuer.to_owned(),
             accepted_amr: vec!["otp".to_owned()],
             accepted_acr: vec![],
-            jit_role: "support".to_owned(),
+            jit_role: "pending".to_owned(),
             required_group: REQUIRED_GROUP.to_owned(),
             rate_burst: 1000,
         }
@@ -756,7 +756,7 @@ async fn a_first_sign_in_provisions_a_least_privilege_user_and_reaches_an_authen
     assert_eq!(users.len(), 1, "exactly one User");
     let user = &users[0];
     assert_eq!(
-        user.roleKey, "support",
+        user.roleKey, "pending",
         "the JIT role is the configured one"
     );
     assert!(user.active);
@@ -817,9 +817,91 @@ async fn a_first_sign_in_provisions_a_least_privilege_user_and_reaches_an_authen
     );
 }
 
+/// **A first sign-in under `jit_role: pending` waits there and reads nothing.**
+///
+/// The person is created in the built-in `pending` role (`0013_role_read_scope`:
+/// no permission at all), and the token that sign-in earns reads no message, no
+/// receipt, no part and no webhook attempt, and is refused the permissioned
+/// collections by name. Promoted to `operator` (the role is a row, not a token
+/// claim) the same token reads: the role the row says is the person's standing.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn a_first_sign_in_waits_as_pending_and_reads_nothing_until_promoted() {
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = Rig::start().await;
+    let (token, _, person) = rig.tokens(rig.spec()).await;
+    assert_eq!(person.roleKey, "pending");
+
+    let get = |path: &'static str, token: &str| {
+        let url = format!("{}{path}", rig.base_url());
+        let token = token.to_owned();
+        async move {
+            let response = reqwest::Client::new()
+                .get(url)
+                .bearer_auth(token)
+                .header("accept", "application/json")
+                .send()
+                .await
+                .expect("calling the API with a bearer token");
+            (
+                response.status().as_u16(),
+                response.text().await.unwrap_or_default(),
+            )
+        }
+    };
+    for (path, permission) in [
+        ("/messages", "sms:read"),
+        ("/delivery_receipts", "sms:read"),
+        ("/message_parts", "sms:read"),
+        ("/providers", "provider:read"),
+        ("/routes", "route:read"),
+        ("/jobs", "job:read"),
+    ] {
+        let (status, body) = get(path, &token).await;
+        assert_eq!(status, 403, "pending: {path} -> {body}");
+        assert!(
+            body.contains(permission),
+            "{path} names {permission}: {body}"
+        );
+    }
+    for path in ["/webhook_attempts", "/apps", "/app_clients", "/users"] {
+        let (status, body) = get(path, &token).await;
+        assert_eq!(status, 200, "pending: {path} -> {body}");
+        let json: serde_json::Value = serde_json::from_str(&body).expect("JSON");
+        assert_eq!(
+            json["items"].as_array().map(Vec::len),
+            Some(0),
+            "pending read a row of {path}: {body}"
+        );
+    }
+
+    // Promoted by an owner, the next request is the operator's (a fresh token
+    // would not be needed; the standing is the row, within the bearer door's TTL,
+    // so this uses a second person who is promoted before their first call).
+    let promoted = LoginSpec {
+        sub: format!("upstream-promoted-{}", rig.suffix),
+        email: Some(format!("promoted-{}@example.test", rig.suffix)),
+        ..rig.spec()
+    };
+    let (token, _, person) = rig.tokens(promoted).await;
+    rig.db
+        .user()
+        .update(person.id.clone())
+        .set(schema::UpdateUserInput {
+            roleKey: Some("operator".to_owned()),
+            ..Default::default()
+        })
+        .if_match(person.version)
+        .run(&owner())
+        .await
+        .expect("promoting the person to operator");
+    let (status, body) = get("/messages", &token).await;
+    assert_eq!(status, 200, "a promoted person reads: {body}");
+}
+
 /// **The token an SSO sign-in earns is the person's, with the person's cap.**
 ///
-/// `support` (the JIT role) is accepted as that person. A person promoted to
+/// `pending` (the JIT role) is accepted as that person. A person promoted to
 /// `admin` afterwards gets the same token refused with `403 DEVICE_REQUIRED`:
 /// VSA-4b's cap is on the role the row says, not on how the person signed in, so
 /// no sign-in, a federated one included, turns an owner or an admin into a
@@ -832,9 +914,9 @@ async fn the_sso_access_token_is_the_person_and_a_promoted_admin_gets_403_device
     let _guard = TEST_MUTEX.lock().await;
     let rig = Rig::start().await;
 
-    let (support_token, _, _) = rig.tokens(rig.spec()).await;
-    let (status, body) = preview_with(&rig.base_url(), &support_token).await;
-    assert_eq!(status, 200, "a support person's SSO token: {body}");
+    let (pending_token, _, _) = rig.tokens(rig.spec()).await;
+    let (status, body) = preview_with(&rig.base_url(), &pending_token).await;
+    assert_eq!(status, 200, "a pending person's SSO token: {body}");
 
     let promoted = LoginSpec {
         sub: format!("upstream-promoted-{}", rig.suffix),

@@ -854,9 +854,10 @@ you@example.com` attaches the browser's key to it, and the key speaks as
 that account's role. A person paired by a vaam admin phone instead gets an
 `admin` account created for them on first pairing, never an `owner`.
 
-`--role-key` takes any of §5.2's six built-in roles -- `owner`, `admin`,
-`operator`, `developer`, `auditor`, `support` -- all seeded by
-`0002_bootstrap`. `system` is not among them and cannot be created;
+`--role-key` takes any of §5.2's built-in roles -- `owner`, `admin`,
+`operator`, `developer`, `auditor`, `support`, all seeded by `0002_bootstrap`,
+and `pending`, which holds no permission and is seeded by
+`0013_role_read_scope`. `system` is not among them and cannot be created;
 `roles_key_not_reserved_check` rejects it, because a human account
 holding it would pass every `hasRole('system')` policy through generated CRUD.
 
@@ -868,8 +869,10 @@ requires an app principal for (see
 `backends/crates/sms-api/src/procedures.rs::caller_client_id`), go through the
 composer's own service key (<<The composer's key>> below). Worth knowing: the
 messages list, its live updates and the dashboard read _every app's_ rows,
-not just one's -- any paired human, regardless of role, can see across `App`
-boundaries, per ``Message``'s own row policy.
+not just one's -- any paired human whose role holds `sms:read` (`owner`,
+`admin`, `operator` and `auditor`; not `developer`, `support` or `pending`,
+since `0013_role_read_scope`) can see across `App` boundaries, per
+``Message``'s own row policy and the `sms:read` claim it asks for.
 
 == 4. Bring up sms-gateway and sms-worker
 

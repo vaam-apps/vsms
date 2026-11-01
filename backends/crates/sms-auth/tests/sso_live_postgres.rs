@@ -62,7 +62,7 @@ async fn db() -> Cratestack {
 }
 
 fn config(issuer: &str) -> SsoConfig {
-    config_with_role(issuer, "support")
+    config_with_role(issuer, "pending")
 }
 
 fn config_with_role(issuer: &str, role: &str) -> SsoConfig {
@@ -245,7 +245,7 @@ async fn first_sign_in_provisions_then_reuses_and_two_concurrent_first_sign_ins_
         .await
         .expect("users");
     assert_eq!(users.len(), 1);
-    assert_eq!(users[0].roleKey, "support");
+    assert_eq!(users[0].roleKey, "pending");
     assert_eq!(users[0].subject, users[0].id);
 
     // A later sign-in with a different email claim reuses the link.

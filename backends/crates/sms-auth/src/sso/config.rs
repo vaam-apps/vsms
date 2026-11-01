@@ -177,7 +177,7 @@ pub(crate) mod tests {
             "groups_claim": "groups",
             "accepted_amr": ["otp"],
             "accepted_acr": [],
-            "jit_role": "support",
+            "jit_role": "pending",
             "jwks_min_refresh_secs": 30,
             "rate_limit": { "burst": 30, "refill_per_second": 1.0 },
         });

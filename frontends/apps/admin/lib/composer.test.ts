@@ -167,8 +167,8 @@ describe("the composer spends the service key only for a person the gateway name
   it("does not use it for a paired person who may not send, nor for one whose role lost the permission", async () => {
     for (const principal of [
       { ...ADMIN, role: "auditor", perms: ["sms:read"] },
-      { ...ADMIN, role: "support", perms: ["sms:read"] },
-      { ...ADMIN, role: "developer", perms: ["sms:send", "sms:read"] },
+      { ...ADMIN, role: "support", perms: ["optout:manage", "delivery:read"] },
+      { ...ADMIN, role: "developer", perms: ["app:read", "webhook:manage", "sms:send"] },
       { ...ADMIN, role: "operator", perms: ["sms:read"] },
     ]) {
       const h = await harness({ browser: principal });

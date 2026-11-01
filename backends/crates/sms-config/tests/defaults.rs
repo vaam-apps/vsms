@@ -187,7 +187,7 @@ fn the_commented_op_and_human_login_examples_load_once_uncommented_and_serve_bot
         .sso()
         .unwrap_or_else(|| panic!("no sso example read\n{overlay}"));
     assert_eq!(sso.issuer, "https://auth.example.org/realms/staff");
-    assert_eq!(sso.jit_role, "support");
+    assert_eq!(sso.jit_role, "pending");
     assert_eq!(sso.accepted_amr, ["otp"]);
     assert_eq!(sso.rate_limit.burst, 30);
     assert_eq!(sso.client_secret.expose(), "p".repeat(48));

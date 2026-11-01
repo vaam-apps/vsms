@@ -45,6 +45,11 @@ const ALLOWED: &[(&str, &str)] = &[
         "read-only oversight, including the audit log; no mutation",
     ),
     (
+        "pending",
+        "holds no permission at all (0013_role_read_scope): a first single-sign-on sign-in waits \
+         here until an owner or admin promotes it, and no policy names it",
+    ),
+    (
         "system",
         "the synthetic internal role: refused for every person by `refuse_reserved_role` and a CHECK",
     ),
@@ -140,6 +145,72 @@ fn every_seeded_role_is_decided() {
         "the scan found only {keys:?}: it has stopped reading the seed"
     );
     assert_all_decided("the 0002_bootstrap role seed", &keys);
+}
+
+/// Every `up.sql` under `backends/migrations/postgres` that inserts roles, with
+/// the keys it inserts: a role a later migration seeds (`pending`, 0013) is a
+/// role a person can hold, so it needs a decision here the way the first six do.
+fn role_seeding_migrations() -> Vec<(String, BTreeSet<String>)> {
+    let root = repo_root().join("backends/migrations/postgres");
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(&root)
+        .expect("the migrations directory")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    dirs.sort();
+    dirs.iter()
+        .filter_map(|dir| {
+            let sql = std::fs::read_to_string(dir.join("up.sql")).ok()?;
+            if !sql.contains("INSERT INTO roles") {
+                return None;
+            }
+            let name = dir.file_name()?.to_string_lossy().into_owned();
+            Some((name, seeded_role_keys(&sql)))
+        })
+        .collect()
+}
+
+#[test]
+fn every_role_any_migration_seeds_is_decided() {
+    let seeding = role_seeding_migrations();
+    let names: Vec<&str> = seeding.iter().map(|(name, _)| name.as_str()).collect();
+    assert!(
+        names.contains(&"0002_bootstrap") && names.contains(&"0013_role_read_scope"),
+        "the scan found only {names:?}: it has stopped reading the migrations"
+    );
+    for (name, keys) in &seeding {
+        assert_all_decided(&format!("the role seed of {name}"), keys);
+    }
+}
+
+/// `pending` is the role a first sign-in waits in, so the one thing it must
+/// never be is a role something grants a right to: it holds no permission, and
+/// nothing in the schema names it. `ALLOWED` above would let a
+/// `hasRole('pending')` through as "decided", so this says it separately.
+#[test]
+fn pending_holds_nothing_and_no_policy_names_it() {
+    let sql = read("backends/migrations/postgres/0013_role_read_scope/up.sql");
+    let at = sql.find("('pending'").expect("0013 seeds `pending`");
+    let row = &sql[at..at + sql[at..].find(';').expect("the INSERT ends")];
+    assert!(
+        row.contains("true, ' ', 0)"),
+        "`pending` must be built-in and hold the empty packed permission set ' ': {row}"
+    );
+    for copy in [
+        "schemas/vsms.cstack",
+        "sdks/rust/vsms-sdk-rust/schema.cstack",
+    ] {
+        assert!(
+            !has_role_literals(&read(copy)).contains("pending"),
+            "{copy} names hasRole('pending'): a policy that admits the role a first sign-in \
+             waits in is the exposure this role exists to close"
+        );
+    }
+    assert!(
+        !sms_api::DEVICE_ONLY_ROLES.contains(&"pending"),
+        "`pending` holds nothing; it needs no device"
+    );
 }
 
 /// The device-only list is exactly the owner-class pair, each of which the schema

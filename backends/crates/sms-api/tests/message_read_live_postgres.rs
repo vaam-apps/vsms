@@ -6,10 +6,12 @@
 //! role's permissions cannot be written into a policy, so the answer is Layer 2:
 //! `router::MESSAGE_READ_ROUTES`. Anchors:
 //!
-//! - **a role is decided by its permission, not its name**: the six built-in
-//!   roles all carry `sms:read` (`docs/architecture.md` section 5.2) and read; a
-//!   custom role without it is refused on all six routes with a 403 that names
-//!   the permission; a custom role holding only `sms:read` reads;
+//! - **a role is decided by its permission, not its name**: four built-in roles
+//!   carry `sms:read` (`owner`, `admin`, `operator`, `auditor`) and read; two do
+//!   not since `0013_role_read_scope` (`developer`, `support`) and are refused
+//!   like any custom role without it; a custom role without it is refused on all
+//!   six routes with a 403 that names the permission; a custom role holding only
+//!   `sms:read` reads; `pending` (holds nothing) reads nothing it should not;
 //! - **the other doors to a message are shut too**: `GET /delivery_receipts` and
 //!   `GET /message_parts` with `?include=message` return the whole `Message`
 //!   row (body and number) under `Message`'s own policy, so a role refused
@@ -55,15 +57,13 @@ use sms_test_support::sealed::{Reply, SealedClient, TestKey};
 
 const PEPPER: &str = "message-read-live-test-pepper-well-over-the-minimum-length";
 
-/// The six roles `0002_bootstrap` seeds for a person.
-const BUILT_IN_ROLES: [&str; 6] = [
-    "owner",
-    "admin",
-    "operator",
-    "developer",
-    "auditor",
-    "support",
-];
+/// The built-in roles that hold `sms:read`: the ones `0013_role_read_scope`
+/// leaves it with.
+const READING_ROLES: [&str; 4] = ["owner", "admin", "operator", "auditor"];
+
+/// The built-in roles `0013_role_read_scope` took it from, and the one it added
+/// to hold nothing at all.
+const NON_READING_ROLES: [&str; 3] = ["developer", "support", "pending"];
 
 /// Races on Postgres's `pg_type` catalog on a fresh database; one test at a time.
 static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
@@ -237,39 +237,8 @@ async fn seed_console_client(db: &Cratestack) -> String {
         .clientId
 }
 
-/// What `0002_bootstrap` seeds for `developer`.
-const DEVELOPER_PERMISSIONS: [&str; 4] = ["app:read", "webhook:manage", "sms:read", "sms:send"];
-
-/// Sets a built-in role's permissions (the console's role editor, as an owner).
-/// A fresh router has a fresh standing cache, so the edit is seen by the next
-/// `rig()`'s requests and not by a stale one.
-async fn set_role_permissions(db: &Cratestack, key: &str, permissions: &[&str]) {
-    let current = db
-        .role()
-        .find_many()
-        .where_expr(FilterExpr::from(role::key().eq(key.to_owned())))
-        .run(&sys())
-        .await
-        .expect("reading the role")
-        .into_iter()
-        .next()
-        .expect("a built-in role is seeded");
-    db.role()
-        .update(current.id)
-        .set(schema::UpdateRoleInput {
-            permissions: Some(sms_core::pack(permissions).expect("no space in a permission")),
-            ..Default::default()
-        })
-        .if_match(current.version)
-        .run(&owner())
-        .await
-        .expect("editing the role");
-}
-
 async fn rig() -> Rig {
     let db = db().await;
-    // A test that strips `developer` restores it; this holds if one died first.
-    set_role_permissions(&db, "developer", &DEVELOPER_PERMISSIONS).await;
     let table = Arc::new(Table::default());
     let doors = ApiDoors::new(true, Some(table.clone() as Arc<dyn BearerVerifier>))
         .expect("a door is open");
@@ -389,6 +358,21 @@ impl Rig {
         register_app_key(&self.db, &row, &key).await;
         client(&self.base, &key)
     }
+}
+
+/// A bearer `GET`: the person who signed in with a password or single sign-on.
+async fn bearer_get(base: String, token: String, path: String) -> (u16, String) {
+    let response = reqwest::Client::new()
+        .get(format!("{base}{path}"))
+        .bearer_auth(token)
+        .header("accept", "application/json")
+        .send()
+        .await
+        .expect("sending a bearer call");
+    (
+        response.status().as_u16(),
+        response.text().await.expect("reading the answer"),
+    )
 }
 
 /// What a caller sees on the six routes that can hand a message back.
@@ -534,14 +518,60 @@ fn assert_refused_naming_sms_read(reply: &Reply, rig: &Rig, who: &str, probe: &P
     }
 }
 
-/// Every built-in role carries `sms:read` (section 5.2), so every one of them
-/// reads, by a paired key, on every route; the gate changed nobody's answer here.
+/// What `0013_role_read_scope` leaves in the `roles` table of a database that has
+/// run every migration, read through the generated client. The tests below rely
+/// on it rather than set it, so a migration that stopped doing it fails here and
+/// in every one of them, and not by being papered over by a fixture.
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres - see module docs"]
-async fn every_built_in_role_reads_messages_with_its_console_key() {
+async fn the_migrated_seed_is_the_owners_decision() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let permissions = |key: &'static str| {
+        let db = &db;
+        async move {
+            let rows = db
+                .role()
+                .find_many()
+                .where_expr(FilterExpr::from(role::key().eq(key.to_owned())))
+                .run(&sys())
+                .await
+                .expect("reading the role");
+            assert_eq!(rows.len(), 1, "exactly one role keyed {key}");
+            let row = rows.into_iter().next().expect("one");
+            assert!(row.builtin, "{key} is built in");
+            row.permissions
+        }
+    };
+    for key in READING_ROLES {
+        assert!(
+            permissions(key).await.contains(" sms:read "),
+            "{key} keeps sms:read"
+        );
+    }
+    assert_eq!(
+        permissions("developer").await,
+        " app:read webhook:manage sms:send "
+    );
+    assert_eq!(
+        permissions("support").await,
+        " optout:manage delivery:read "
+    );
+    assert_eq!(
+        permissions("pending").await,
+        " ",
+        "pending holds no permission at all"
+    );
+}
+
+/// Four built-in roles carry `sms:read` (section 5.2), so each reads, by a paired
+/// key, on every route; `0013_role_read_scope` changed nobody's answer here.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn the_four_reading_roles_read_messages_with_their_console_key() {
     let _guard = TEST_MUTEX.lock().await;
     let rig = rig().await;
-    for role in BUILT_IN_ROLES {
+    for role in READING_ROLES {
         let api = rig.person_by_key(role).await;
         for probe in &PROBES {
             let reply = call(&api, probe, &rig.mine).await;
@@ -560,6 +590,87 @@ async fn every_built_in_role_reads_messages_with_its_console_key() {
             "{role}: a person in a global role lists every app's messages"
         );
     }
+}
+
+/// `developer` and `support` hold no `sms:read` since `0013_role_read_scope`
+/// (the owner's decision after #469): refused on every route a message can come
+/// back by, exactly as a custom role without the permission is, and a refusal
+/// never carries the message. `pending` holds nothing and is refused the same.
+/// A developer reads its own app's messages through an app key with the scope
+/// (`an_app_key_reads_its_own_messages_with_sms_read_and_not_without_it`).
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn developer_and_support_and_pending_read_no_message_by_any_route() {
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = rig().await;
+    for role in NON_READING_ROLES {
+        let api = rig.person_by_key(role).await;
+        for probe in &PROBES {
+            let reply = call(&api, probe, &rig.mine).await;
+            assert_refused_naming_sms_read(&reply, &rig, role, probe);
+            let head = call_as(&api, "HEAD", probe, &rig.mine).await;
+            assert_eq!(
+                head.status,
+                403,
+                "{role}: HEAD {} -> {}",
+                describe(probe),
+                head.text()
+            );
+        }
+        // The webhook attempts' history is message data too.
+        let attempts = api.request("GET", "/webhook_attempts").send().await;
+        assert_eq!(attempts.status, 200, "{role}: {}", attempts.text());
+        assert_eq!(
+            attempts.json()["items"].as_array().map(Vec::len),
+            Some(0),
+            "{role} read a webhook attempt: {}",
+            attempts.text()
+        );
+    }
+}
+
+/// `developer` passes `App`'s read policy (it names the role), so it reaches an
+/// app's relation to `Message` by `?include=messages`, a relation filter and a
+/// nested include, which read `Message` under its own policy and the claim.
+/// Stripped of `sms:read` by the migration it gets the apps and no message, and
+/// the relation filter neither matches nor counts one. The same requests as the
+/// owner are the controls.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn a_developer_reaches_no_message_through_an_app() {
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = rig().await;
+    let mine = rig.mine.app_id.clone();
+    let body = rig.mine.body_text.clone();
+    let developer = rig.person_by_key("developer").await;
+    let owner = rig.person_by_key("owner").await;
+
+    let include = "include=messages";
+    let filter = "messages.some.msisdn=%2B237677123456";
+    let with = owner.request("GET", "/apps").query(include).send().await;
+    assert!(with.text().contains(&body), "control: {}", with.text());
+    let shut = developer
+        .request("GET", "/apps")
+        .query(include)
+        .send()
+        .await;
+    assert_eq!(shut.status, 200, "{}", shut.text());
+    assert!(
+        shut.text().contains(&mine),
+        "the developer does read the apps themselves: {}",
+        shut.text()
+    );
+    assert!(
+        !shut.text().contains(&body) && !shut.text().contains("+237677123456"),
+        "a developer's include=messages leaked a message: {}",
+        shut.text()
+    );
+    let shut = developer.request("GET", "/apps").query(filter).send().await;
+    assert!(
+        !shut.text().contains(&mine) && shut.json()["totalCount"] == 0,
+        "a developer's relation filter matched or counted a message: {}",
+        shut.text()
+    );
 }
 
 /// A role without `sms:read` is refused on every route, whatever else it holds,
@@ -605,8 +716,8 @@ async fn a_custom_role_holding_only_sms_read_reads() {
     }
 }
 
-/// A person's token is the same person as their key: `support` (the role a
-/// first single-sign-on sign-in is created in) reads, a custom role without
+/// A person's token is the same person as their key: `operator` and `auditor`
+/// read, `developer`, `support` and `pending` do not, a custom role without
 /// `sms:read` does not, and `owner` and `admin` are not reachable by a token at
 /// all (`DEVICE_REQUIRED`, VSA-4b), which this does not change.
 #[tokio::test]
@@ -614,31 +725,31 @@ async fn a_custom_role_holding_only_sms_read_reads() {
 async fn a_persons_token_gets_the_answer_their_role_gets() {
     let _guard = TEST_MUTEX.lock().await;
     let rig = rig().await;
-    let get = |token: String, path: String| {
-        let base = rig.base.clone();
-        async move {
-            let response = reqwest::Client::new()
-                .get(format!("{base}{path}"))
-                .bearer_auth(token)
-                .header("accept", "application/json")
-                .send()
-                .await
-                .expect("sending a bearer call");
-            (
-                response.status().as_u16(),
-                response.text().await.expect("reading the answer"),
-            )
-        }
-    };
+    let get = |token: String, path: String| bearer_get(rig.base.clone(), token, path);
     let detail = format!("/messages/{}", rig.mine.message_id);
     let read_but_for = custom_role(&rig.db, &["sms:send", "app:read"]).await;
     let read_only = custom_role(&rig.db, &["sms:read"]).await;
 
-    for role in ["operator", "developer", "auditor", "support"] {
+    for role in ["operator", "auditor"] {
         let token = rig.person_by_token(role).await;
         for path in ["/messages", detail.as_str(), "/delivery_receipts"] {
             let (status, body) = get(token.clone(), path.to_owned()).await;
             assert_eq!(status, 200, "{role}: {path} -> {body}");
+        }
+    }
+    // Since 0013_role_read_scope `developer` and `support` (the role a first
+    // sign-in was created in) and `pending` (the role one is created in now)
+    // are the same as a custom role without the permission.
+    for role in NON_READING_ROLES {
+        let token = rig.person_by_token(role).await;
+        for path in ["/messages", detail.as_str(), "/delivery_receipts"] {
+            let (status, body) = get(token.clone(), path.to_owned()).await;
+            assert_eq!(status, 403, "{role}: {path} -> {body}");
+            assert!(body.contains("sms:read"), "{role}: {path} -> {body}");
+            assert!(
+                !body.contains(&rig.mine.body_text),
+                "{role}: {path} -> {body}"
+            );
         }
     }
     let token = rig.person_by_token(&read_only).await;
@@ -773,7 +884,7 @@ async fn a_head_is_refused_where_the_get_is() {
     );
 
     // The method works for a role that may read, so the 403s above are the gate's.
-    let reader = rig.person_by_key("support").await;
+    let reader = rig.person_by_key("operator").await;
     let ok = deliver(reader.request("HEAD", "/messages"), "HEAD").await;
     assert_eq!(ok.status, 200, "{}", ok.text());
 }
@@ -823,14 +934,8 @@ async fn another_models_include_and_filter_read_the_message_under_its_policy() {
     let body = rig.mine.body_text.clone();
     let body = body.as_str();
 
-    // `developer` passes `App`'s read policy (it names roles) and is made to lack
-    // `sms:read` the way an owner would in the role editor.
-    set_role_permissions(
-        &rig.db,
-        "developer",
-        &["app:read", "webhook:manage", "sms:send"],
-    )
-    .await;
+    // `developer` passes `App`'s read policy (it names roles) and holds no
+    // `sms:read` (0013_role_read_scope).
     let stripped = rig.person_by_key("developer").await;
     let granted = rig.person_by_key("owner").await;
 
@@ -867,15 +972,13 @@ async fn another_models_include_and_filter_read_the_message_under_its_policy() {
     );
     let shut = deliver(stripped.request("HEAD", "/apps").query(include), "HEAD").await;
     assert_eq!(shut.status, 200, "{}", shut.text());
-
-    set_role_permissions(&rig.db, "developer", &DEVELOPER_PERMISSIONS).await;
 }
 
 /// A nested include (`/consent_records?include=app,app.messages`) reaches a
 /// message through two relations. It runs as a caller that LOADS `app`: `App`'s
 /// read policy names built-in roles, so a custom role would get `app: null` and
 /// `app.messages` would never be reached whatever `Message`'s policy says. The
-/// stripped `developer` does load it, the app object is asserted present, and an
+/// `developer` (no `sms:read` since 0013) does load it, the app object is asserted present, and an
 /// empty `messages` under it is the message policy's doing: this test fails when
 /// that policy is reverted.
 #[tokio::test]
@@ -887,12 +990,6 @@ async fn a_nested_include_reads_the_message_under_its_policy() {
     let mine = mine.as_str();
     let body = rig.mine.body_text.clone();
     let body = body.as_str();
-    set_role_permissions(
-        &rig.db,
-        "developer",
-        &["app:read", "webhook:manage", "sms:send"],
-    )
-    .await;
     let stripped = rig.person_by_key("developer").await;
     let granted = rig.person_by_key("owner").await;
     rig.db
@@ -944,8 +1041,6 @@ async fn a_nested_include_reads_the_message_under_its_policy() {
         "a nested include leaked a message: {}",
         shut.text()
     );
-
-    set_role_permissions(&rig.db, "developer", &DEVELOPER_PERMISSIONS).await;
 }
 
 /// `listMessagesPage` is a stub today (it answers with its milestone) and its
@@ -965,7 +1060,7 @@ async fn list_messages_page_asks_for_the_claim() {
         .send()
         .await;
     assert_eq!(reply.status, 403, "{}", reply.text());
-    let allowed = rig.person_by_key("support").await;
+    let allowed = rig.person_by_key("operator").await;
     let reply = allowed
         .request("POST", "/$procs/listMessagesPage")
         .json(&body)
@@ -1040,6 +1135,51 @@ async fn an_app_key_reads_opt_outs_only_with_optout_read() {
     }
 }
 
+/// A webhook endpoint of `app_id` (the full number in its payloads) and one
+/// attempt at it; returns the attempt's id.
+async fn seed_attempt(rig: &Rig, app_id: &str, number: &str) -> String {
+    let endpoint = rig
+        .db
+        .webhook_endpoint()
+        .create(schema::CreateWebhookEndpointInput {
+            appId: app_id.to_owned(),
+            url: format!("https://example.test/webhooks/{}", suffix()),
+            deliveryMode: schema::WebhookDeliveryMode::hmac,
+            audience: None,
+            eventTypes: " message.delivered ".to_owned(),
+            secret: Some(format!("whsec_{}{}{}", suffix(), suffix(), suffix())),
+            prevSecret: None,
+            secretRotatedAt: None,
+            maskRecipient: false,
+            maxAttempts: 8,
+            circuitOpenUntil: None,
+        })
+        .run(&owner())
+        .await
+        .expect("seeding the endpoint");
+    let attempt = rig
+        .db
+        .webhook_attempt()
+        .create(schema::CreateWebhookAttemptInput {
+            endpointId: endpoint.id,
+            sourceEventId: cratestack::uuid::Uuid::new_v4(),
+            aggregateId: format!("message-read-{}", suffix()),
+            eventType: "message.delivered".to_owned(),
+            payload: format!("{{\"to\":\"{number}\",\"state\":\"delivered\"}}"),
+            leaseOwner: None,
+            leaseUntil: None,
+            nextAttemptAt: None,
+            lastStatusCode: None,
+            lastError: None,
+            lastAttemptAt: None,
+            deliveredAt: None,
+        })
+        .run(&sys())
+        .await
+        .expect("seeding the attempt");
+    attempt.id
+}
+
 /// A webhook attempt's `payload` is message data (`messageId`, `appId`,
 /// `clientRef`, `state`, `operator`, `to`, which is the full number when the
 /// endpoint's `maskRecipient` is false), so a person reads attempts only with
@@ -1052,49 +1192,10 @@ async fn a_webhook_attempt_is_message_data_and_asks_for_the_claim() {
     let rig = rig().await;
     let number = "+237677123456";
 
-    let mut attempts = Vec::new();
-    for app_id in [&rig.mine.app_id, &rig.other.app_id] {
-        let endpoint = rig
-            .db
-            .webhook_endpoint()
-            .create(schema::CreateWebhookEndpointInput {
-                appId: app_id.clone(),
-                url: format!("https://example.test/webhooks/{}", suffix()),
-                deliveryMode: schema::WebhookDeliveryMode::hmac,
-                audience: None,
-                eventTypes: " message.delivered ".to_owned(),
-                secret: Some(format!("whsec_{}{}{}", suffix(), suffix(), suffix())),
-                prevSecret: None,
-                secretRotatedAt: None,
-                maskRecipient: false,
-                maxAttempts: 8,
-                circuitOpenUntil: None,
-            })
-            .run(&owner())
-            .await
-            .expect("seeding the endpoint");
-        let attempt = rig
-            .db
-            .webhook_attempt()
-            .create(schema::CreateWebhookAttemptInput {
-                endpointId: endpoint.id,
-                sourceEventId: cratestack::uuid::Uuid::new_v4(),
-                aggregateId: format!("message-read-{}", suffix()),
-                eventType: "message.delivered".to_owned(),
-                payload: format!("{{\"to\":\"{number}\",\"state\":\"delivered\"}}"),
-                leaseOwner: None,
-                leaseUntil: None,
-                nextAttemptAt: None,
-                lastStatusCode: None,
-                lastError: None,
-                lastAttemptAt: None,
-                deliveredAt: None,
-            })
-            .run(&sys())
-            .await
-            .expect("seeding the attempt");
-        attempts.push(attempt.id);
-    }
+    let attempts = [
+        seed_attempt(&rig, &rig.mine.app_id, number).await,
+        seed_attempt(&rig, &rig.other.app_id, number).await,
+    ];
     let (mine, theirs) = (attempts[0].as_str(), attempts[1].as_str());
 
     // A person without `sms:read`: no attempt, no number.
@@ -1115,7 +1216,7 @@ async fn a_webhook_attempt_is_message_data_and_asks_for_the_claim() {
     assert_eq!(one.status, 404, "{}", one.text());
 
     // Control: a person with it reads both tenants' attempts.
-    let reader = rig.person_by_key("support").await;
+    let reader = rig.person_by_key("operator").await;
     let list = reader.request("GET", "/webhook_attempts").send().await;
     assert!(
         list.text().contains(mine) && list.text().contains(theirs) && list.text().contains(number),
@@ -1145,4 +1246,160 @@ async fn a_webhook_attempt_is_message_data_and_asks_for_the_claim() {
         .send()
         .await;
     assert_eq!(own.status, 200, "{}", own.text());
+}
+
+/// What a `pending` person can still read, and why each is not message data.
+/// Every other collection a person can GET is a 403 or an empty page for it.
+/// Each entry must really be readable (below), so closing one fails the test
+/// until the entry is deleted: an allowance that matches nothing is stale.
+const PENDING_CAN_READ: [(&str, &str); 3] = [
+    (
+        "/opt_outs",
+        "a person reads opt-outs as any role (the owner's follow-up: persons' opt-out read access)",
+    ),
+    (
+        "/consent_records",
+        "a person reads consent records as any role, with the same follow-up",
+    ),
+    (
+        "/roles",
+        "the role table (keys, labels, permission sets) is readable by any person: not message data",
+    ),
+];
+
+/// `pending` holds no permission, so a first sign-in reads nothing it could not
+/// before signing in as anything: every collection a person can GET is a 403 or
+/// an empty page for it, except the three above, and the person's own paired
+/// console keys. Run by a paired key and by a bearer token, which are the same
+/// person, over every `GET` collection route the schema generated, with rows
+/// seeded behind the ones that could hold something.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn a_pending_person_reads_nothing_else_by_any_collection_route() {
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = rig().await;
+    let number = "+237677123456";
+    rig.db
+        .opt_out()
+        .create(schema::CreateOptOutInput {
+            msisdnHash: format!("hmac-sha256-v1:optout-{}", suffix()),
+            msisdn: number.to_owned(),
+            source: schema::OptOutSource::inbound_stop,
+            scope: "all".to_owned(),
+            reason: None,
+            optedOutAt: Utc::now(),
+        })
+        .run(&sys())
+        .await
+        .expect("seeding the opt-out");
+    rig.db
+        .consent_record()
+        .create(schema::CreateConsentRecordInput {
+            appId: rig.mine.app_id.clone(),
+            msisdnHash: format!("hmac-sha256-v1:consent-{}", suffix()),
+            msisdn: number.to_owned(),
+            scope: MessageClass::otp,
+            channel: schema::ConsentChannel::web_form,
+            consentedAt: Utc::now(),
+            evidenceRef: None,
+        })
+        .run(&sys())
+        .await
+        .expect("seeding the consent record");
+
+    let paths: Vec<&'static str> = sms_api::route_table()
+        .into_iter()
+        .filter(|(method, path)| *method == "GET" && !path.contains('{'))
+        .map(|(_, path)| path)
+        .collect();
+    assert!(
+        paths.len() >= 20 && paths.contains(&"/messages") && paths.contains(&"/opt_outs"),
+        "the schema's GET collections: {paths:?}"
+    );
+
+    let key = rig.person_by_key("pending").await;
+    let token = rig.person_by_token("pending").await;
+    let mut seen_open: Vec<&str> = Vec::new();
+    for path in &paths {
+        let by_key = key.request("GET", path).send().await;
+        let by_token = bearer_get(rig.base.clone(), token.clone(), (*path).to_owned()).await;
+        for (how, status, body) in [
+            ("key", by_key.status, by_key.text()),
+            ("token", by_token.0, by_token.1),
+        ] {
+            for leaked in [
+                rig.mine.body_text.as_str(),
+                rig.mine.message_id.as_str(),
+                rig.other.message_id.as_str(),
+            ] {
+                assert!(
+                    !body.contains(leaked),
+                    "pending by {how}: GET {path} carried message data: {body}"
+                );
+            }
+            if status == 403 {
+                continue;
+            }
+            assert_eq!(status, 200, "pending by {how}: GET {path} -> {body}");
+            let json: serde_json::Value = serde_json::from_str(&body).expect("a JSON answer");
+            let rows = json["items"]
+                .as_array()
+                .or_else(|| json.as_array())
+                .map_or(0, Vec::len);
+            if let Some((_, reason)) = PENDING_CAN_READ.iter().find(|(open, _)| open == path) {
+                assert!(
+                    rows > 0,
+                    "{path} ({reason}) is no longer readable: delete its entry"
+                );
+                seen_open.push(path);
+            } else if *path == "/console_keys" {
+                // Only the person's own paired key, on the key run; a token has none.
+                assert!(rows <= 1, "pending by {how}: other people's keys: {body}");
+            } else {
+                assert_eq!(
+                    rows, 0,
+                    "pending by {how} read {rows} row(s) of {path}: {body}"
+                );
+            }
+        }
+    }
+    for (open, reason) in PENDING_CAN_READ {
+        assert!(
+            seen_open.contains(&open),
+            "{open} ({reason}) was never read"
+        );
+    }
+}
+
+/// A developer has no `sms:read` since `0013_role_read_scope`, so it cannot see an
+/// attempt to replay it either: `replayWebhookAttempt` reads the attempt as the
+/// caller first (`@authorize`), and the attempt's policy asks for the claim. An
+/// admin still replays.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn a_developer_cannot_replay_a_webhook_attempt_but_an_admin_can() {
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = rig().await;
+    let mine = seed_attempt(&rig, &rig.mine.app_id, "+237677123456").await;
+    let mine = mine.as_str();
+    let developer = rig.person_by_key("developer").await;
+    let replay = |attempt: &str| serde_json::json!({"args": {"attemptId": attempt}});
+    let refused = developer
+        .request("POST", "/$procs/replayWebhookAttempt")
+        .json(&replay(mine))
+        .send()
+        .await;
+    assert_eq!(refused.status, 403, "{}", refused.text());
+    let admin = rig.person_by_key("admin").await;
+    let allowed = admin
+        .request("POST", "/$procs/replayWebhookAttempt")
+        .json(&replay(mine))
+        .send()
+        .await;
+    assert_ne!(
+        allowed.status,
+        403,
+        "an admin passes the policy and Layer 2: {}",
+        allowed.text()
+    );
 }

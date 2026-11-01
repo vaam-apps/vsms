@@ -37,14 +37,21 @@ messages routes, the receipt and part routes, and every other way a message can 
 included or filtered through another model. Before that was enforced, `Message`'s
 policy admitted any signed-in person, so any role read every app's messages.
 
-Every built-in role carries `sms:read`, `support` (the role a first sign-in is
-created in unless you set another) and `developer` included, so **a person in
-the required group still reads every app's messages by default**: membership of the
-group is still an access decision. To withhold it, create a role without `sms:read`
-(an `owner` creates it in the console under Users and roles) and name it as
-`human_login.sso.jit_role`; a person created by a sign-in then reads no message
-until you promote them. A role you edit takes effect within the 60-second standing
-cache.
+Four built-in roles carry `sms:read`: `owner`, `admin`, `operator` and `auditor`.
+`developer` and `support` do not (since migration `0013_role_read_scope`), and
+`pending`, the role a first sign-in should wait in, holds no permission at all. So
+with `jit_role: pending` **a person who signs in for the first time reads nothing
+until an owner or admin promotes them**: membership of the required group lets
+someone in, and the role decides what they may do. A deployment whose overlay still
+says `jit_role: support` keeps creating people as `support`, which also reads no
+message now, but holds opt-out permissions (it records and searches opt-outs);
+change it to `pending` unless you want that.
+
+To promote a person: an `owner` or `admin` opens the console, Users, picks the
+person (they appear as soon as they have signed in once) and changes their role.
+The change takes effect within the 60-second standing cache. A role you edit takes
+effect the same way. `owner` and `admin` act only from a paired console key
+whatever the sign-in.
 ====
 
 == What you get
@@ -98,7 +105,7 @@ human_login:
     groups_claim: groups
     accepted_amr: [otp]
     accepted_acr: []
-    jit_role: support
+    jit_role: pending
     jwks_min_refresh_secs: 30
     rate_limit:
       burst: 30
@@ -133,7 +140,7 @@ Every key is required; there are no Rust-side defaults, and an unknown key
 | Values that satisfy the second-factor rule; any one suffices. Usually `accepted_amr: [otp]`. **At least one of the two lists must be non-empty**; either may be `[]` if the other is not.
 
 | `jit_role`
-| The `Role.key` a just-in-time user is created with. The row must exist (`serve` checks at start-up); `owner`, `admin`, `system` and `app` are refused.
+| The `Role.key` a just-in-time user is created with. Use `pending`: a built-in role with no permission, seeded by migration `0013_role_read_scope`, where a first sign-in waits until an owner or admin promotes it. The row must exist (`serve` checks at start-up); `owner`, `admin`, `system` and `app` are refused. There is no default: the key is required.
 
 | `jwks_min_refresh_secs`
 | 1 to 3600. Floor on the gap between two fetches of Keycloak's signing keys. An unknown `kid` triggers one refetch, never more often than this.

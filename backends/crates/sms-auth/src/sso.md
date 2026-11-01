@@ -45,7 +45,9 @@ sequenceDiagram
 - **Roles stay local.** No token claim ever sets or changes a vsms role. A JIT user gets
   the one configured role (`human_login.sso.jit_role`), and the groups claim is only a
   gate: an exact match on `required_group`, never mapped to a role. Every later change
-  goes through the console or CLI as it does today.
+  goes through the console or CLI as it does today. The recommended role is the built-in
+  `pending` (migration `0013_role_read_scope`): it holds no permission, so a first sign-in
+  reads and does nothing until an owner or admin promotes the person.
 - **MFA is required, by claim.** [`policy`] documents the rule and the Keycloak
   measurements behind it.
 - **Password sign-in is untouched** and stays as the break-glass path.
