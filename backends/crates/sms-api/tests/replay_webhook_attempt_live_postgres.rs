@@ -70,8 +70,10 @@ fn sys() -> CratestackContext {
 /// carry the claim by hand, the same way `send_message_live_postgres.rs`'s
 /// own `app_caller` does for `scope`.
 fn developer_with_webhook_manage() -> CratestackContext {
-    // The seeded developer also holds `sms:read`, which `@authorize(WebhookAttempt,
-    // detail, ...)` needs as the `messageRead` claim.
+    // `@authorize(WebhookAttempt, detail, ...)` needs `sms:read` as the
+    // `messageRead` claim. The seeded developer holds none since
+    // `0013_role_read_scope`, so this is a developer whose role an owner gave
+    // it back to (a console admin replays with it as of right).
     let perms = vec!["webhook:manage".to_owned(), "sms:read".to_owned()];
     let mut ctx = Principal {
         sub: "replay-webhook-attempt-test-developer".to_owned(),
@@ -97,7 +99,7 @@ fn developer_without_permission() -> CratestackContext {
         role: "developer".to_owned(),
         app_id: String::new(),
     }
-    // Holds `sms:read` (the seeded developer does) and not `webhook:manage`, so
+    // Holds `sms:read` (as above) and not `webhook:manage`, so
     // `@authorize(WebhookAttempt, detail, ...)` passes the `messageRead` claim and
     // this reaches Layer 2's `webhook:manage` check, which is what is under test.
     .into_context_granting(Grants {

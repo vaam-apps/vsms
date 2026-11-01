@@ -115,7 +115,7 @@ deployment:
 #     groups_claim: groups
 #     accepted_amr: [otp]                 # the multi-factor rule: any one of amr or acr suffices,
 #     accepted_acr: []                    # and the two lists are never both empty
-#     jit_role: support                   # the role a first sign-in creates: never owner, admin, system, app
+#     jit_role: pending                   # the role a first sign-in creates (holds no permission until promoted): never owner, admin, system, app
 #     jwks_min_refresh_secs: 30           # floor between two fetches of the provider's signing keys
 #     rate_limit:                         # one bucket for /login/sso/start, one for /login/sso/callback
 #       burst: 30

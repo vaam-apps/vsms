@@ -30,7 +30,7 @@ fn config_for(fake: &FakeOidc, secret: &str, min_refresh_secs: u64) -> SsoConfig
         "groups_claim": "groups",
         "accepted_amr": ["otp"],
         "accepted_acr": [],
-        "jit_role": "support",
+        "jit_role": "pending",
         "jwks_min_refresh_secs": min_refresh_secs,
         "rate_limit": { "burst": 30, "refill_per_second": 1.0 },
     }))

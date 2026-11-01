@@ -35,7 +35,7 @@ human_login:
     groups_claim: groups
     accepted_amr: [otp]
     accepted_acr: []
-    jit_role: support
+    jit_role: pending
     jwks_min_refresh_secs: 30
     rate_limit: { burst: 30, refill_per_second: 1.0 }
 ```
@@ -142,7 +142,10 @@ way to get it wrong.
   one of [`REFUSED_JIT_ROLES`]: `system` and `app` (reserved, no human holds them)
   and `owner` and `admin` (they act only from a paired console key, so an account
   created by an unsupervised sign-in must not carry either). The role row's
-  existence is checked at boot by `serve`, which this crate cannot see.
+  existence is checked at boot by `serve`, which this crate cannot see. There is no
+  default: the key is required. The recommended value is `pending`, a built-in role with
+  no permission (migration `0013_role_read_scope`), where a first sign-in waits until an
+  owner or admin promotes it.
 - `jwks_min_refresh_secs` is 1 to 3600.
 - `rate_limit` is a bucket like the others. It is one **global** bucket per
   route (`/login/sso/start` and `/login/sso/callback`), not one per source: the

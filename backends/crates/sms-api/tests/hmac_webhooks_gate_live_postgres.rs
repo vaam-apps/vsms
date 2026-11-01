@@ -92,6 +92,15 @@ impl Deployment {
         client(&self.base, &key)
     }
 
+    /// An admin: holds `webhook:manage` and `sms:read`, which replaying an attempt
+    /// needs (`@authorize(WebhookAttempt, ...)` asks for the `messageRead` claim,
+    /// and `developer` has held no `sms:read` since `0013_role_read_scope`).
+    async fn admin(&self) -> SealedClient {
+        let key = TestKey::console();
+        seed_user_with_console_key(&self.db, "admin", &key).await;
+        client(&self.base, &key)
+    }
+
     /// An endpoint written around the API, as one left behind by a deployment
     /// that used to permit the method would be.
     async fn hmac_endpoint(&self) -> schema::WebhookEndpoint {
@@ -404,13 +413,13 @@ async fn with_hmac_off_switching_to_hmac_and_rotating_are_422_and_write_nothing(
 async fn with_hmac_off_replaying_an_hmac_attempt_is_422_and_a_sealed_ones_is_not() {
     let _guard = TEST_MUTEX.lock().await;
     let deployment = deployment(HmacWebhooks::Disabled).await;
-    let developer = deployment.developer().await;
+    let admin = deployment.admin().await;
     let hmac = deployment.hmac_endpoint().await;
     let sealed = deployment.sealed_endpoint().await;
     let held = deployment.failed_attempt(&hmac.id).await;
     let replayable = deployment.failed_attempt(&sealed.id).await;
 
-    let refused = developer
+    let refused = admin
         .request("POST", "/$procs/replayWebhookAttempt")
         .json(&serde_json::json!({"args": {"attemptId": held.id}}))
         .send()
@@ -423,7 +432,7 @@ async fn with_hmac_off_replaying_an_hmac_attempt_is_422_and_a_sealed_ones_is_not
     assert_eq!(unchanged.state, schema::AttemptState::failed);
     assert_eq!(unchanged.version, held.version, "a refusal writes nothing");
 
-    let replayed = developer
+    let replayed = admin
         .request("POST", "/$procs/replayWebhookAttempt")
         .json(&serde_json::json!({"args": {"attemptId": replayable.id}}))
         .send()
@@ -527,7 +536,9 @@ async fn with_hmac_permitted_every_call_is_what_it_was() {
     );
 
     let failed = deployment.failed_attempt(&hmac.id).await;
-    let replayed = developer
+    let replayed = deployment
+        .admin()
+        .await
         .request("POST", "/$procs/replayWebhookAttempt")
         .json(&serde_json::json!({"args": {"attemptId": failed.id}}))
         .send()

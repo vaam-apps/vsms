@@ -659,6 +659,7 @@ mod tests {
                 "{role}"
             );
         }
+        assert!(refuse_unusable_jit_role("pending").is_ok());
         assert!(refuse_unusable_jit_role("support").is_ok());
     }
 

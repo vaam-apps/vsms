@@ -113,7 +113,8 @@ when SSO is served.
 provider without contacting the identity provider (a dead Keycloak must not stop the
 gateway: password sign-in is the break-glass path), checks that the `Role` row named by
 `human_login.sso.jit_role` exists (a typo would otherwise be the first person's failed
-sign-in), spawns the reaper, advertises `vsms_sso_login_endpoint` in the discovery
+sign-in; the recommended `pending` is seeded by migration `0013_role_read_scope`, so any
+migrated database has it), spawns the reaper, advertises `vsms_sso_login_endpoint` in the discovery
 document, and logs the redirect URI to register at the provider.
 
 <!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->

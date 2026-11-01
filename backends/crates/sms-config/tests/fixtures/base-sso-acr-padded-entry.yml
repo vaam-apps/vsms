@@ -27,6 +27,6 @@ human_login:
     groups_claim: groups
     accepted_amr: []
     accepted_acr: [" mfa"]
-    jit_role: support
+    jit_role: pending
     jwks_min_refresh_secs: 30
     rate_limit: {burst: 30, refill_per_second: 1.0}
