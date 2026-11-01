@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { KNOWN_SCOPES, parseScopes, serializeScopes } from "./scopes";
+import { KNOWN_SCOPES, parseScopes, SCOPE_DESCRIPTIONS, serializeScopes } from "./scopes";
 
 describe("the scope picker", () => {
   it("never offers console:pair: only the operator's command line may grant it", () => {
@@ -9,5 +9,13 @@ describe("the scope picker", () => {
     expect(KNOWN_SCOPES as readonly string[]).not.toContain("console:pair");
     expect(parseScopes("sms:send console:pair")).toEqual(["sms:send"]);
     expect(serializeScopes(["sms:send"])).not.toContain("console:pair");
+  });
+
+  it("offers optout:read, so a key holding it keeps it through an edit, and says it reads every tenant", () => {
+    // parseScopes drops what the picker does not know, so a missing entry
+    // would silently strip the scope the next time an operator saved the key.
+    expect(KNOWN_SCOPES as readonly string[]).toContain("optout:read");
+    expect(parseScopes(" sms:send optout:read ")).toEqual(["sms:send", "optout:read"]);
+    expect(SCOPE_DESCRIPTIONS["optout:read"]).toBe("Read every opted-out number (all tenants)");
   });
 });

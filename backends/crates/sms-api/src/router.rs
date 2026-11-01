@@ -763,6 +763,39 @@ mod tests {
     }
 
     #[test]
+    fn opt_outs_and_consent_records_gate_their_reads_on_the_opt_out_claim() {
+        // Depth, stated: this reads the schema's text. It proves the two read
+        // lines are exactly the ones the owner ruled on (2026-11-01), not that
+        // they work: `message_read_live_postgres` proves that over HTTP.
+        let read_lines = |model: &str| -> Vec<String> {
+            model_block(model)
+                .lines()
+                .map(str::trim)
+                .filter(|line| line.starts_with("@@allow(\"read\""))
+                .map(str::to_owned)
+                .collect()
+        };
+        assert_eq!(
+            read_lines("OptOut"),
+            [r#"@@allow("read", auth().optOutRead == "granted" || hasRole('system'))"#],
+            "OptOut: a person reads with optout:read or optout:manage, an app with optout:read"
+        );
+        assert_eq!(
+            read_lines("ConsentRecord"),
+            [
+                r#"@@allow("read", (auth().kind == "user" && auth().optOutRead == "granted") || appId == auth().appId || hasRole('system'))"#
+            ],
+            "ConsentRecord: a person under the claim, an app its own records"
+        );
+        assert!(
+            model_block_auth().contains("optOutRead String"),
+            "the auth Principal block does not declare optOutRead"
+        );
+        assert_eq!(crate::auth::OPT_OUT_READ_PERMISSION, "optout:read");
+        assert_eq!(crate::auth::OPT_OUT_MANAGE_PERMISSION, "optout:manage");
+    }
+
+    #[test]
     fn the_claim_the_policies_read_is_declared_and_the_permission_is_the_routes() {
         assert!(
             model_block_auth().contains("messageRead String"),

@@ -8,7 +8,7 @@ use sms_msisdn::{Msisdn, OperatorPrefixTable};
 use tracing::info;
 
 use crate::audit_log;
-use crate::auth::PrincipalKind;
+use crate::auth::{OPT_OUT_MANAGE_PERMISSION, PrincipalKind};
 use crate::cache::TtlCache;
 use crate::errors::map_database_error;
 use crate::hmac_gate::HmacWebhooks;
@@ -1928,13 +1928,18 @@ impl Procedures {
     /// not. Runs under `sys` unconditionally — the same reason, not a new
     /// one: it is what lets a `support`-role caller's write succeed at all
     /// without touching `OptOut.create`'s own policy.
+    ///
+    /// `optout:manage` is a person's permission to write, and a person holding
+    /// it also reads opt-outs (`auth::Grants::of` grants `optOutRead` for it).
+    /// An app key's `optout:manage` scope does neither: the procedure's `@allow`
+    /// names person roles only, and the scope is not a read.
     async fn create_opt_out_entry(
         &self,
         db: &schema::IsolatedCratestack,
         ctx: &CratestackContext,
         args: schema::RecordOptOutInput,
     ) -> Result<schema::OptOut, CratestackError> {
-        require_permission(ctx, "optout:manage")?;
+        require_permission(ctx, OPT_OUT_MANAGE_PERMISSION)?;
 
         let msisdn = Msisdn::parse_mobile(&args.msisdn)
             .map_err(|error| CratestackError::Validation(error.to_string()))?;
@@ -1995,7 +2000,7 @@ impl Procedures {
         ctx: &CratestackContext,
         args: schema::OptOutSearchInput,
     ) -> Result<schema::OptOutSearchResult, CratestackError> {
-        require_permission(ctx, "optout:manage")?;
+        require_permission(ctx, OPT_OUT_MANAGE_PERMISSION)?;
 
         let msisdn = Msisdn::parse_mobile(&args.msisdn)
             .map_err(|error| CratestackError::Validation(error.to_string()))?;

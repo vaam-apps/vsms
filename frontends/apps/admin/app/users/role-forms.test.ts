@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isReservedRoleKey, isValidRoleKeyShape } from "./role-forms";
+import { isReservedRoleKey, isValidRoleKeyShape, KNOWN_PERMISSIONS } from "./role-forms";
 
 describe("isReservedRoleKey", () => {
   it("flags 'system'", () => {
@@ -43,5 +43,14 @@ describe("isValidRoleKeyShape", () => {
 
   it("rejects hyphens", () => {
     expect(isValidRoleKeyShape("billing-ops")).toBe(false);
+  });
+});
+
+describe("KNOWN_PERMISSIONS", () => {
+  it("offers both permissions that read opt-outs: optout:read (the auditor's) and optout:manage", () => {
+    // `OptOut` and `ConsentRecord` read policies ask the optOutRead claim,
+    // which a person's role gets from either (auth::Grants::of).
+    expect(KNOWN_PERMISSIONS as readonly string[]).toContain("optout:read");
+    expect(KNOWN_PERMISSIONS as readonly string[]).toContain("optout:manage");
   });
 });

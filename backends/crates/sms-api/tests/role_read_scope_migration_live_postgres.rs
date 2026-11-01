@@ -121,9 +121,10 @@ impl Scratch {
         drop_database(&admin, &name);
         must(&admin, &["-c", &format!("CREATE DATABASE {name}")]);
         let scratch = Self { admin, name, url };
+        // Up to, not "all but": a later migration (0014) must not run first.
         for dir in migration_dirs()
             .into_iter()
-            .filter(|dir| !dir.ends_with("0013_role_read_scope"))
+            .take_while(|dir| !dir.ends_with("0013_role_read_scope"))
         {
             for file in ["up.pre.sql", "up.sql"] {
                 let path = dir.join(file);

@@ -57,10 +57,12 @@ export function isValidRoleKeyShape(key: string): boolean {
 // directly against `backends/crates/sms-api/src/rbac.rs`, `router.rs` and every
 // `require_permission(ctx, "...")` call site in `procedures.rs`, not
 // assumed: the permission literals genuinely enforced anywhere today are
-// `sms:read`, `sms:send`, `optout:manage`, `webhook:manage`, `job:read`,
-// `job:enqueue`, `worker:read`, `dashboard:read`, `audit:read`,
+// `sms:read`, `sms:send`, `optout:read`, `optout:manage`, `webhook:manage`,
+// `job:read`, `job:enqueue`, `worker:read`, `dashboard:read`, `audit:read`,
 // `user:manage`, `provider:read`, `provider:update`, `route:read`,
-// `sender:manage` — fourteen literals. Eight entries below have **no
+// `sender:manage` — fifteen literals (`optout:read` and a person's
+// `optout:manage` are enforced by the `optOutRead` claim the `OptOut` and
+// `ConsentRecord` read policies ask, `auth::Grants::of`). Eight entries below have **no
 // corresponding server-side check anywhere**: `message:cancel`
 // (`cancelMessage` is still a milestone-2 `not_yet` stub), `app:read`,
 // `app:write` (App create/update/delete are Layer-1-only,
@@ -89,6 +91,7 @@ export const KNOWN_PERMISSIONS = [
   "route:read",
   "route:write",
   "sender:manage",
+  "optout:read",
   "optout:manage",
   "webhook:manage",
   "job:read",
