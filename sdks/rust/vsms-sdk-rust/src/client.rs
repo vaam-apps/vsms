@@ -217,6 +217,35 @@ impl VsmsClient {
         decode_send_message_response(status, &opened.body, replayed)
     }
 
+    /// `POST /$procs/lookupDeliveryStatus`, sealed: did a message arrive, without
+    /// reading it. Needs the `delivery:read` scope. Name exactly one of
+    /// `message_id`, `client_ref` or `msisdn` in the query; an app key is scoped to
+    /// its own app, so `app_id` may be left out (naming another app is refused).
+    ///
+    /// The answer is [`schema::DeliveryStatusResult`]: each [`schema::DeliveryStatus`]
+    /// has the masked recipient, the state, the lifecycle timestamps and the newest
+    /// receipt, and no message body. A number lookup is counted (so is a person's
+    /// lookup by `client_ref`): the gateway refuses the 61st in an hour with a `403`
+    /// whose message starts `delivery lookup budget exhausted` (the framework has no
+    /// `429` for it). A number reaches only unpurged messages of the last 90 days.
+    ///
+    /// # Errors
+    ///
+    /// [`SdkError`] when the call cannot be sealed or sent, the answer does not
+    /// verify, or the gateway refuses the query (`422` for a malformed one, `403`
+    /// without the scope or past the budget).
+    pub async fn lookup_delivery_status(
+        &self,
+        query: schema::DeliveryStatusQuery,
+    ) -> Result<schema::DeliveryStatusResult, SdkError> {
+        let args = schema::procedures::lookup_delivery_status::Args { args: query };
+        self.inner
+            .procedures()
+            .lookup_delivery_status(&args, &[])
+            .await
+            .map_err(SdkError::from)
+    }
+
     /// `GET /messages/{id}` - reads a message back, e.g. to confirm a send
     /// actually landed rather than trusting the mutation's own echoed
     /// response.

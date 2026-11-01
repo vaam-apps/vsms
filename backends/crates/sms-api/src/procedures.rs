@@ -1591,6 +1591,22 @@ impl Procedures {
         Ok(schema::MessageReceiptsResult { receipts })
     }
 
+    /// `lookupDeliveryStatus`: did this message arrive, for someone who may not read
+    /// it. The permission check is the first statement, and the only gate beyond
+    /// Layer 1's "a person or an app key": the read runs under the system context
+    /// (`Message`'s policy asks for `messageRead`, which `delivery:read` is not, and
+    /// must not become), so `delivery_status::lookup` scopes an app key to its own
+    /// app itself. See that module, and `docs/architecture.md` section 5.2.
+    async fn delivery_status(
+        &self,
+        db: &schema::Cratestack,
+        ctx: &CratestackContext,
+        args: schema::DeliveryStatusQuery,
+    ) -> Result<schema::DeliveryStatusResult, CratestackError> {
+        require_permission(ctx, "delivery:read")?;
+        crate::delivery_status::lookup(&self.pepper, db, ctx, args, Utc::now()).await
+    }
+
     /// `kind:role:appId`, read straight off the same `Principal` fields
     /// `into_context` writes (`auth.rs`). Two different callers must never
     /// share a cache entry when they'd see different rows: a `kind ==
@@ -2449,6 +2465,20 @@ impl schema::procedures::ProcedureRegistry for Procedures {
         Output = Result<schema::procedures::list_message_receipts::Output, CratestackError>,
     > + Send {
         self.message_receipts(db, ctx, args.args)
+    }
+
+    fn lookup_delivery_status(
+        &self,
+        db: &schema::Cratestack,
+        ctx: &CratestackContext,
+        args: schema::procedures::lookup_delivery_status::Args,
+        // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
+        // identical comment above.
+        _authorized: schema::procedures::lookup_delivery_status::Authorized,
+    ) -> impl core::future::Future<
+        Output = Result<schema::procedures::lookup_delivery_status::Output, CratestackError>,
+    > + Send {
+        self.delivery_status(db, ctx, args.args)
     }
 
     fn dashboard_summary(

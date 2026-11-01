@@ -1622,6 +1622,73 @@ model AuditAnchor {
   @@allow("create", hasRole('system'))
 }
 
+// Which of the three keys a delivery-status lookup used.
+enum DeliveryLookupKey {
+  message_id
+  client_ref
+  msisdn
+}
+
+// How a lookup ended. `pending` is a budgeted lookup that has claimed its place
+// in the hour and not yet been answered or refused; one that stays `pending` was
+// admitted and never answered (the call failed after it, so nothing was handed
+// over).
+enum DeliveryLookupOutcome {
+  pending
+  answered
+  over_budget
+}
+
+// One `lookupDeliveryStatus` call that got as far as the database: who asked, by
+// which kind of key, how it ended and, if it was answered, how many messages came
+// back. A refused attempt (`over_budget`) is a row too, so the trail shows who
+// asked past their budget, not only who was served. The row is written BEFORE the
+// answer and **the call fails if it cannot be written** (a lookup nobody can
+// later account for is not served). `@@audit` anchors every write in
+// `cratestack_audit` as well, so a deleted row is still a hash-chained fact.
+//
+// **`keyValue` is never the thing typed.** It is the message id (an opaque id,
+// not personal data), or the keyed hash of the number or of the client reference
+// (`hmac-sha256-v1:...`, the scheme `Message.msisdnHash` uses). A client reference
+// is hashed because `purge_retention` nulls `Message.clientRef` at 90 days as
+// personal data, and this table is kept indefinitely. The same pepper that makes
+// a number unfindable after a rotation makes "who looked up X" need the pepper:
+// an auditor answers it by hashing X, not by reading a plaintext.
+//
+// **The rows are the budget** (`BUDGETED_LOOKUPS_PER_HOUR`), and the order is what
+// makes it hold under concurrency: a budgeted lookup INSERTS its `pending` row
+// first and counts the caller's rows AFTER, its own included, admitting itself
+// only if the count is at most the budget. Every write autocommits, so when an
+// admitted row counts, every row admitted before it is visible and still counted,
+// and at most 60 are ever admitted, with no lock. A refused attempt then marks its row `over_budget`, an admitted
+// one marks it `answered` with the count. Those are the only updates: the
+// `delivery_lookups_update_guard` trigger refuses any other change. A lookup that
+// is not budgeted (by message id, or an app key's own client reference) is
+// written once, as `answered`, after the read.
+//
+// No `@@retain`: kept indefinitely. Every action is `hasRole('system')` only and
+// `@@internal("all")` removes the generated routes, so no HTTP caller reads or
+// writes it. There is no `delete`.
+model DeliveryLookup {
+  id Cuid @id @default(dbgenerated())
+  actorSub String @length(min: 1, max: 255)
+  actorKind String @length(min: 1, max: 16)
+  actorRole String @length(min: 1, max: 64)
+  actorAppId Cuid?
+  keyKind DeliveryLookupKey
+  keyValue String @length(min: 1, max: 255)
+  appIdFilter Cuid?
+  outcome DeliveryLookupOutcome
+  resultCount Int?
+  createdAt DateTime @default(dbgenerated())
+
+  @@audit
+  @@internal("all")
+  @@allow("read", hasRole('system'))
+  @@allow("create", hasRole('system'))
+  @@allow("update", hasRole('system'))
+}
+
 type SendMessageInput {
   to String
   body String
@@ -2047,6 +2114,78 @@ type MessageReceiptsResult {
 procedure listMessageReceipts(args: MessageReceiptsInput): MessageReceiptsResult
   @allow(auth().kind == "app" || hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('auditor') || hasRole('system'))
   @authorize(Message, detail, args.messageId)
+
+// The body-free delivery-status lookup: "did this message arrive?" for a support
+// agent who may not read the message (the built-in `support` role holds
+// `delivery:read` and no `sms:read`). docs/architecture.md section 5.2,
+// "Implementation, delivery lookups (delivery:read)", is the long form.
+//
+// It is a procedure with its own types and not `GET /messages`, because that
+// route answers with the `Message` model and the model carries the body. Three
+// rules shape it, each guarded by a test that reads this file:
+//
+// 1. **The answer is a type of its own, and it has no body.** `DeliveryStatus`
+//    carries a masked recipient, the lifecycle timestamps and the newest
+//    receipt, and never `body`, `bodyHash` (an OTP is brute-forceable from its
+//    hash if the pepper leaks), `bodyLength`, `msisdnHash`, `costXaf`,
+//    `stateReason` (free text a provider's error put there), `clientRef`,
+//    `idempotencyKey` or `providerMessageRef*`.
+// 2. **No new auth claim.** `Message`'s `@@allow` asks for `messageRead` and
+//    must not learn a `deliveryRead`: a claim there would widen `GET /messages`
+//    to everyone who holds `delivery:read`. The gate is the procedure's own
+//    `require_permission(ctx, "delivery:read")`, the first statement of its body,
+//    and the read runs under the internal system context, scoped to the caller's
+//    own app in the body when the caller is an app key.
+// 3. **No `@authorize`.** It would run the caller's `Message` policy, which
+//    `delivery:read` does not satisfy.
+//
+// A message is found by its id, by an app's own `clientRef`, or by the whole
+// recipient number (equality on the keyed hash; a number is never listed, and a
+// rotated pepper finds nothing, as with `searchOptOutByMsisdn`). Exactly one key
+// per call. A number finds unpurged messages of the last 90 days only: the keyed
+// hash is what de-identifies a purged row, so a number never links to one. A
+// lookup by number, or by a person's client reference, is counted against an
+// hourly budget; every lookup writes one `DeliveryLookup` row before it answers.
+type DeliveryStatusQuery {
+  messageId Cuid?
+  appId Cuid?
+  clientRef String?
+  msisdn String?
+  since DateTime?
+  until DateTime?
+  limit Int?
+}
+
+// One message's delivery state. `recipient` is the masked number (`+237*******56`)
+// and null once the message is purged; `acceptedAt` is `Message.createdAt`.
+type DeliveryStatus {
+  messageId Cuid
+  appId Cuid
+  recipient String?
+  operator OperatorCode
+  senderIdValue String
+  class MessageClass
+  encoding Encoding
+  segments Int
+  state MessageState
+  attempts Int
+  acceptedAt DateTime
+  scheduledAt DateTime?
+  submittedAt DateTime?
+  finalizedAt DateTime?
+  expiresAt DateTime
+  purged Boolean
+  lastReceipt DeliveryReceiptSummary?
+}
+
+// Newest first. `truncated` is true when more matched than `limit`.
+type DeliveryStatusResult {
+  statuses DeliveryStatus[]
+  truncated Boolean
+}
+
+procedure lookupDeliveryStatus(args: DeliveryStatusQuery): DeliveryStatusResult
+  @allow(auth().kind == "user" || auth().kind == "app")
 
 // #49: the operator dashboard — throughput, delivery rate by operator,
 // queue/job/outbox depth, and a UCS-2-ratio trend. The epic's own worked

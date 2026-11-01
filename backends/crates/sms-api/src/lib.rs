@@ -34,6 +34,7 @@ pub mod client_keys;
 pub mod composition;
 pub mod consent;
 pub mod console_keys;
+pub mod delivery_status;
 pub mod dlr;
 pub mod envelope;
 pub mod errors;

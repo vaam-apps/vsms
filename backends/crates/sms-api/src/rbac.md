@@ -17,6 +17,14 @@ One primitive, [`require_permission`], two call sites:
   the route itself — left in place for #25); a second route needs only
   another entry in that slice, not a new mechanism.
 
+A third kind of caller of the same primitive is `lookupDeliveryStatus`
+(`Procedures::delivery_status`, gated on `"delivery:read"`): its first statement
+is the call, and no policy knows the permission at all. `Message`'s `@@allow`
+asks for the `messageRead` claim, and a `deliveryRead` claim there would widen
+`GET /messages` to everyone holding `delivery:read`; `delivery_status.md` has
+the rest. `permission_vocabulary.rs` names it, so removing the call fails a test
+and not only a printed note.
+
 # Fail closed, per §5.2's own words
 
 *"An omitted `scope` yields `scope: None`, which your check must treat

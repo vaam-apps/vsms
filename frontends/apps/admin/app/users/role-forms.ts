@@ -60,7 +60,7 @@ export function isValidRoleKeyShape(key: string): boolean {
 // `sms:read`, `sms:send`, `optout:read`, `optout:manage`, `webhook:manage`,
 // `job:read`, `job:enqueue`, `worker:read`, `dashboard:read`, `audit:read`,
 // `user:manage`, `provider:read`, `provider:update`, `route:read`,
-// `sender:manage` — fifteen literals (`optout:read` and a person's
+// `sender:manage`, `delivery:read` (`lookupDeliveryStatus`) — sixteen literals (`optout:read` and a person's
 // `optout:manage` are enforced by the `optOutRead` claim the `OptOut` and
 // `ConsentRecord` read policies ask, `auth::Grants::of`). Eight entries below have **no
 // corresponding server-side check anywhere**: `message:cancel`
@@ -81,6 +81,7 @@ export function isValidRoleKeyShape(key: string): boolean {
 export const KNOWN_PERMISSIONS = [
   "sms:read",
   "sms:send",
+  "delivery:read",
   "message:cancel",
   "app:read",
   "app:write",

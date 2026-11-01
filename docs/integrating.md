@@ -148,6 +148,22 @@ Two of these need care, and both are deliberate rather than accidental:
 - **`uncertain` is never resubmitted.** When a submit's outcome is genuinely unknown, vsms chooses a possibly-lost message over a possibly-duplicated one. For OTP traffic that is the right trade — a user re-requests a code far more cheaply than they get two. A background job eventually resolves the message to a terminal state.
 - **`undelivered` currently has no retry driver** ([#122](https://github.com/vymalo/vsms/issues/122)). A message that receives exactly one retryable-failure receipt and no follow-up stays there. If your application needs a retry, implement it on your side against `clientRef` — do not assume vsms will re-send.
 
+### Asking whether a message arrived, without reading it
+
+`GET /messages/{id}` returns the whole `Message`, body included, and needs `sms:read`. If your key should only be able to ask *whether* a message arrived, give it the `delivery:read` scope instead (`sms-gateway register-client --scope sms:send --scope delivery:read`) and call `lookupDeliveryStatus`: `POST /$procs/lookupDeliveryStatus` with `{"args": {...}}`, in the Rust SDK `VsmsClient::lookup_delivery_status` and in the Node SDK `lookupDeliveryStatus`.
+
+Name exactly one key. Your key is scoped to your own `App`, so you never send `appId` (sending another app's is a `422`):
+
+| Key         | Matches                                                                  |
+| ----------- | ------------------------------------------------------------------------ |
+| `messageId` | The id `sendMessage` answered with. Another app's id is an empty answer. |
+| `clientRef` | The `clientRef` you sent, inside your app.                               |
+| `msisdn`    | The whole recipient number, exactly: never a prefix or a suffix.         |
+
+A number or `clientRef` lookup covers the last seven days unless you pass `since` and `until` (at most 90 days apart). A lookup by number reaches only messages that have not been purged and that were accepted in the last 90 days, so its window may not start earlier than that (a `422`: `a lookup by number may not start more than 90 days ago`); a purged message is found by its `messageId` alone, with `recipient` `null`; `limit` is 1 to 50 (default 10), newest first, and `truncated` says more matched. Each answer in `statuses` is a `DeliveryStatus`: `messageId`, `appId`, `recipient` (masked, `+237*******56`, and `null` once the message is purged), `operator`, `senderIdValue`, `class`, `encoding`, `segments`, `state`, `attempts`, `acceptedAt`, `scheduledAt`, `submittedAt`, `finalizedAt`, `expiresAt`, `purged` and `lastReceipt` (the newest carrier receipt: `outcome`, `rawStatus`, `errorCode`, `networkCode`, `receivedAt`, `occurredAt`). It never contains the body, a hash, the full number, the cost or the carrier's own text.
+
+Lookups by number are limited to **60 per hour** per key. The 61st is a `403` whose message is `delivery lookup budget exhausted: 60 lookups by number or reference per hour` (the gateway has no `429` for it); lookups by `messageId` are not counted, and neither are an app key's lookups by its own `clientRef` (a person's lookups by `clientRef` share the same 60). Requests sent at the same moment count together, so a burst larger than the limit may be refused more than it strictly must be. Every lookup that reaches the database is recorded, a lookup refused for the budget included (a malformed query, `422`, or a caller without the scope, `403`, writes no row), with a hash of what you asked for and never the number or reference itself.
+
 ## 5. Idempotency: `Idempotency-Key` vs `clientRef`
 
 Two different layers protecting against two different problems. Use both.

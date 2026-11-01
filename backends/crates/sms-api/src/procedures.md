@@ -8,7 +8,8 @@ drift further).
 `rotateWebhookSecret` (an `hmac` endpoint only: a `sealed` one has no secret
 and is refused, VS-8R), `switchWebhookDeliveryMode` (VS-8R: a validated move
 between `sealed` and `hmac`), (#43) `replayWebhookAttempt`, (#56) `requeueJob`,
-(#57) `workerLocks`, and (#50) `listMessageReceipts` are implemented.
+(#57) `workerLocks`, (#50) `listMessageReceipts` and `lookupDeliveryStatus` (the
+body-free delivery-status lookup: `delivery_status.md`) are implemented.
 
 **With `auth.methods` not permitting `hmac_webhooks` (VSA-1)**, `rotateWebhookSecret`
 and a `switchWebhookDeliveryMode` to `hmac` answer 422 (`auth_method_disabled`)

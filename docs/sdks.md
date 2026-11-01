@@ -128,6 +128,37 @@ was replayed under its `Idempotency-Key` (`idempotencyReplayed`); see the
 [`examples/node/sms-send-example`](../examples/node/sms-send-example) is the
 runnable version.
 
+## Asking whether a message arrived
+
+A key holding the `delivery:read` scope (and not `sms:read`) can ask where a
+message stands without being able to read it: `lookup_delivery_status` /
+`lookupDeliveryStatus`, a sealed `POST /$procs/lookupDeliveryStatus`. Name one of
+`message_id`, `client_ref` or `msisdn`; an app key is scoped to its own app. The
+answer has the masked recipient, the state, the timestamps and the newest
+receipt, and no body. A lookup by number (or, for a person, by `client_ref`) is limited to 60 per hour and the 61st
+is a `403` ([the integration guide](integrating.md#asking-whether-a-message-arrived-without-reading-it)
+has the keys, the window and the limits).
+
+```rust
+let answer = client
+    .lookup_delivery_status(vsms_sdk::schema::DeliveryStatusQuery {
+        messageId: Some(message_id.clone()),
+        appId: None,
+        clientRef: None,
+        msisdn: None,
+        since: None,
+        until: None,
+        limit: None,
+    })
+    .await?;
+println!("{:?}", answer.statuses.first().map(|s| &s.state));
+```
+
+```ts
+const { statuses } = await client.lookupDeliveryStatus({ messageId });
+console.log(statuses[0]?.state, statuses[0]?.lastReceipt?.outcome);
+```
+
 ## `Idempotency-Key` and `clientRef` are different things
 
 Both SDKs take an optional idempotency key, sent as the `Idempotency-Key`

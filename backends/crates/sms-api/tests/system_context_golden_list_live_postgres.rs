@@ -190,7 +190,7 @@ use sms_api::schema::{
     self, ClientAuthMethod, ConsentChannel, Cratestack, DeliveryOutcome, Encoding, MessageClass,
     OperatorCode, OptOutSource, ProviderKind, SenderIdKind, SenderIdRegistrationStatus, app,
     app_client, audit_anchor, client_assertion, client_key, consent_record, console_key,
-    delivery_receipt, envelope_nonce, federated_link, job, message, oauth_client,
+    delivery_lookup, delivery_receipt, envelope_nonce, federated_link, job, message, oauth_client,
     oauth_signing_key, operator_prefix_rule, opt_out, provider, role, route, route_validation,
     sender_id, sender_id_registration, sso_transaction, user, user_credential, webhook_attempt,
     webhook_endpoint,
@@ -223,6 +223,9 @@ static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
 ///   prove it before a reader exists to find out the hard way.
 /// - `EnvelopeNonce` — the signed transport's replay cache (VS-3): the nonce
 ///   store records, takes over and the worker sweeps it, all under `sys`.
+/// - `DeliveryLookup` — `lookupDeliveryStatus`'s audit row and hourly budget
+///   (`delivery_status::lookup`): counted, written and settled under `sys`,
+///   system-only on all three actions, `@@internal("all")`.
 /// - `SenderId`, `SenderIdRegistration` — `Procedures::resolve_sender_id`.
 /// - `Provider` — `backends/crates/sms-worker/src/routing.rs`'s `decide` (since #62;
 ///   formerly `cheapest_active_provider`, which this replaced) and
@@ -294,6 +297,12 @@ const SYSTEM_READABLE_MODELS: &[&str] = &[
     // VS-3: the envelope layer's nonce store records and takes over under
     // sys(). Not a "found live" instance.
     "EnvelopeNonce",
+    // `lookupDeliveryStatus` counts a caller's budgeted lookups for its hourly
+    // budget (an `aggregate().count()` under `sys()`), writes one row per lookup
+    // and settles it. `hasRole('system')` is the whole policy of the three
+    // actions it has, so a read that silently came back empty would switch the
+    // budget off.
+    "DeliveryLookup",
     "SenderId",
     "SenderIdRegistration",
     "Provider",
@@ -593,6 +602,34 @@ async fn seed_and_verify_app_client(
         "AppClient",
         "@@allow(\"read\", hasRole('owner') || hasRole('admin') || hasRole('developer') \
          || hasRole('system'))"
+    );
+    seeded
+}
+
+async fn seed_and_verify_delivery_lookup(db: &Cratestack, suffix: &str) -> schema::DeliveryLookup {
+    let seeded = db
+        .delivery_lookup()
+        .create(schema::CreateDeliveryLookupInput {
+            actorSub: format!("sys-golden-{suffix}"),
+            actorKind: "user".to_owned(),
+            actorRole: "support".to_owned(),
+            actorAppId: None,
+            keyKind: schema::DeliveryLookupKey::message_id,
+            keyValue: format!("sys-golden-{suffix}"),
+            appIdFilter: None,
+            outcome: schema::DeliveryLookupOutcome::answered,
+            resultCount: Some(0),
+        })
+        .run(&sys())
+        .await
+        .expect("seeding a DeliveryLookup");
+    assert_system_can_read_back!(
+        db,
+        delivery_lookup,
+        delivery_lookup,
+        seeded.id,
+        "DeliveryLookup",
+        "@@allow(\"read\", hasRole('system'))"
     );
     seeded
 }
@@ -1470,6 +1507,7 @@ async fn every_system_readable_model_actually_admits_a_system_read() {
     let app = seed_and_verify_app(&db, &suffix).await;
     let app_client = seed_and_verify_app_client(&db, &suffix, &app.id).await;
     seed_and_verify_envelope_nonce(&db, &suffix, now).await;
+    seed_and_verify_delivery_lookup(&db, &suffix).await;
     seed_and_verify_oauth_client(&db, &suffix, &app_client.id).await;
     seed_and_verify_oauth_signing_key(&db).await;
     seed_and_verify_client_assertion(&db, &suffix, now).await;

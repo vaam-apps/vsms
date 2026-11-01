@@ -47,6 +47,10 @@ describe("isValidRoleKeyShape", () => {
 });
 
 describe("KNOWN_PERMISSIONS", () => {
+  it("offers delivery:read, the permission support's delivery-status lookup asks", () => {
+    expect(KNOWN_PERMISSIONS as readonly string[]).toContain("delivery:read");
+  });
+
   it("offers both permissions that read opt-outs: optout:read (the auditor's) and optout:manage", () => {
     // `OptOut` and `ConsentRecord` read policies ask the optOutRead claim,
     // which a person's role gets from either (auth::Grants::of).
