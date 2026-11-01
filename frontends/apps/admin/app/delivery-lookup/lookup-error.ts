@@ -6,20 +6,22 @@
 //
 // The gateway answers a missing permission and an exhausted hourly budget with
 // the same 403, so only the message tells them apart. The 422s the console can
-// place on a field are likewise told apart by their fixed texts. They are pinned
-// by Rust unit tests in `backends/crates/sms-api/src/delivery_status.rs`, and the
-// budget text by its prefix; `delivery_status.md` records that changing any of
-// them means changing this file. A text this table does not know falls back to a
-// banner that shows it, so a reworded refusal degrades to less friendly, never
-// to silent.
+// place on a field are likewise told apart by their fixed texts. Only some of
+// those are pinned by a Rust test: two by equality in `delivery_status.rs`, the
+// window width and order by a `contains`, the id and reference ones not at all.
+// `delivery_status.md` lists every text this file matches and says that changing
+// any of them means changing this file; the permission prefix is `rbac.rs`'s,
+// noted in `rbac.md`. A text this table does not know falls back to a banner that
+// shows it, so a reworded refusal degrades to less friendly, never to silent.
 //
 // # The typed number is never repeated
 //
 // Nothing here quotes input. The only text echoed is the server's own, and the
 // server's 422 texts never carry what was typed (`delivery_status.md`). As a
-// second line, `describeLookupError` also takes the values the person typed and
-// blanks them out of any server text it does echo, so a future message that did
-// quote a number still could not reach the screen.
+// second line, `describeLookupError` blanks two things out of any server text it
+// does echo, so a future message that did quote a number still could not reach
+// the screen: the values that were actually sent (`typedValues`), and any run of
+// digits shaped like a phone number, whatever was typed.
 
 import { FIELD_MESSAGES, type LookupFormValues, MAX_WINDOW_DAYS } from "./lookup-query";
 
@@ -63,29 +65,57 @@ const FIELD_REFUSALS: ReadonlyMap<
 
 const REDACTED = "[hidden]";
 
-/** Blanks every typed value out of `text`: the value as typed (trimmed) and,
- * when it holds enough digits to be a number, its digits alone, so a server
- * that reformatted a number still could not repeat it. */
-function redact(text: string, typed: readonly string[]): string {
-  let out = text;
-  for (const raw of typed) {
+/** A typed value shorter than this is not blanked by itself: a client reference
+ * such as `app` or `ord1` is also an ordinary word or a number in a sentence,
+ * and the phone-shaped rule below already catches every number. */
+const MIN_TYPED_LENGTH = 6;
+/** Digits at which a run is read as a phone number (a Cameroonian one has 9). */
+const MIN_PHONE_DIGITS = 8;
+/** A run of digits with the separators people and servers put in a number
+ * (`+237 699 887 766`, `00237699887766`, `(237) 699-887-766`). */
+const DIGIT_RUN = /[+(]?\d[\d\s().-]{6,}\d/g;
+
+/** The values the lookup was sent with that a server text could echo. */
+export function typedValues(args: Readonly<Record<string, unknown>> | undefined): string[] {
+  if (args === undefined) return [];
+  return ["msisdn", "clientRef", "messageId", "appId"]
+    .map((key) => args[key])
+    .filter((value): value is string => typeof value === "string");
+}
+
+/** Blanks `text` of what was sent and of anything shaped like a number.
+ *
+ * Two rules, each for a gap the other leaves:
+ * - a sent value of at least `MIN_TYPED_LENGTH` characters is blanked as it
+ *   stands (a reference, an id, an app id), whatever it looks like;
+ * - a run of at least `MIN_PHONE_DIGITS` digits, with the separators
+ *   `DIGIT_RUN` allows, is blanked whatever was typed, so a number typed as
+ *   `00237...` and echoed as `+237 ...` (or the reverse) still goes. Eight is
+ *   past every figure the gateway's own texts carry (`60`, `90`) and below the
+ *   shortest national number; a date is eight digits and would go too, which
+ *   costs nothing because no refusal echoes one. */
+function redact(text: string, sent: readonly string[]): string {
+  // Numbers first: blanking a typed `699887766` first would leave the `+237`
+  // of an echoed `+237699887766` behind.
+  let out = text.replace(DIGIT_RUN, (run) =>
+    run.replace(/\D/g, "").length >= MIN_PHONE_DIGITS ? REDACTED : run,
+  );
+  for (const raw of sent) {
     const value = raw.trim();
-    if (value.length < 3) continue;
-    out = out.split(value).join(REDACTED);
-    const digits = value.replace(/\D/g, "");
-    if (digits.length >= 6) out = out.split(digits).join(REDACTED);
+    if (value.length >= MIN_TYPED_LENGTH) out = out.split(value).join(REDACTED);
   }
   return out;
 }
 
-/** What to show for a failed lookup. `typed` is what the person entered
- * (number, reference, ids): used only to keep it out of the text. */
+/** What to show for a failed lookup. `sent` is what the lookup was sent with
+ * (`typedValues`, never the live form, which may have been edited since): used
+ * only to keep it out of the text. */
 export function describeLookupError(
   error: LookupErrorInput,
-  typed: readonly string[] = [],
+  sent: readonly string[] = [],
 ): LookupErrorView {
   const message = error.message;
-  const echo = (text: string) => redact(text, typed);
+  const echo = (text: string) => redact(text, sent);
 
   switch (error.code) {
     case "FORBIDDEN": {
@@ -98,7 +128,7 @@ export function describeLookupError(
       if (message.startsWith(PERMISSION_PREFIX)) {
         return {
           kind: "banner",
-          text: "Your role does not include delivery:read. Support and Auditor hold it; owner, admin and operator do not. Ask an owner or admin to grant it to your role.",
+          text: "Your role does not include delivery:read. Support and Auditor hold it by default; a custom role can be granted it. Ask an owner or admin to grant it to your role.",
         };
       }
       return { kind: "banner", text: `The gateway refused this lookup: ${echo(message)}` };

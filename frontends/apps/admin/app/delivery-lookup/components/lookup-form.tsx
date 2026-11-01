@@ -21,7 +21,7 @@ import {
   RadioGroup,
   Skeleton,
 } from "@vaam-apps/ui";
-import type { FormEventHandler } from "react";
+import type { FormEventHandler, KeyboardEventHandler, RefObject } from "react";
 import type { FieldErrors, UseFormRegister } from "react-hook-form";
 import { FilterChip } from "@/components/filter-chip";
 import { BUDGET_NOTE, KIND_OPTIONS, WINDOW_HINT } from "../lookup-labels";
@@ -51,7 +51,10 @@ export interface LookupFormProps {
   isPending: boolean;
   /** A failure that belongs to no field. */
   bannerText: string | null;
+  /** Where the app picker's radios live, so the screen can focus them. */
+  appGroupRef: RefObject<HTMLDivElement | null>;
   onSubmit: FormEventHandler<HTMLFormElement>;
+  onKeyDown: KeyboardEventHandler<HTMLFormElement>;
 }
 
 export function LookupForm(props: LookupFormProps) {
@@ -65,6 +68,7 @@ export function LookupForm(props: LookupFormProps) {
         noValidate
         className="flex flex-col gap-4"
         onSubmit={props.onSubmit}
+        onKeyDown={props.onKeyDown}
       >
         <FormField label="Look up by" htmlFor="lookup-kind" control="group">
           <RadioGroup
@@ -86,7 +90,7 @@ export function LookupForm(props: LookupFormProps) {
               id="lookup-message-id"
               autoComplete="off"
               spellCheck={false}
-              placeholder="The id from the message's own page"
+              placeholder="Paste the id"
               className="font-mono"
               {...register("messageId")}
             />
@@ -111,12 +115,14 @@ export function LookupForm(props: LookupFormProps) {
             {props.appsLoading && <Skeleton className="h-12 w-full" />}
             {!props.appsLoading && props.apps.length > 0 && (
               <FormField label="App" htmlFor="lookup-app" control="group">
-                <RadioGroup
-                  aria-labelledby={groupLabelId("lookup-app")}
-                  value={props.appId === "" ? undefined : props.appId}
-                  onValueChange={props.onAppChange}
-                  options={props.apps.map((app) => ({ value: app.id, label: app.name }))}
-                />
+                <div ref={props.appGroupRef}>
+                  <RadioGroup
+                    aria-labelledby={groupLabelId("lookup-app")}
+                    value={props.appId === "" ? undefined : props.appId}
+                    onValueChange={props.onAppChange}
+                    options={props.apps.map((app) => ({ value: app.id, label: app.name }))}
+                  />
+                </div>
                 {errors.appId?.message !== undefined && (
                   <FieldError>{errors.appId.message}</FieldError>
                 )}

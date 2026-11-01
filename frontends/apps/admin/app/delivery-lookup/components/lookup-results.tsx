@@ -39,6 +39,11 @@ export type LookupStatus = LookupResult["statuses"][number];
 
 const SKELETON_ROWS = 3;
 const COLUMN_COUNT = 8;
+/** Sender and Finalized show from 1536px only. With every timestamp on one line
+ * the table is about 1080px wide, and the console's content column at 1280px is
+ * 910px (the sidebar takes the rest), so at `xl` the last column was clipped by
+ * the card's sideways scroll. The drawer has both at every width. */
+const WIDE_ONLY = "hidden 2xl:table-cell";
 
 export interface LookupResultsProps {
   result: LookupResult | undefined;
@@ -78,9 +83,9 @@ export function LookupResults({ result, isPending, kind, appNames, onOpen }: Loo
                 <TableHead>Recipient</TableHead>
                 <TableHead>State</TableHead>
                 <TableHead hideBelow="md">App</TableHead>
-                <TableHead hideBelow="xl">Sender</TableHead>
+                <TableHead className={WIDE_ONLY}>Sender</TableHead>
                 <TableHead hideBelow="sm">Accepted</TableHead>
-                <TableHead hideBelow="xl">Finalized</TableHead>
+                <TableHead className={WIDE_ONLY}>Finalized</TableHead>
                 <TableHead hideBelow="md">Last receipt</TableHead>
                 <TableHead align="end">
                   <span className="sr-only">Details</span>
@@ -129,15 +134,18 @@ export function LookupResults({ result, isPending, kind, appNames, onOpen }: Loo
                     <TableCell hideBelow="md">
                       {appNames[status.appId] ?? <IdDisplay value={status.appId} />}
                     </TableCell>
-                    <TableCell hideBelow="xl" mono>
+                    <TableCell className={WIDE_ONLY} mono>
                       {status.senderIdValue}
                     </TableCell>
                     <TableCell hideBelow="sm">
-                      <TimestampDisplay value={status.acceptedAt} />
+                      <TimestampDisplay value={status.acceptedAt} className="whitespace-nowrap" />
                     </TableCell>
-                    <TableCell hideBelow="xl">
+                    <TableCell className={WIDE_ONLY}>
                       {status.finalizedAt !== undefined ? (
-                        <TimestampDisplay value={status.finalizedAt} />
+                        <TimestampDisplay
+                          value={status.finalizedAt}
+                          className="whitespace-nowrap"
+                        />
                       ) : (
                         "—"
                       )}
@@ -147,11 +155,10 @@ export function LookupResults({ result, isPending, kind, appNames, onOpen }: Loo
                         <span className="inline-flex flex-wrap items-center gap-x-1.5">
                           <span>{outcomeLabel(status.lastReceipt.outcome)}</span>
                           <span aria-hidden="true">·</span>
-                          <span className="font-mono text-muted-foreground">
-                            {status.lastReceipt.rawStatus}
-                          </span>
-                          <span aria-hidden="true">·</span>
-                          <TimestampDisplay value={status.lastReceipt.receivedAt} />
+                          <TimestampDisplay
+                            value={status.lastReceipt.receivedAt}
+                            className="whitespace-nowrap"
+                          />
                         </span>
                       ) : (
                         "—"

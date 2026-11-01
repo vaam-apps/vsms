@@ -38,6 +38,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { QuickDetailDrawer, ScreenStack } from "@vaam-apps/ui";
 import { trpc } from "@vsms/hooks";
 import { parseAsString, useQueryStates } from "nuqs";
+import { useRef } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { Caption } from "@/components/caption";
 import { PageHeader } from "@/components/page-header";
@@ -45,7 +46,8 @@ import { SectionHeader } from "@/components/section-header";
 import { LookupDetailFields } from "./components/lookup-detail-fields";
 import { LookupForm } from "./components/lookup-form";
 import { LookupResults } from "./components/lookup-results";
-import { describeLookupError } from "./lookup-error";
+import { focusChoice } from "./focus-choice";
+import { describeLookupError, typedValues } from "./lookup-error";
 import { appNameIndex } from "./lookup-labels";
 import {
   activePresetDays,
@@ -59,6 +61,7 @@ import {
   presetWindow,
   toLookupArgs,
 } from "./lookup-query";
+import { ignoreHeldEnter, runOnce } from "./submit-guard";
 
 export function DeliveryLookupScreen() {
   const [urlState, setUrlState] = useQueryStates(
@@ -82,15 +85,30 @@ export function DeliveryLookupScreen() {
   const appsQuery = trpc.apps.list.useQuery();
   const apps = appsQuery.data ?? [];
 
-  // What the person typed, so an error's text can be kept free of it.
-  const typed = [current.msisdn, current.clientRef, current.messageId, current.appId];
+  // A lookup is in flight from the moment it is handed to `mutate` until it
+  // settles. `isPending` says so too, but only after the next render, and two
+  // submits can land before it (a held Enter, a double tap): each would spend
+  // budget. A ref changes at once. See `submit-guard.ts`.
+  const inFlight = useRef(false);
+  const appGroupRef = useRef<HTMLDivElement>(null);
 
+  // An error's text is kept free of what was *sent* (`variables`), not of the
+  // form as it stands, which the person may have edited since.
   const lookup = trpc.deliveryStatus.lookup.useMutation({
-    onError: (error) => {
-      const view = describeLookupError({ code: error.data?.code, message: error.message }, typed);
+    onError: (error, sent) => {
+      const view = describeLookupError(
+        { code: error.data?.code, message: error.message },
+        typedValues(sent),
+      );
       if (view.kind === "field") {
         form.setError(view.field, { message: view.text }, { shouldFocus: true });
+        // The app picker is not a registered input, so `shouldFocus` cannot
+        // reach it; its container is only there when apps are listed.
+        if (view.field === "appId") focusChoice(appGroupRef.current);
       }
+    },
+    onSettled: () => {
+      inFlight.current = false;
     },
   });
 
@@ -99,7 +117,7 @@ export function DeliveryLookupScreen() {
       ? null
       : describeLookupError(
           { code: lookup.error.data?.code, message: lookup.error.message },
-          typed,
+          typedValues(lookup.variables),
         );
 
   const detailRow =
@@ -125,8 +143,10 @@ export function DeliveryLookupScreen() {
   }
 
   const submit = form.handleSubmit((submitted) => {
-    void setUrlState({ detail: null });
-    lookup.mutate(toLookupArgs(submitted, kind));
+    runOnce(inFlight, () => {
+      void setUrlState({ detail: null });
+      lookup.mutate(toLookupArgs(submitted, kind));
+    });
   });
 
   return (
@@ -151,7 +171,9 @@ export function DeliveryLookupScreen() {
         canSubmit={isLookupReady(current, kind, now)}
         isPending={lookup.isPending}
         bannerText={failure?.kind === "banner" ? failure.text : null}
+        appGroupRef={appGroupRef}
         onSubmit={submit}
+        onKeyDown={ignoreHeldEnter}
       />
 
       {(lookup.isPending || lookup.isSuccess) && (

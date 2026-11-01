@@ -110,6 +110,24 @@ describe("the results", () => {
     expect(html).not.toContain(TYPED_NUMBER);
   });
 
+  it("keeps every timestamp in a row on one line, so the columns do not collapse to a word each", () => {
+    const html = results({ statuses: [STATUS], truncated: false });
+    // `TimestampDisplay` is the one thing here set in tabular figures.
+    const times = [...html.matchAll(/<span class="[^"]*tabular-nums[^"]*"/g)].map((m) => m[0]);
+    // Accepted, Finalized and the last receipt's.
+    expect(times).toHaveLength(3);
+    for (const tag of times) expect(tag).toContain("whitespace-nowrap");
+  });
+
+  it("keeps the raw provider status out of the row: it is in the drawer", () => {
+    expect(results({ statuses: [STATUS], truncated: false })).not.toContain("DeliveredToNetwork");
+  });
+
+  it("shows Sender and Finalized only from 2xl, where the table has the room", () => {
+    const html = results({ statuses: [STATUS], truncated: false });
+    expect(html.match(/hidden 2xl:table-cell/g)).toHaveLength(4);
+  });
+
   it("a row is a button named by its message id", () => {
     const html = results({ statuses: [STATUS], truncated: false });
     expect(html).toContain(`aria-label="View details for message ${STATUS.messageId}"`);
@@ -171,7 +189,9 @@ function form(over: Partial<LookupFormProps> = {}): string {
       canSubmit: true,
       isPending: false,
       bannerText: null,
+      appGroupRef: { current: null },
       onSubmit: () => undefined,
+      onKeyDown: () => undefined,
       ...over,
     }),
   );

@@ -30,7 +30,7 @@ export const KIND_OPTIONS: readonly KindOption[] = [
 /** Said once, above the form: who may use the page and what a lookup costs.
  * The API does not say how much of the budget is left, so no count is shown. */
 export const BUDGET_NOTE =
-  "Needs the delivery:read permission, held by the Support and Auditor roles. A lookup by phone number or client reference counts against 60 an hour per person; a lookup by message id does not. Every lookup is recorded against your account.";
+  "Needs the delivery:read permission, held by default by the Support and Auditor roles. A lookup by phone number or client reference counts against 60 an hour per person; a lookup by message id does not. Every lookup is recorded against your account.";
 
 /** The hint under the date inputs. */
 export const WINDOW_HINT = "Dates are UTC. Both days are included.";
