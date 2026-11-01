@@ -55,3 +55,5 @@ counted from those rows, and the 61st is refused with `Forbidden`
 ([`MSISDN_LOOKUPS_PER_HOUR`]). Lookups by id or client reference are not counted.
 The check and the insert are two statements, so concurrent calls from one caller can
 overshoot by the number in flight at once.
+
+<!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->
