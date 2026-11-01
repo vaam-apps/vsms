@@ -1371,7 +1371,7 @@ async fn the_budget_is_keyed_on_the_kind_of_caller_as_well_as_its_subject() {
 /// with a fresh budget, started together over forty connections: at most sixty may
 /// be answered, whatever interleaving the database produces. A budget that counts
 /// before it inserts lets every call in a burst count before any of them insert.
-/// The test cannot ask for a floor on the answered count (8 to 39 of 80 were
+/// The test cannot ask for a floor on the answered count (8 to 45 of 80 were
 /// measured, and the worst interleaving admits none), so it asks for the guarantee
 /// that holds instead: with fewer than sixty answered, the next lookup is admitted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
