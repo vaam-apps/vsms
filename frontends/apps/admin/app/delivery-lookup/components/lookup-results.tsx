@@ -38,7 +38,7 @@ export type LookupResult = RouterOutputs["deliveryStatus"]["lookup"];
 export type LookupStatus = LookupResult["statuses"][number];
 
 const SKELETON_ROWS = 3;
-const COLUMN_COUNT = 10;
+const COLUMN_COUNT = 8;
 
 export interface LookupResultsProps {
   result: LookupResult | undefined;
@@ -71,111 +71,105 @@ export function LookupResults({ result, isPending, kind, appNames, onOpen }: Loo
           !isPending && result?.truncated === true ? truncatedNote(statuses.length) : undefined
         }
       >
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Recipient</TableHead>
-              <TableHead>State</TableHead>
-              <TableHead hideBelow="md">App</TableHead>
-              <TableHead hideBelow="md">Sender</TableHead>
-              <TableHead hideBelow="lg">Operator</TableHead>
-              <TableHead hideBelow="lg">Class</TableHead>
-              <TableHead hideBelow="sm">Accepted</TableHead>
-              <TableHead hideBelow="lg">Finalized</TableHead>
-              <TableHead hideBelow="md">Last receipt</TableHead>
-              <TableHead align="end">
-                <span className="sr-only">Details</span>
-              </TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {isPending &&
-              Array.from({ length: SKELETON_ROWS }).map((_, i) => (
-                // biome-ignore lint/suspicious/noArrayIndexKey: static skeleton rows, never reordered
-                <TableRow key={i}>
-                  <TableCell colSpan={COLUMN_COUNT}>
-                    <Skeleton className="h-4 w-full" />
-                  </TableCell>
-                </TableRow>
-              ))}
-            {!isPending && statuses.length === 0 && (
-              <tr>
-                <td colSpan={COLUMN_COUNT}>
-                  <InlineEmptyState message={emptyCaveat(kind)} />
-                </td>
-              </tr>
-            )}
-            {!isPending &&
-              statuses.map((status) => (
-                <TableRow
-                  key={status.messageId}
-                  tabIndex={0}
-                  role="button"
-                  aria-label={`View details for message ${status.messageId}`}
-                  className="cursor-pointer"
-                  onClick={() => onOpen(status.messageId)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      onOpen(status.messageId);
-                    }
-                  }}
-                >
-                  <TableCell>
-                    <RecipientText status={status} />
-                  </TableCell>
-                  <TableCell>
-                    <StatusPill state={status.state} size="sm" />
-                  </TableCell>
-                  <TableCell hideBelow="md">
-                    {appNames[status.appId] ?? <IdDisplay value={status.appId} />}
-                  </TableCell>
-                  <TableCell hideBelow="md" mono>
-                    {status.senderIdValue}
-                  </TableCell>
-                  <TableCell hideBelow="lg" mono>
-                    {status.operator}
-                  </TableCell>
-                  <TableCell hideBelow="lg" mono>
-                    {status.class}
-                  </TableCell>
-                  <TableCell hideBelow="sm">
-                    <TimestampDisplay value={status.acceptedAt} />
-                  </TableCell>
-                  <TableCell hideBelow="lg">
-                    {status.finalizedAt !== undefined ? (
-                      <TimestampDisplay value={status.finalizedAt} />
-                    ) : (
-                      "—"
-                    )}
-                  </TableCell>
-                  <TableCell hideBelow="md">
-                    {status.lastReceipt !== undefined ? (
-                      <span className="inline-flex flex-wrap items-center gap-x-1.5">
-                        <span>{outcomeLabel(status.lastReceipt.outcome)}</span>
-                        <span aria-hidden="true">·</span>
-                        <span className="font-mono text-muted-foreground">
-                          {status.lastReceipt.rawStatus}
+        <div className="overflow-x-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Recipient</TableHead>
+                <TableHead>State</TableHead>
+                <TableHead hideBelow="md">App</TableHead>
+                <TableHead hideBelow="xl">Sender</TableHead>
+                <TableHead hideBelow="sm">Accepted</TableHead>
+                <TableHead hideBelow="xl">Finalized</TableHead>
+                <TableHead hideBelow="md">Last receipt</TableHead>
+                <TableHead align="end">
+                  <span className="sr-only">Details</span>
+                </TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {isPending &&
+                Array.from({ length: SKELETON_ROWS }).map((_, i) => (
+                  // biome-ignore lint/suspicious/noArrayIndexKey: static skeleton rows, never reordered
+                  <TableRow key={i}>
+                    <TableCell colSpan={COLUMN_COUNT}>
+                      <Skeleton className="h-4 w-full" />
+                    </TableCell>
+                  </TableRow>
+                ))}
+              {!isPending && statuses.length === 0 && (
+                <tr>
+                  <td colSpan={COLUMN_COUNT}>
+                    <InlineEmptyState message={emptyCaveat(kind)} />
+                  </td>
+                </tr>
+              )}
+              {!isPending &&
+                statuses.map((status) => (
+                  <TableRow
+                    key={status.messageId}
+                    tabIndex={0}
+                    role="button"
+                    aria-label={`View details for message ${status.messageId}`}
+                    className="cursor-pointer"
+                    onClick={() => onOpen(status.messageId)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        onOpen(status.messageId);
+                      }
+                    }}
+                  >
+                    <TableCell>
+                      <RecipientText status={status} />
+                    </TableCell>
+                    <TableCell>
+                      <StatusPill state={status.state} size="sm" />
+                    </TableCell>
+                    <TableCell hideBelow="md">
+                      {appNames[status.appId] ?? <IdDisplay value={status.appId} />}
+                    </TableCell>
+                    <TableCell hideBelow="xl" mono>
+                      {status.senderIdValue}
+                    </TableCell>
+                    <TableCell hideBelow="sm">
+                      <TimestampDisplay value={status.acceptedAt} />
+                    </TableCell>
+                    <TableCell hideBelow="xl">
+                      {status.finalizedAt !== undefined ? (
+                        <TimestampDisplay value={status.finalizedAt} />
+                      ) : (
+                        "—"
+                      )}
+                    </TableCell>
+                    <TableCell hideBelow="md">
+                      {status.lastReceipt !== undefined ? (
+                        <span className="inline-flex flex-wrap items-center gap-x-1.5">
+                          <span>{outcomeLabel(status.lastReceipt.outcome)}</span>
+                          <span aria-hidden="true">·</span>
+                          <span className="font-mono text-muted-foreground">
+                            {status.lastReceipt.rawStatus}
+                          </span>
+                          <span aria-hidden="true">·</span>
+                          <TimestampDisplay value={status.lastReceipt.receivedAt} />
                         </span>
-                        <span aria-hidden="true">·</span>
-                        <TimestampDisplay value={status.lastReceipt.receivedAt} />
-                      </span>
-                    ) : (
-                      "—"
-                    )}
-                  </TableCell>
-                  <TableCell align="end">
-                    <ChevronRight
-                      size={14}
-                      strokeWidth={1.5}
-                      aria-hidden="true"
-                      className="text-subtle-foreground"
-                    />
-                  </TableCell>
-                </TableRow>
-              ))}
-          </TableBody>
-        </Table>
+                      ) : (
+                        "—"
+                      )}
+                    </TableCell>
+                    <TableCell align="end">
+                      <ChevronRight
+                        size={14}
+                        strokeWidth={1.5}
+                        aria-hidden="true"
+                        className="text-subtle-foreground"
+                      />
+                    </TableCell>
+                  </TableRow>
+                ))}
+            </TableBody>
+          </Table>
+        </div>
       </ListSurface>
     </section>
   );
