@@ -341,6 +341,7 @@ export type DeliveryOutcome =
   | "failed"
   | "expired"
   | "rejected"
+  | "in_flight"
   | "unknown";
 
 /** Transcribed from `schema.cstack`'s `DeliveryReceiptSummary` — the
