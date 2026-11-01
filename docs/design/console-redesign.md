@@ -355,6 +355,7 @@ OPERATIONS
   Jobs                 (/jobs)
   Workers               (/workers)
   Opt-outs              (/opt-outs)
+  Delivery lookup       (/delivery-lookup)
 
 ADMIN
   Apps                  (/apps)

@@ -86,4 +86,11 @@ is marked `answered` with its count. Those are the only updates a row takes, and
 `delivery_lookups_update_guard` refuses any other. A lookup that is not budgeted is
 written once, as `answered`.
 
+The console's Delivery lookup page reads these refusals by their words: the
+`delivery lookup budget exhausted` prefix of the 403 and the fixed `Validation`
+messages for a number that is not a mobile number, a window wider than 90 days,
+a number reaching back more than 90 days, and `since` after `until`. Rewording
+any of them means updating `frontends/apps/admin/app/delivery-lookup/lookup-error.ts`
+and its test in the same change.
+
 <!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->
