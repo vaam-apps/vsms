@@ -126,7 +126,7 @@ test("a refused delivery lookup is the gateway's 403, with its message", async (
       status: 403,
       body: JSON.stringify({
         code: "FORBIDDEN",
-        message: "delivery lookup budget exhausted: 60 number lookups per hour",
+        message: "delivery lookup budget exhausted: 60 lookups by number or reference per hour",
       }),
     }),
     async (_server, client) => {

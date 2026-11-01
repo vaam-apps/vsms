@@ -27,6 +27,18 @@ The answer shows the number masked even though the caller typed it whole. Like
 `searchOptOutByMsisdn`, a rotated pepper finds nothing and the procedure cannot
 say so.
 
+**A number reaches only unpurged rows inside the last 90 days.** `purge_retention`
+keeps `msisdnHash` and the rows are kept forever, and the keyed hash is what
+de-identifies a purged row: a number that matched one would link a plain number to
+purged history in every app. So the filter carries `purgedAt IS NULL` (a row purged
+early, an erasure, is not found by number whatever its age), and the window of a
+lookup by number may not start before now minus [`MAX_WINDOW_DAYS`], a `Validation`
+with a fixed message. Capping the window's width alone would not hold it, since
+`until` can be any past date. An id still answers for a purged message
+(`recipient` null, `purged` true); a client reference matches nothing purged, since
+the purge nulls it. No `Validation` message quotes what was typed: an invalid number
+is one fixed sentence.
+
 # Who may call, and how the read is scoped
 
 The first statement of the procedure's body is `require_permission(ctx,
@@ -41,19 +53,36 @@ and an app key naming another app is refused (`Validation`), not ignored.
 
 `since` and `until` bound `Message.createdAt`. For a `clientRef` or a number they
 default to the last seven days, and a window may not exceed 90 days (the retention
-period). A lookup by `messageId` is unbounded unless the caller names a window.
-`limit` defaults to 10, at most 50, newest first; one more row is read than asked
-for, to say `truncated`.
+period); for a number it may not start more than 90 days before now either. A
+lookup by `messageId` is unbounded unless the caller names a window. `limit`
+defaults to 10, at most 50, newest first; one more row is read than asked for, to
+say `truncated`.
 
 # The audit row, and the budget
 
-Every answered call writes one `DeliveryLookup` row before it answers, under the
-same system context, and **the call fails if the row cannot be written**. The row's
-`keyValue` is a message id, or a keyed hash of the number or of the client
-reference; never the thing typed. A caller's number lookups in the last hour are
-counted from those rows, and the 61st is refused with `Forbidden`
-([`MSISDN_LOOKUPS_PER_HOUR`]). Lookups by id or client reference are not counted.
-The check and the insert are two statements, so concurrent calls from one caller can
-overshoot by the number in flight at once.
+Every lookup that reaches the database writes one `DeliveryLookup` row **before it
+answers**, under the same system context, and **the call fails if a write fails**.
+The row's `keyValue` is a message id, or a keyed hash of the number or of the client
+reference; never the thing typed. Its `outcome` is `pending`, `answered` (with the
+`resultCount`) or `over_budget`.
+
+What a caller can guess is budgeted, [`BUDGETED_LOOKUPS_PER_HOUR`] (60) an hour: a
+lookup by number, and a **person's** lookup by client reference (references are
+guessable, and a person reaches every app). A message id is not counted, nor is an
+app key's lookup of its own client reference. The count is keyed on the caller's
+subject **and** its kind, so an app key and a person that share a subject string do
+not share an hour.
+
+A budgeted lookup inserts its `pending` row first and counts after, its own row
+included, and is admitted only if the count is at most the budget. Every write
+autocommits, so the k-th row to commit counts at least k rows and at most 60 are
+admitted, however many arrive together, with no lock. Counting first and inserting
+after lets a parallel burst all count before any inserts. The price is that a burst
+larger than the budget can be refused more than it must be: a row another call
+counted may be marked `over_budget` a moment later. A refused attempt is marked
+`over_budget` (the 61st is a `Forbidden`) and is not counted again; an admitted one
+is marked `answered` with its count. Those are the only updates a row takes, and
+`delivery_lookups_update_guard` refuses any other. A lookup that is not budgeted is
+written once, as `answered`.
 
 <!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->

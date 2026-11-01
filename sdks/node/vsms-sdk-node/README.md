@@ -82,7 +82,7 @@ for (const status of statuses) {
 }
 ```
 
-Lookups by number are limited to 60 per hour: the 61st rejects with an `SdkError` of kind `remote` and `httpStatus` 403 whose message starts `delivery lookup budget exhausted`. The keys, the window and the fields are in `docs/integrating.md`, "Asking whether a message arrived, without reading it".
+Lookups by number are limited to 60 per hour (a person's lookups by `clientRef` share the limit, an app key's own are not counted): the 61st rejects with an `SdkError` of kind `remote` and `httpStatus` 403 whose message starts `delivery lookup budget exhausted`. A lookup by number reaches only unpurged messages of the last 90 days. The keys, the window and the fields are in `docs/integrating.md`, "Asking whether a message arrived, without reading it".
 
 ## The gateway's address
 

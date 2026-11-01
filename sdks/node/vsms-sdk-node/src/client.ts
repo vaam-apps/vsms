@@ -168,9 +168,11 @@ export class VsmsClient {
    * `clientRef` or `msisdn`; an app key is scoped to its own app.
    *
    * The answer has each message's masked recipient, state, lifecycle timestamps
-   * and newest receipt, and no body. A lookup by number is counted: the gateway
-   * refuses the 61st in an hour with a 403 (`SdkError` kind `remote`, `httpStatus`
-   * 403) whose message starts `delivery lookup budget exhausted`.
+   * and newest receipt, and no body. A lookup by number is counted (so is a
+   * person's lookup by `clientRef`): the gateway refuses the 61st in an hour with
+   * a 403 (`SdkError` kind `remote`, `httpStatus` 403) whose message starts
+   * `delivery lookup budget exhausted`. A number reaches only unpurged messages of
+   * the last 90 days.
    */
   async lookupDeliveryStatus(query: DeliveryStatusQuery): Promise<DeliveryStatusResult> {
     const answer = await this.#call("lookupDeliveryStatus", {

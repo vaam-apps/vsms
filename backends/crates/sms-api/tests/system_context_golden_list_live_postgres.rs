@@ -224,8 +224,8 @@ static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
 /// - `EnvelopeNonce` — the signed transport's replay cache (VS-3): the nonce
 ///   store records, takes over and the worker sweeps it, all under `sys`.
 /// - `DeliveryLookup` — `lookupDeliveryStatus`'s audit row and hourly budget
-///   (`delivery_status::lookup`): counted and written under `sys`, system-only
-///   on both actions, `@@internal("all")`.
+///   (`delivery_status::lookup`): counted, written and settled under `sys`,
+///   system-only on all three actions, `@@internal("all")`.
 /// - `SenderId`, `SenderIdRegistration` — `Procedures::resolve_sender_id`.
 /// - `Provider` — `backends/crates/sms-worker/src/routing.rs`'s `decide` (since #62;
 ///   formerly `cheapest_active_provider`, which this replaced) and
@@ -297,10 +297,11 @@ const SYSTEM_READABLE_MODELS: &[&str] = &[
     // VS-3: the envelope layer's nonce store records and takes over under
     // sys(). Not a "found live" instance.
     "EnvelopeNonce",
-    // `lookupDeliveryStatus` counts a caller's by-number lookups for its hourly
-    // budget (an `aggregate().count()` under `sys()`) and writes one row per
-    // answered call. `hasRole('system')` is the whole policy of both actions it
-    // has, so a read that silently came back empty would switch the budget off.
+    // `lookupDeliveryStatus` counts a caller's budgeted lookups for its hourly
+    // budget (an `aggregate().count()` under `sys()`), writes one row per lookup
+    // and settles it. `hasRole('system')` is the whole policy of the three
+    // actions it has, so a read that silently came back empty would switch the
+    // budget off.
     "DeliveryLookup",
     "SenderId",
     "SenderIdRegistration",
@@ -616,7 +617,8 @@ async fn seed_and_verify_delivery_lookup(db: &Cratestack, suffix: &str) -> schem
             keyKind: schema::DeliveryLookupKey::message_id,
             keyValue: format!("sys-golden-{suffix}"),
             appIdFilter: None,
-            resultCount: 0,
+            outcome: schema::DeliveryLookupOutcome::answered,
+            resultCount: Some(0),
         })
         .run(&sys())
         .await

@@ -970,6 +970,7 @@ mod tests {
 
     #[test]
     fn what_is_budgeted_is_what_a_caller_can_guess() {
+        use schema::DeliveryLookupKey::{client_ref, msisdn};
         let person = Caller::of(&context(&[("sub", "u1"), ("kind", "user")])).unwrap();
         let key = Caller::of(&context(&[
             ("sub", "k1"),
@@ -985,7 +986,6 @@ mod tests {
         assert!(person.budgeted(&reference) && !key.budgeted(&reference));
         assert!(!person.budgeted(&id) && !key.budgeted(&id));
         // The kinds the count reads are the kinds that can be budgeted, no more.
-        use schema::DeliveryLookupKey::{client_ref, msisdn};
         assert_eq!(person.budgeted_kinds(), vec![msisdn, client_ref]);
         assert_eq!(key.budgeted_kinds(), vec![msisdn]);
     }

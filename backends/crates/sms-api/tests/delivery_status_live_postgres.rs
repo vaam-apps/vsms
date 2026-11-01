@@ -622,7 +622,7 @@ async fn the_status_is_found_by_id_by_client_reference_and_by_number_newest_firs
     let by_number = lookup(&support, json!({ "msisdn": number })).await;
     let found = ids(&by_number);
     assert_eq!(found.len(), 3, "a number finds the three messages");
-    assert_eq!(found[1], newer.id, "newest first: {found:?}");
+    assert_eq!(found[1], newer.id, "newest first");
     assert_eq!(found[2], older.id);
     let all = statuses(&by_number);
     let last = all.iter().find(|s| s["messageId"] == older.id).unwrap();
@@ -887,6 +887,71 @@ async fn a_number_is_matched_whole() {
     }
 }
 
+/// Each row's entries in `cratestack_audit`: one `create`, plus one `update` if the
+/// row was budgeted and so settled, and neither the number nor the reference in
+/// any snapshot.
+async fn assert_audit_entries(
+    rig: &Rig,
+    all: &[schema::DeliveryLookup],
+    number: &str,
+    reference: &str,
+) {
+    let page = audit_log::list_audit_entries(
+        &rig.db,
+        &audit_log::AuditLogFilter {
+            model: Some("DeliveryLookup".to_owned()),
+            operation: None,
+            actor_id: None,
+            since: Some(Utc::now() - Duration::minutes(10)),
+            until: None,
+        },
+        200,
+        0,
+    )
+    .await
+    .expect("reading the audit trail");
+    for row in all {
+        let entries: Vec<_> = page
+            .entries
+            .iter()
+            .filter(|entry| entry.primary_key.contains(&row.id))
+            .collect();
+        // A lookup by id is written once. A budgeted one is claimed (`create`, as
+        // pending) and settled (`update`): two entries, in the hash chain both.
+        // (Here the number is the only budgeted key: the reference was an app key's.)
+        let budgeted = row.keyKind == schema::DeliveryLookupKey::msisdn;
+        let operations: Vec<&str> = entries
+            .iter()
+            .map(|entry| entry.operation.as_str())
+            .collect();
+        assert_eq!(
+            operations.iter().filter(|op| **op == "create").count(),
+            1,
+            "one create entry per row"
+        );
+        assert_eq!(
+            operations.iter().filter(|op| **op == "update").count(),
+            usize::from(budgeted),
+            "a budgeted row is settled once, an unbudgeted one never"
+        );
+        for entry in entries {
+            let after = entry.after.clone().unwrap_or_default();
+            assert!(
+                after.contains(&row.keyValue),
+                "an audit snapshot lacks its row's key"
+            );
+            assert!(
+                !after.contains(&number[4..]),
+                "an audit snapshot holds the number"
+            );
+            assert!(
+                !after.contains(reference),
+                "an audit snapshot holds the reference"
+            );
+        }
+    }
+}
+
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres - see module docs"]
 async fn every_answered_call_leaves_one_account_of_it_holding_a_hash_and_never_the_number() {
@@ -970,60 +1035,7 @@ async fn every_answered_call_leaves_one_account_of_it_holding_a_hash_and_never_t
             "an audit row holds the reference"
         );
     }
-    let page = audit_log::list_audit_entries(
-        &rig.db,
-        &audit_log::AuditLogFilter {
-            model: Some("DeliveryLookup".to_owned()),
-            operation: None,
-            actor_id: None,
-            since: Some(Utc::now() - Duration::minutes(10)),
-            until: None,
-        },
-        200,
-        0,
-    )
-    .await
-    .expect("reading the audit trail");
-    for row in &all {
-        let entries: Vec<_> = page
-            .entries
-            .iter()
-            .filter(|entry| entry.primary_key.contains(&row.id))
-            .collect();
-        // A lookup by id is written once. A budgeted one is claimed (`create`, as
-        // pending) and settled (`update`): two entries, in the hash chain both.
-        // (Here the number is the only budgeted key: the reference was an app key's.)
-        let budgeted = row.keyKind == schema::DeliveryLookupKey::msisdn;
-        let operations: Vec<&str> = entries
-            .iter()
-            .map(|entry| entry.operation.as_str())
-            .collect();
-        assert_eq!(
-            operations.iter().filter(|op| **op == "create").count(),
-            1,
-            "one create entry per row"
-        );
-        assert_eq!(
-            operations.iter().filter(|op| **op == "update").count(),
-            usize::from(budgeted),
-            "a budgeted row is settled once, an unbudgeted one never"
-        );
-        for entry in entries {
-            let after = entry.after.clone().unwrap_or_default();
-            assert!(
-                after.contains(&row.keyValue),
-                "an audit snapshot lacks its row's key"
-            );
-            assert!(
-                !after.contains(&number[4..]),
-                "an audit snapshot holds the number"
-            );
-            assert!(
-                !after.contains(&reference),
-                "an audit snapshot holds the reference"
-            );
-        }
-    }
+    assert_audit_entries(&rig, &all, &number, &reference).await;
 }
 
 #[tokio::test]
@@ -1348,16 +1360,21 @@ async fn a_burst_of_eighty_number_lookups_is_admitted_sixty_at_most() {
     );
     assert_eq!(answered + refused, BURST);
     // Every attempt is on the trail, and the trail agrees with what the callers saw.
-    assert_eq!(rig.count_of(&sub, None).await, BURST as i64);
+    let (burst, answered_n, refused_n) = (
+        i64::try_from(BURST).unwrap(),
+        i64::try_from(answered).unwrap(),
+        i64::try_from(refused).unwrap(),
+    );
+    assert_eq!(rig.count_of(&sub, None).await, burst);
     assert_eq!(
         rig.count_of(&sub, Some(DeliveryLookupOutcome::answered))
             .await,
-        answered as i64
+        answered_n
     );
     assert_eq!(
         rig.count_of(&sub, Some(DeliveryLookupOutcome::over_budget))
             .await,
-        refused as i64
+        refused_n
     );
     assert_eq!(
         rig.count_of(&sub, Some(DeliveryLookupOutcome::pending))
@@ -1479,12 +1496,16 @@ async fn a_lookup_by_number_does_not_reach_back_past_the_retention_period() {
     let widest = run(now - Duration::days(90), now)
         .await
         .expect("90 days is allowed");
-    assert!(widest.statuses.is_empty());
+    assert_eq!(widest.statuses.len(), 0, "90 days reaches nothing");
     // The default window is no different.
     let default_window = delivery_status::lookup(&pepper, &rig.db, &ctx, by_number(&number), now)
         .await
         .expect("the default window");
-    assert!(default_window.statuses.is_empty());
+    assert_eq!(
+        default_window.statuses.len(),
+        0,
+        "the default window reaches nothing"
+    );
     // By id, both are still there: the purged one with no recipient.
     for row in &old {
         let args = schema::DeliveryStatusQuery {

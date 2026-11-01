@@ -2446,11 +2446,12 @@ Who loses what: a person in a **custom** role that lacks `sms:read` (and, since 
 **Implementation, delivery lookups (`delivery:read`).** `lookupDeliveryStatus` answers "did this message arrive?" for a person who may not read the message: `support` holds `delivery:read` and, since `0013_role_read_scope`, no `sms:read`. It is a procedure with types of its own (`DeliveryStatusQuery`, `DeliveryStatus`, `DeliveryStatusResult`) and not a route on `Message`, because every route on `Message` answers with the model, and the model carries the body. Six rules, each held by a test that reads a file (`tests/delivery_status_guards.rs`) or a database (`tests/delivery_status_live_postgres.rs`):
 
 - **The answer has no body.** A `DeliveryStatus` is the masked recipient (`+237*******56`, `null` once the message is purged), the operator, sender, class, encoding, segment count, `state`, `attempts`, the lifecycle timestamps (`acceptedAt` is `Message.createdAt`) and `lastReceipt`, the newest receipt as the existing `DeliveryReceiptSummary`. It never carries `body`, `bodyHash` (an OTP is brute-forceable from its hash if the pepper leaks), `bodyLength`, `msisdnHash`, the full number (not even the one the caller typed), `costXaf`, `stateReason` (free text a provider's error put there), `clientRef` or `idempotencyKey`, `providerMessageRef*`, the routing columns or a receipt's `rawPayload`. The type is pinned field for field, and the forbidden names are checked on their own.
-- **One key per call.** A message id; an app's client reference (a person names the app with `appId`, an app key's own is implied); or the whole recipient number. A number is matched by **equality on `Message.msisdnHash`** (the keyed hash, `messages_msisdn_hash_idx`), so the procedure cannot be asked "which numbers have you messaged": a prefix, a suffix or a partial number is a `422`, and the national form of a number is the same number. As with `searchOptOutByMsisdn`, a rotated pepper finds nothing and the answer cannot say so. The window is the last seven days for a number or a reference and at most 90 days wide (the retention period); an id is exact and unbounded unless the caller names a window. `limit` is 1 to 50, default 10, newest first, and `truncated` says more matched.
+- **One key per call.** A message id; an app's client reference (a person names the app with `appId`, an app key's own is implied); or the whole recipient number. A number is matched by **equality on `Message.msisdnHash`** (the keyed hash, `messages_msisdn_hash_idx`), so the procedure cannot be asked "which numbers have you messaged": a prefix, a suffix or a partial number is a `422`, and the national form of a number is the same number. As with `searchOptOutByMsisdn`, a rotated pepper finds nothing and the answer cannot say so. **A number reaches only unpurged rows inside the last 90 days**, and that is the rule that keeps the lookup from undoing a purge: `purge_retention` keeps `msisdnHash` (so opt-outs keep matching), the rows are kept forever, and the keyed hash is what de-identifies a purged row, so a number that matched one would link a plain number to purged history in every app. Two guards hold it (the window is cut at 90 days wide, which alone would not: `until` can be any past date): the window of a lookup by number may not **start** before now minus 90 days (a `422` with a fixed message, `a lookup by number may not start more than 90 days ago`), and the number filter carries `purgedAt IS NULL`, so a row purged early (an erasure) is not found by number either. A reference matches nothing purged (`purge_retention` nulls `clientRef`), and an id is exact: it still answers for a purged message, with `recipient: null` and `purged: true`. The window is the last seven days for a number or a reference and at most 90 days wide; an id is unbounded unless the caller names a window. `limit` is 1 to 50, default 10, newest first, and `truncated` says more matched.
 - **No new claim, no `@authorize`.** `Message`'s `@@allow` asks for `messageRead` and must not learn a `deliveryRead`: a claim there would let everyone holding `delivery:read` list `GET /messages`, bodies included (`delivery_status_guards.rs` fails on any policy that says `delivery`, and on a claim in `auth.rs`). `@authorize(Message, detail, ...)` would run the caller's `Message` policy, which `delivery:read` does not satisfy. The procedure's `@allow` admits a person or an app key; the gate is the first statement of its body, `require_permission(ctx, "delivery:read")`, so a custom role holding it works too.
 - **The read is the body's to scope.** It runs under `system_context("sms-api:delivery-lookup")`, so the model's policy decides nothing. An app key's every query therefore carries `appId == its own`, an app key naming another app is a `422` (refused, not ignored), and an app key with no app is a `403`. A foreign id is an empty answer, as if it did not exist. An app key reaches this with `delivery:read` in its scope (`docs/runbooks/deployment.adoc`).
 - **Owner, admin and operator do not hold `delivery:read`** (the owner's decision: delivery status is a support tool). `auditor` and `support` do, and a custom role may be given it. A test pins `operator` as refused: it holds `sms:read` and still cannot ask.
-- **Every answered call is accounted for, and the call fails if it cannot be.** Before it answers, the procedure writes one `DeliveryLookup` row (`@@internal("all")`, `@@audit`, system-only, kept indefinitely, forward migration `0015_delivery_lookups`): who asked (`actorSub`, kind, role, app), which kind of key, how many messages came back. `keyValue` is the message id, or the keyed hash of the number or of the client reference, **never the thing typed**: a client reference is hashed because `purge_retention` nulls `Message.clientRef` at 90 days as personal data, and this table is kept. Answering "who looked up this number?" therefore needs the pepper (hash the number, then match `keyValue`), the same limit `msisdnHash` has. The same rows are the budget: a caller's by-number lookups in the last hour are counted, and the 61st is refused with a `403` whose message is `delivery lookup budget exhausted: 60 number lookups per hour` (`MSISDN_LOOKUPS_PER_HOUR`, self-imposed; the framework has no `429`). Lookups by id or reference are not counted. The count and the insert are two statements, so concurrent calls from one caller can overshoot by the number in flight at once. A repeated `Idempotency-Key` is answered by the idempotency layer with the first answer, without running the procedure (measured: one row for two calls), so it adds neither a row nor a count; the bytes are the same, so nothing new is learned.
+- **Every lookup is accounted for, and the call fails if it cannot be.** The procedure writes one `DeliveryLookup` row (`@@internal("all")`, `@@audit`, system-only, kept indefinitely, forward migration `0015_delivery_lookups`) **before it answers**: who asked (`actorSub`, kind, role, app), which kind of key, how it ended (`outcome`: `pending`, `answered` or `over_budget`) and, if answered, how many messages came back (`resultCount`, null otherwise). `keyValue` is the message id, or the keyed hash of the number or of the client reference, **never the thing typed**: a client reference is hashed because `purge_retention` nulls `Message.clientRef` at 90 days as personal data, and this table is kept. Answering "who looked up this number?" therefore needs the pepper (hash the number, then match `keyValue`), the same limit `msisdnHash` has. A write that fails fails the call and nothing is answered. A repeated `Idempotency-Key` is answered by the idempotency layer with the first answer, without running the procedure (measured: one row for two calls), so it adds neither a row nor a count; the bytes are the same, so nothing new is learned.
+- **The same rows are the budget, and the order of the two statements is what makes it hold under concurrency.** What a caller can guess is counted: a lookup **by number** and, for a **person**, a lookup **by client reference** (integrators' references are guessable, and a person reaches every app). 60 an hour per caller (`BUDGETED_LOOKUPS_PER_HOUR`, self-imposed), keyed on the caller's `sub` **and** kind, so an app key and a person that happen to share a subject string do not share an hour. An app key's own client references (its own, nobody else's) and every message id are not counted. A budgeted lookup **inserts its `pending` row first, then counts the caller's rows in the last hour, its own included, and is admitted only if the count is at most 60**. Every write autocommits, so the k-th row to commit counts at least k rows (an admitted row is never marked `over_budget`, so none drops out of the count) and at most 60 are ever admitted, however many arrive at once, with no lock. Counting first and inserting after, as this once did, lets a parallel burst (the rate limiter allows about 120 a replica) count before any insert and overshoot: measured against live Postgres, 80 concurrent lookups were all answered. The cost of the safe order is that a burst larger than the budget can be refused more than it must be (a row another call counted may be marked `over_budget` a moment later): in the same burst of 80, between 17 and 37 were admitted rather than 60. It fails closed, never open. A refused attempt is a `403` whose message is `delivery lookup budget exhausted: 60 lookups by number or reference per hour` (the framework has no `429`) and is recorded honestly: its row is marked `over_budget`, with no count, and is not counted again, so a client retrying in a loop is not held out longer than its admitted lookups warrant. An admitted one is marked `answered` with its count once it has the answer. Those two edges out of `pending` are the only updates the model allows (`@@allow("update", hasRole('system'))`), and the `delivery_lookups_update_guard` trigger in `0015` refuses every other change with `SM001`: a settled row is final, and no column but `outcome` and `resultCount` ever moves. A row left `pending` is a lookup that was admitted and never answered (the call failed after it), and counts against the budget. A lookup that is not budgeted is written once, as `answered`, so it never needs the update.
 
 ```mermaid
 sequenceDiagram
@@ -2463,14 +2464,22 @@ sequenceDiagram
     R->>P: Layer 1 admits a person or an app key
     P->>P: require_permission delivery:read
     P->>P: validate the query and scope an app key to its own app
-    alt by number
-        P->>D: count this caller's number lookups in the last hour
+    alt a number, or a person's client reference
+        P->>D: create a pending DeliveryLookup row
+        P->>D: count this caller's budgeted rows in the last hour, its own included
         D-->>P: used
-        P-->>C: 403 budget exhausted when used reaches 60
+        opt used is above 60
+            P->>D: settle the row over_budget
+            P-->>C: 403 budget exhausted
+        end
     end
     P->>D: read messages as system by id, client reference or msisdnHash
     P->>D: read the newest receipt of each
-    P->>D: create one DeliveryLookup row holding the key hash
+    alt the row was claimed above
+        P->>D: settle the pending row answered with the count
+    else a message id, or an app key's own reference
+        P->>D: create one answered DeliveryLookup row
+    end
     D-->>P: stored, or an error that fails the call
     P-->>C: statuses without body and truncated
 ```
@@ -2481,16 +2490,29 @@ stateDiagram-v2
     Received --> Refused: delivery:read missing
     Received --> Validating
     Validating --> Rejected: not exactly one key, a partial number, a foreign app, or a bad window
-    Validating --> OverBudget: by number and 60 already this hour
-    Validating --> Reading
+    Validating --> Rejected: a number whose window starts over 90 days ago
+    Validating --> Claiming: a number, or a person's client reference
+    Validating --> Reading: a message id, or an app key's own reference
+    Claiming --> OverBudget: more than 60 counted, own row included
+    Claiming --> Reading: 60 or fewer counted
     OverBudget --> [*]
-    Reading --> Recording: messages and receipts read
-    Recording --> Answered: the DeliveryLookup row is stored
-    Recording --> Failed: the row cannot be stored, nothing is answered
+    Reading --> Settling: messages and receipts read
+    Settling --> Answered: the DeliveryLookup row is stored
+    Settling --> Failed: the row cannot be stored, nothing is answered
     Refused --> [*]
     Rejected --> [*]
     Answered --> [*]
     Failed --> [*]
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending: a budgeted lookup claims its place
+    [*] --> answered: any other lookup is written once
+    pending --> answered: the answer is ready, with its count
+    pending --> over_budget: more than 60 counted
+    answered --> [*]
+    over_budget --> [*]
 ```
 
 Digest and contract: `cratestack contract digest` gains exactly one line (`POST /$procs/lookupDeliveryStatus`) and no other moves; `DeliveryLookup` is `@@internal("all")`, so it has no route, no RPC arm and no client stub (140 digest lines become 141, and `sms-gateway routes` grows by that one procedure). vsms keeps no contracts lock. The console has no screen for this yet: API and both SDKs only; a "Delivery lookup" page next to the opt-outs page is the follow-up, and so is an auditor-facing "who looked up this number" procedure (it would hash the number server-side, as `searchOptOutByMsisdn` does).
@@ -2975,7 +2997,7 @@ Job kinds, all enqueued by the `scheduler` role with a `dedupeKey`:
 | `probe_providers`   | 1 min   | Per-provider health → `Provider.healthy`                                                                                                                                                                                                                                                     |
 | `reap_outbox`       | 1 h     | Delete delivered `cratestack_event_outbox` rows >24h; alarm on high-`attempts` rows                                                                                                                                                                                                          |
 | `reconcile_clients` | 1 h     | OP client rows with no matching `AppClient` → orphan alert                                                                                                                                                                                                                                   |
-| `purge_retention`   | daily   | **#67, done.** Terminal `Message` rows past 90 days: null `body`/`clientRef`/`idempotencyKey`/`stateReason`, overwrite `msisdn` with a placeholder (kept `NOT NULL`), stamp `purgedAt`. `msisdnHash` survives — see §10. Delete `DeliveryReceipt` rows past their own `receivedAt` + 90 days |
+| `purge_retention`   | daily   | **#67, done.** Terminal `Message` rows past 90 days: null `body`/`clientRef`/`idempotencyKey`/`stateReason`, overwrite `msisdn` with a placeholder (kept `NOT NULL`), stamp `purgedAt`. `msisdnHash` survives — see §10 — and **no lookup by number matches a purged row** (`lookupDeliveryStatus` excludes `purgedAt` rows and refuses a window older than 90 days, §5.2): the keyed hash is what de-identifies the row. Delete `DeliveryReceipt` rows past their own `receivedAt` + 90 days |
 | `cleanup_secrets`   | 1 h     | Deactivate `AppClient` past `retiredAt`. **Not built for the other half of its original job:** the job that would clear an `hmac` endpoint's `prevSecret` after the overlap window; until it exists the overlap ends at the next rotation (§4.4)                                             |
 | `anchor_audit`      | daily   | Merkle root of the day's audit rows → append-only store                                                                                                                                                                                                                                      |
 | `verify_backup`     | daily   | Restore last night's dump into a scratch database and count rows                                                                                                                                                                                                                             |
@@ -3411,6 +3433,7 @@ Sanctions run to 100,000,000 FCFA, suspension, withdrawal of authorisation, and 
 
 **Operational compliance regardless — landed in #72:**
 
+- **A delivery-status lookup by number never reaches purged history.** `msisdnHash` survives the purge so opt-outs keep matching; `lookupDeliveryStatus` is the one read that takes a plain number, so it must not use that survival to link the number to a purged row. It reaches unpurged rows inside the last 90 days only (§5.2, "Implementation, delivery lookups"), and records every lookup, the refused ones too, under a keyed hash of the number.
 - **Opt-out honoured at send time, before routing, for `marketing` and `notification`. OTP and transactional are exempt.** `backends/crates/sms-api/src/consent.rs::requires_recipient_consent_controls` is the single, exhaustively-matched source of truth for this class split — before #72 the opt-out check ran unconditionally for every class, more restrictive than specified (an opted-out recipient couldn't receive an OTP either), not a compliance gap but not what this section asked for.
 - **Consent records: who consented, when, through what channel, to what scope.** `ConsentRecord` (§2.7) — `msisdnHash`/`msisdn`, `scope MessageClass`, `channel ConsentChannel`, `consentedAt`, `evidenceRef`. `sendMessage` refuses a `marketing`/`notification` send with no matching record on file (`Procedures::ensure_consent_on_file`). Read §2.7's own prose for what this does and does not prove about the classification itself, and for the deliberate, unresolved retention tension (no `@@retain` here yet — proof of consent and 90-day content minimisation want different answers).
 - Inbound STOP requires two-way SMS. Twilio supports neither two-way SMS nor short codes in Cameroon — inbound needs a direct MNO short code or an aggregator provisioning one locally. Until then, the Article 48 opt-out address is an email or URL in the body.

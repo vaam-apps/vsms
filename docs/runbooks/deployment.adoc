@@ -424,10 +424,10 @@ A client that reads its own messages back (`GET /messages`) also needs
 A client that only needs to know whether its own messages arrived, and must not
 read them back, takes `--scope "sms:send delivery:read"`: `lookupDeliveryStatus`
 (`POST /$procs/lookupDeliveryStatus`) then answers, for its own app only, by
-message id, by its own `clientRef` or by a whole recipient number (60 number
-lookups per hour), with the masked recipient, the state, the timestamps and the
-newest receipt and no message body. Every answered lookup is recorded in
-`delivery_lookups`.
+message id, by its own `clientRef` or by a whole recipient number (60 lookups by
+number per hour, unpurged messages of the last 90 days only), with the masked
+recipient, the state, the timestamps and the newest receipt and no message body.
+Every lookup, a refused one included, is recorded in `delivery_lookups`.
 
 It writes an `AppClient` and an `OauthClient` that holds only the public JWK, and
 the private key to `--key-out` with mode `0600`; it refuses to overwrite an

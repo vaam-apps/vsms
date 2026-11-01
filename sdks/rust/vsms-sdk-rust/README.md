@@ -82,8 +82,10 @@ for status in &answer.statuses {
 }
 ```
 
-Lookups by number are limited to 60 per hour: the 61st is a `403` whose message
-starts `delivery lookup budget exhausted` (`SdkError` carries the status). The
+Lookups by number are limited to 60 per hour (a person's lookups by `client_ref`
+share the limit, an app key's own are not counted): the 61st is a `403` whose
+message starts `delivery lookup budget exhausted` (`SdkError` carries the
+status). A lookup by number reaches only unpurged messages of the last 90 days. The
 keys, the window and the fields are in `docs/integrating.md`, "Asking whether a
 message arrived, without reading it".
 

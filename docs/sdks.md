@@ -135,7 +135,7 @@ message stands without being able to read it: `lookup_delivery_status` /
 `lookupDeliveryStatus`, a sealed `POST /$procs/lookupDeliveryStatus`. Name one of
 `message_id`, `client_ref` or `msisdn`; an app key is scoped to its own app. The
 answer has the masked recipient, the state, the timestamps and the newest
-receipt, and no body. A by-number lookup is limited to 60 per hour and the 61st
+receipt, and no body. A lookup by number (or, for a person, by `client_ref`) is limited to 60 per hour and the 61st
 is a `403` ([the integration guide](integrating.md#asking-whether-a-message-arrived-without-reading-it)
 has the keys, the window and the limits).
 

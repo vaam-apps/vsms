@@ -224,9 +224,10 @@ impl VsmsClient {
     ///
     /// The answer is [`schema::DeliveryStatusResult`]: each [`schema::DeliveryStatus`]
     /// has the masked recipient, the state, the lifecycle timestamps and the newest
-    /// receipt, and no message body. A number lookup is counted: the gateway refuses
-    /// the 61st in an hour with a `403` whose message starts `delivery lookup budget
-    /// exhausted` (the framework has no `429` for it).
+    /// receipt, and no message body. A number lookup is counted (so is a person's
+    /// lookup by `client_ref`): the gateway refuses the 61st in an hour with a `403`
+    /// whose message starts `delivery lookup budget exhausted` (the framework has no
+    /// `429` for it). A number reaches only unpurged messages of the last 90 days.
     ///
     /// # Errors
     ///
