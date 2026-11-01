@@ -347,6 +347,9 @@ impl Procedures {
             .limit(1)
             .run(sys)
             .await?;
+        // A policy-denied read is indistinguishable from no opt-out, so this
+        // fails open if `sys` loses OptOut's read; `system_context_golden_list`
+        // is what pins that read.
         if opted_out.is_empty() {
             Ok(())
         } else {

@@ -127,10 +127,14 @@ impl Grants {
         let holds = |permission: &str| {
             crate::rbac::holds(perms.iter().map(String::as_str), scope, permission)
         };
-        let person_holds = |permission: &str| perms.iter().any(|held| held == permission);
         Self {
             message_read: holds(MESSAGE_READ_PERMISSION),
-            opt_out_read: holds(OPT_OUT_READ_PERMISSION) || person_holds(OPT_OUT_MANAGE_PERMISSION),
+            opt_out_read: holds(OPT_OUT_READ_PERMISSION)
+                || crate::rbac::holds(
+                    perms.iter().map(String::as_str),
+                    None,
+                    OPT_OUT_MANAGE_PERMISSION,
+                ),
         }
     }
 }

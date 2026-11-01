@@ -6,7 +6,7 @@
 UPDATE roles
    SET permissions = ' ' || coalesce(
            nullif(array_to_string(
-               array_remove(regexp_split_to_array(btrim(permissions, E' \t\r\n'), '\s+'), 'optout:read'),
+               array_remove(array_remove(regexp_split_to_array(btrim(permissions, E' \t\r\n'), '\s+'), ''), 'optout:read'),
                ' '), '') || ' ',
            ''),
        version = version + 1

@@ -79,7 +79,7 @@ export const SCOPE_DESCRIPTIONS: Record<KnownScope, string> = {
   "sender:manage": "Create and edit sender IDs",
   "webhook:manage": "Manage webhook endpoints, replay deliveries",
   "optout:read": "Read every opted-out number (all tenants)",
-  "optout:manage": "Record and remove opt-outs",
+  "optout:manage": "No effect for an app key (opt-out changes are person-only)",
   "dashboard:read": "Read dashboard summaries",
   "audit:read": "Read the audit log",
   "user:manage": "Manage users and roles",
