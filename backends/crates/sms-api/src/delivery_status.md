@@ -75,8 +75,9 @@ not share an hour.
 
 A budgeted lookup inserts its `pending` row first and counts after, its own row
 included, and is admitted only if the count is at most the budget. Every write
-autocommits, so the k-th row to commit counts at least k rows and at most 60 are
-admitted, however many arrive together, with no lock. Counting first and inserting
+autocommits, so when an admitted row counts, every row admitted before it is
+visible and still counted, and at most 60 are admitted, however many arrive
+together, with no lock. Counting first and inserting
 after lets a parallel burst all count before any inserts. The price is that a burst
 larger than the budget can be refused more than it must be: a row another call
 counted may be marked `over_budget` a moment later. A refused attempt is marked

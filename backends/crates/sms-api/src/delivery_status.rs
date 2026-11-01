@@ -437,10 +437,10 @@ async fn settle(
 
 /// Claim a place in the caller's hour, or refuse. **Insert first, count after,
 /// own row included, admit only if the count is at most the budget.** Every write
-/// autocommits, so the k-th row to commit counts at least k rows (admitted rows
-/// are never marked `over_budget`, so none of them drops out of the count) and at
-/// most [`BUDGETED_LOOKUPS_PER_HOUR`] are admitted however many arrive at once,
-/// with no lock. Counting first and inserting after, as this once did, lets every
+/// autocommits, so when an admitted row counts, every row admitted before it is
+/// visible and still counted (an admitted row is never marked `over_budget`, so
+/// none of them drops out), and at most [`BUDGETED_LOOKUPS_PER_HOUR`] are admitted
+/// however many arrive at once, with no lock. Counting first and inserting after, as this once did, lets every
 /// call in a burst count before any of them insert. A refused attempt overcounts
 /// at worst (a row another call counted may be marked `over_budget` a moment
 /// later), never undercounts: it can refuse a call it need not, never admit one it
@@ -640,7 +640,7 @@ mod tests {
     fn refusal(args: &schema::DeliveryStatusQuery, asker: &Asker) -> String {
         match LookupPlan::from_args(args, asker, now()) {
             Err(CratestackError::Validation(message)) => message,
-            other => panic!("expected a validation refusal, got {other:?}"),
+            _ => panic!("expected a validation refusal"),
         }
     }
 
@@ -712,14 +712,17 @@ mod tests {
 
     #[test]
     fn a_malformed_id_is_refused() {
-        for bad in ["", "x", "C1", "has space", "a/b", &"a".repeat(33)] {
+        for (index, bad) in ["", "x", "C1", "has space", "a/b", &"a".repeat(33)]
+            .into_iter()
+            .enumerate()
+        {
             let args = schema::DeliveryStatusQuery {
                 messageId: Some(bad.to_owned()),
                 ..query()
             };
             assert!(
                 refusal(&args, &Asker::Person).contains("not an id"),
-                "{bad}"
+                "malformed id #{index} was not refused"
             );
         }
         let args = schema::DeliveryStatusQuery {
@@ -741,15 +744,24 @@ mod tests {
 
     #[test]
     fn only_a_whole_number_is_looked_up() {
-        for partial in ["+2376", "6771", "", "abc", "+237"] {
+        for (index, partial) in ["+2376", "6771", "", "abc", "+237"].into_iter().enumerate() {
             let message = refusal(&by_number(partial), &Asker::Person);
-            assert!(!message.is_empty(), "{partial}");
+            assert!(
+                !message.is_empty(),
+                "partial number #{index} was not refused"
+            );
         }
         // The key is the normalised number, so `677123456` and `+237677123456` are one key.
         let a = LookupPlan::from_args(&by_number("677123456"), &Asker::Person, now()).unwrap();
         let b = LookupPlan::from_args(&by_number("+237677123456"), &Asker::Person, now()).unwrap();
-        assert_eq!(a.key, Key::Msisdn("+237677123456".to_owned()));
-        assert_eq!(a.key, b.key);
+        assert!(
+            a.key == Key::Msisdn("+237677123456".to_owned()),
+            "the key is not the normalised number"
+        );
+        assert!(
+            a.key == b.key,
+            "the national and international forms differ"
+        );
     }
 
     #[test]
@@ -772,12 +784,15 @@ mod tests {
                 ok
             );
         }
-        for bad in [0, 51, -1, i64::MAX] {
+        for (index, bad) in [0, 51, -1, i64::MAX].into_iter().enumerate() {
             let args = schema::DeliveryStatusQuery {
                 limit: Some(bad),
                 ..by_id()
             };
-            assert!(refusal(&args, &Asker::Person).contains("limit"), "{bad}");
+            assert!(
+                refusal(&args, &Asker::Person).contains("limit"),
+                "bad limit #{index} was not refused"
+            );
         }
     }
 
@@ -828,15 +843,18 @@ mod tests {
             ..by_number(number)
         };
         let message = refusal(&purged_history, &Asker::Person);
-        assert_eq!(
-            message,
-            "a lookup by number may not start more than 90 days ago"
+        assert!(
+            message == "a lookup by number may not start more than 90 days ago",
+            "the refusal is not the fixed text"
         );
         // The same on an app key, and the message is fixed: no number in it.
-        assert_eq!(refusal(&purged_history, &app()), message);
+        assert!(
+            refusal(&purged_history, &app()) == message,
+            "an app key is refused with other text"
+        );
         assert!(!message.contains("677123456"));
         // The edge is allowed, one second earlier is not.
-        for (offset, allowed) in [(0, true), (1, false)] {
+        for (index, (offset, allowed)) in [(0, true), (1, false)].into_iter().enumerate() {
             let args = schema::DeliveryStatusQuery {
                 since: Some(now() - Duration::days(90) - Duration::seconds(offset)),
                 ..by_number(number)
@@ -844,7 +862,7 @@ mod tests {
             assert_eq!(
                 LookupPlan::from_args(&args, &Asker::Person, now()).is_ok(),
                 allowed,
-                "{offset}s past the edge"
+                "edge case #{index}: the window start is judged wrongly"
             );
         }
         // An id or a client reference matches no purged row by what it holds, so
@@ -867,9 +885,15 @@ mod tests {
 
     #[test]
     fn an_invalid_number_is_refused_without_quoting_it() {
-        for typed in ["+2376", "6771", "abc", "+237 12345 not", "+99912345678"] {
+        for (index, typed) in ["+2376", "6771", "abc", "+237 12345 not", "+99912345678"]
+            .into_iter()
+            .enumerate()
+        {
             let message = refusal(&by_number(typed), &Asker::Person);
-            assert_eq!(message, "msisdn is not a valid mobile number");
+            assert!(
+                message == "msisdn is not a valid mobile number",
+                "invalid number #{index}: the refusal is not the fixed text"
+            );
         }
     }
 
@@ -914,7 +938,7 @@ mod tests {
         match Caller::of(ctx) {
             Err(CratestackError::Forbidden(why)) => why,
             Ok(caller) => panic!("a {} caller was admitted", caller.kind()),
-            Err(other) => panic!("expected Forbidden, got {other:?}"),
+            _ => panic!("expected Forbidden"),
         }
     }
 
@@ -939,24 +963,30 @@ mod tests {
         assert_eq!(key.kind(), "app");
 
         // An app key with no app would see every app through the system read.
-        for app_id in [None, Some("")] {
+        for (index, app_id) in [None, Some("")].into_iter().enumerate() {
             let mut fields = vec![("sub", "key1"), ("kind", "app")];
             fields.extend(app_id.map(|id| ("appId", id)));
             assert!(
                 refused_caller(&context(&fields)).contains("without an app"),
-                "{app_id:?}"
+                "app key case #{index} was admitted without an app"
             );
         }
         // The system's own context (kind "app", role "system", no app) and a kind
         // the schema never grants: refused, never treated as a person.
         assert!(refused_caller(&system_context("sms-api:test")).contains("without an app"));
-        for kind in ["system", "system_context", "robot", ""] {
+        for (index, kind) in ["system", "system_context", "robot", ""]
+            .into_iter()
+            .enumerate()
+        {
             let why = refused_caller(&context(&[
                 ("sub", "x1"),
                 ("kind", kind),
                 ("appId", "capp1"),
             ]));
-            assert!(why.contains("a person or an app key"), "{kind}");
+            assert!(
+                why.contains("a person or an app key"),
+                "kind case #{index} was not refused as unknown"
+            );
         }
         assert!(
             refused_caller(&context(&[("kind", "user")])).contains("caller identity"),
@@ -1008,10 +1038,13 @@ mod tests {
         assert!(hashed_ref.starts_with("hmac-sha256-v1:"));
         assert!(!hashed_ref.contains("order-17"));
         // Not the same input space as a bare string with that value.
-        assert_ne!(hashed_ref, hmac_sha256_hex(&pepper, "order-17"));
-        assert_eq!(
-            audited_key(&Key::MessageId("cmsg1".to_owned()), &pepper),
-            "cmsg1"
+        assert!(
+            hashed_ref != hmac_sha256_hex(&pepper, "order-17"),
+            "a reference hashes as a bare string"
+        );
+        assert!(
+            audited_key(&Key::MessageId("cmsg1".to_owned()), &pepper) == "cmsg1",
+            "an id is not audited as itself"
         );
     }
 }

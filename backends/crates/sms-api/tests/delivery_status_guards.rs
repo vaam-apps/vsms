@@ -203,7 +203,10 @@ fn the_lookup_procedure_admits_a_person_or_an_app_key_on_one_line() {
         attributes,
         [r#"  @allow(auth().kind == "user" || auth().kind == "app")"#],
         "no @authorize (it runs the caller's Message policy, which delivery:read does not satisfy) \
-         and no other attribute: the permission is the body's first statement"
+         and no other attribute: the permission is the body's first statement. In particular \
+         no @isolation: the budget's `pending` insert would then run inside the procedure's \
+         transaction, concurrent counts could not see it, and the budget would overshoot again; \
+         the burst test calls `lookup` directly, so it cannot catch that"
     );
 }
 

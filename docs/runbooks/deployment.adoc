@@ -427,7 +427,7 @@ read them back, takes `--scope "sms:send delivery:read"`: `lookupDeliveryStatus`
 message id, by its own `clientRef` or by a whole recipient number (60 lookups by
 number per hour, unpurged messages of the last 90 days only), with the masked
 recipient, the state, the timestamps and the newest receipt and no message body.
-Every lookup, a refused one included, is recorded in `delivery_lookups`.
+Every lookup that reaches the database, a lookup refused for the budget included, is recorded in `delivery_lookups`; a malformed query (`422`) or a caller refused for lacking the scope (`403`) writes no row.
 
 It writes an `AppClient` and an `OauthClient` that holds only the public JWK, and
 the private key to `--key-out` with mode `0600`; it refuses to overwrite an

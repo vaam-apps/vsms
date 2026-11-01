@@ -1658,9 +1658,9 @@ enum DeliveryLookupOutcome {
 // **The rows are the budget** (`BUDGETED_LOOKUPS_PER_HOUR`), and the order is what
 // makes it hold under concurrency: a budgeted lookup INSERTS its `pending` row
 // first and counts the caller's rows AFTER, its own included, admitting itself
-// only if the count is at most the budget. Every write autocommits, so the k-th
-// row to commit sees a count of at least k and at most 60 are ever admitted,
-// with no lock. A refused attempt then marks its row `over_budget`, an admitted
+// only if the count is at most the budget. Every write autocommits, so when an
+// admitted row counts, every row admitted before it is visible and still counted,
+// and at most 60 are ever admitted, with no lock. A refused attempt then marks its row `over_budget`, an admitted
 // one marks it `answered` with the count. Those are the only updates: the
 // `delivery_lookups_update_guard` trigger refuses any other change. A lookup that
 // is not budgeted (by message id, or an app key's own client reference) is

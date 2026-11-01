@@ -473,6 +473,17 @@ fn assert_status(reply: &Reply, want: u16, what: &str) {
     assert_eq!(reply.status, want, "{what}: unexpected status");
 }
 
+/// `left == right`, and a failure that prints `what` and nothing of either side: a
+/// lookup's answer holds a masked number, an id or a hash, and an assertion message
+/// is a log line. `what` is a fixed label for the comparison.
+fn assert_same<A, B>(left: &A, right: &B, what: &str)
+where
+    A: PartialEq<B> + ?Sized,
+    B: ?Sized,
+{
+    assert!(left == right, "{what}: the two sides differ");
+}
+
 fn statuses(reply: &Reply) -> Vec<Value> {
     assert_status(reply, 200, "a lookup");
     reply.json()["statuses"]
@@ -577,10 +588,22 @@ async fn support_cannot_read_receipts_and_can_look_up_the_status() {
     let reply = lookup(&support, json!({ "messageId": message.id })).await;
     let all = statuses(&reply);
     assert_eq!(all.len(), 1);
-    assert_eq!(all[0]["messageId"], message.id);
-    assert_eq!(all[0]["appId"], rig.app_a);
-    assert_eq!(all[0]["lastReceipt"]["rawStatus"], "Delivered");
-    assert_eq!(all[0]["lastReceipt"]["outcome"], "delivered");
+    assert_same(
+        &all[0]["messageId"],
+        &message.id,
+        "the status names its message",
+    );
+    assert_same(&all[0]["appId"], &rig.app_a, "the status names its app");
+    assert_same(
+        &all[0]["lastReceipt"]["rawStatus"],
+        &"Delivered",
+        "the receipt carries the provider status",
+    );
+    assert_same(
+        &all[0]["lastReceipt"]["outcome"],
+        &"delivered",
+        "the receipt carries the outcome",
+    );
 }
 
 #[tokio::test]
@@ -622,19 +645,28 @@ async fn the_status_is_found_by_id_by_client_reference_and_by_number_newest_firs
     let by_number = lookup(&support, json!({ "msisdn": number })).await;
     let found = ids(&by_number);
     assert_eq!(found.len(), 3, "a number finds the three messages");
-    assert_eq!(found[1], newer.id, "newest first");
-    assert_eq!(found[2], older.id);
+    assert_same(&found[1], &newer.id, "newest first");
+    assert_same(&found[2], &older.id, "the older message is last");
     let all = statuses(&by_number);
     let last = all.iter().find(|s| s["messageId"] == older.id).unwrap();
-    assert_eq!(last["state"], "delivered");
-    assert_eq!(
-        last["lastReceipt"]["rawStatus"], "Delivered",
-        "the newest receipt, not the first"
+    assert_same(
+        &last["state"],
+        &"delivered",
+        "the state is the receipt outcome",
     );
-    assert_eq!(last["segments"], 1);
-    assert_eq!(last["attempts"], 0);
+    assert_same(
+        &last["lastReceipt"]["rawStatus"],
+        &"Delivered",
+        "the newest receipt, not the first",
+    );
+    assert_same(&last["segments"], &1, "the status counts one segment");
+    assert_same(&last["attempts"], &0, "nothing was submitted yet");
     let expected = format!("+237*******{}", &number[number.len() - 2..]);
-    assert_eq!(last["recipient"], expected.as_str());
+    assert_same(
+        &last["recipient"],
+        &expected.as_str(),
+        "the recipient is masked",
+    );
 
     // By client reference: one app's, named by a person.
     let by_ref = lookup(
@@ -642,15 +674,20 @@ async fn the_status_is_found_by_id_by_client_reference_and_by_number_newest_firs
         json!({ "clientRef": reference, "appId": rig.app_a }),
     )
     .await;
-    assert_eq!(ids(&by_ref), one(&newer.id));
+    assert_same(
+        &ids(&by_ref),
+        &one(&newer.id),
+        "a reference finds its own app's message",
+    );
     // A person has to say which app a reference belongs to.
     let unscoped = lookup(&support, json!({ "clientRef": reference })).await;
     assert_status(&unscoped, 422, "a reference without an app");
 
     // By id, and the person's optional app filter.
-    assert_eq!(
-        ids(&lookup(&support, json!({ "messageId": older.id })).await),
-        one(&older.id)
+    assert_same(
+        &ids(&lookup(&support, json!({ "messageId": older.id })).await),
+        &one(&older.id),
+        "an id finds its message",
     );
     let filtered = lookup(&support, json!({ "msisdn": number, "appId": rig.app_b })).await;
     assert_eq!(ids(&filtered).len(), 1);
@@ -748,15 +785,19 @@ async fn a_role_is_decided_by_delivery_read_and_nothing_else() {
     // Allowed: the two built-ins that hold it, and a custom role holding only it.
     for built_in in ["support", "auditor"] {
         let who = rig.person(built_in).await;
-        assert_eq!(
-            ids(&lookup(&who, ask.clone()).await),
-            one(&message.id),
-            "{built_in}"
+        assert_same(
+            &ids(&lookup(&who, ask.clone()).await),
+            &one(&message.id),
+            built_in,
         );
     }
     let only = rig.custom_role(&["delivery:read"]).await;
     let who = rig.person(&only).await;
-    assert_eq!(ids(&lookup(&who, ask.clone()).await), one(&message.id));
+    assert_same(
+        &ids(&lookup(&who, ask.clone()).await),
+        &one(&message.id),
+        "a custom role holding only delivery:read",
+    );
 
     // A refusal leaves no account of a lookup behind and shows no message content.
     assert_eq!(
@@ -793,23 +834,30 @@ async fn an_app_key_with_the_scope_sees_its_own_app_and_no_other() {
         .await;
     let key_a = rig.app_key(&rig.app_a, " sms:send delivery:read ").await;
 
-    assert_eq!(
-        ids(&lookup(&key_a, json!({ "messageId": mine.id })).await),
-        one(&mine.id)
+    assert_same(
+        &ids(&lookup(&key_a, json!({ "messageId": mine.id })).await),
+        &one(&mine.id),
+        "an app key finds its own id",
     );
     // Another app's id: an empty answer, as if it did not exist.
     let foreign = lookup(&key_a, json!({ "messageId": theirs.id })).await;
     assert_status(&foreign, 200, "another app's id");
-    assert_eq!(ids(&foreign), Vec::<String>::new());
+    assert_same(
+        &ids(&foreign),
+        &Vec::<String>::new(),
+        "another app's id answers empty",
+    );
     // A number both apps messaged: only the key's own app's message.
-    assert_eq!(
-        ids(&lookup(&key_a, json!({ "msisdn": shared })).await),
-        one(&mine.id)
+    assert_same(
+        &ids(&lookup(&key_a, json!({ "msisdn": shared })).await),
+        &one(&mine.id),
+        "a shared number finds only the key's own app",
     );
     // A reference: its own app is implied.
-    assert_eq!(
-        ids(&lookup(&key_a, json!({ "clientRef": reference })).await),
-        one(&mine.id)
+    assert_same(
+        &ids(&lookup(&key_a, json!({ "clientRef": reference })).await),
+        &one(&mine.id),
+        "a reference implies the key's own app",
     );
     // Naming another app is refused, not quietly ignored.
     let named = lookup(
@@ -820,9 +868,10 @@ async fn an_app_key_with_the_scope_sees_its_own_app_and_no_other() {
     assert_status(&named, 422, "naming another app");
     assert!(!named.text().contains(&theirs.id));
     // Naming its own is fine.
-    assert_eq!(
-        ids(&lookup(&key_a, json!({ "msisdn": shared, "appId": rig.app_a })).await),
-        one(&mine.id)
+    assert_same(
+        &ids(&lookup(&key_a, json!({ "msisdn": shared, "appId": rig.app_a })).await),
+        &one(&mine.id),
+        "naming its own app is allowed",
     );
 
     // Without the scope: refused, whatever else it holds.
@@ -851,19 +900,22 @@ async fn a_number_is_matched_whole() {
     let at_y = rig.message(&rig.app_a, &Spec::to(&y)).await;
     let support = rig.person("support").await;
 
-    assert_eq!(
-        ids(&lookup(&support, json!({ "msisdn": x })).await),
-        one(&at_x.id)
+    assert_same(
+        &ids(&lookup(&support, json!({ "msisdn": x })).await),
+        &one(&at_x.id),
+        "the first number finds its message",
     );
-    assert_eq!(
-        ids(&lookup(&support, json!({ "msisdn": y })).await),
-        one(&at_y.id)
+    assert_same(
+        &ids(&lookup(&support, json!({ "msisdn": y })).await),
+        &one(&at_y.id),
+        "the second number finds its message",
     );
     // The national form is the same number.
     let national = &x["+237".len()..];
-    assert_eq!(
-        ids(&lookup(&support, json!({ "msisdn": national })).await),
-        one(&at_x.id)
+    assert_same(
+        &ids(&lookup(&support, json!({ "msisdn": national })).await),
+        &one(&at_x.id),
+        "the national form is the same number",
     );
     // A prefix, a suffix, a partial number: refused, never a search.
     for (index, partial) in [&x[..x.len() - 3], &x[x.len() - 6..], "+2376", ""]
@@ -880,7 +932,11 @@ async fn a_number_is_matched_whole() {
     }
     // A number nobody messaged: empty, not an error.
     let unknown = lookup(&support, json!({ "msisdn": unique_mtn_msisdn() })).await;
-    assert_eq!(ids(&unknown), Vec::<String>::new());
+    assert_same(
+        &ids(&unknown),
+        &Vec::<String>::new(),
+        "a number nobody messaged finds nothing",
+    );
     // Two keys, or none, is a malformed query.
     for bad in [json!({}), json!({ "messageId": at_x.id, "msisdn": x })] {
         assert_eq!(lookup(&support, bad).await.status, 422);
@@ -1012,8 +1068,16 @@ async fn every_answered_call_leaves_one_account_of_it_holding_a_hash_and_never_t
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].keyKind, schema::DeliveryLookupKey::client_ref);
     assert_eq!(rows[0].actorKind, "app");
-    assert_eq!(rows[0].actorAppId.as_deref(), Some(rig.app_a.as_str()));
-    assert_eq!(rows[0].appIdFilter.as_deref(), Some(rig.app_a.as_str()));
+    assert_same(
+        &rows[0].actorAppId.as_deref(),
+        &Some(rig.app_a.as_str()),
+        "the audit row names the key's app",
+    );
+    assert_same(
+        &rows[0].appIdFilter.as_deref(),
+        &Some(rig.app_a.as_str()),
+        "the audit row filters on the key's app",
+    );
 
     // No plaintext of the number or the reference anywhere in the three rows, and the
     // matching `cratestack_audit` entries hold the same hashes and no plaintext.
@@ -1307,6 +1371,9 @@ async fn the_budget_is_keyed_on_the_kind_of_caller_as_well_as_its_subject() {
 /// with a fresh budget, started together over forty connections: at most sixty may
 /// be answered, whatever interleaving the database produces. A budget that counts
 /// before it inserts lets every call in a burst count before any of them insert.
+/// The test cannot ask for a floor on the answered count (8 to 39 of 80 were
+/// measured, and the worst interleaving admits none), so it asks for the guarantee
+/// that holds instead: with fewer than sixty answered, the next lookup is admitted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs a live, fully migrated Postgres - see module docs"]
 async fn a_burst_of_eighty_number_lookups_is_admitted_sixty_at_most() {
@@ -1354,15 +1421,33 @@ async fn a_burst_of_eighty_number_lookups_is_admitted_sixty_at_most() {
         answered <= 60,
         "{answered} of {BURST} were answered, past the budget of 60"
     );
-    assert!(
-        answered >= 1,
-        "nothing was answered: the budget refuses everyone"
-    );
     assert_eq!(answered + refused, BURST);
+    // No floor on `answered` is guaranteed: in the worst interleaving every count
+    // sees more than 60 rows and nobody is admitted. What is guaranteed is that the
+    // refusals do not lock the caller out. A refused row is `over_budget` and is not
+    // counted, so while fewer than 60 were answered the next lookup counts
+    // `answered + 1 <= 60` rows (its own included) and must be admitted.
+    let extra = if answered < 60 {
+        let after = delivery_status::lookup(
+            &pepper,
+            &burst_db,
+            &person_ctx(&sub),
+            by_number(&number),
+            Utc::now(),
+        )
+        .await;
+        assert!(
+            matches!(after, Ok(ref result) if result.statuses.len() == 1),
+            "a lookup after a burst that left room was not admitted"
+        );
+        1_usize
+    } else {
+        0
+    };
     // Every attempt is on the trail, and the trail agrees with what the callers saw.
     let (burst, answered_n, refused_n) = (
-        i64::try_from(BURST).unwrap(),
-        i64::try_from(answered).unwrap(),
+        i64::try_from(BURST + extra).unwrap(),
+        i64::try_from(answered + extra).unwrap(),
         i64::try_from(refused).unwrap(),
     );
     assert_eq!(rig.count_of(&sub, None).await, burst);
@@ -1418,10 +1503,10 @@ async fn a_purged_message_is_found_by_its_id_and_never_by_its_number() {
     let support = rig.person("support").await;
 
     let by_number = lookup(&support, json!({ "msisdn": number })).await;
-    assert_eq!(
-        ids(&by_number),
-        one(&live.id),
-        "the number finds the live row only"
+    assert_same(
+        &ids(&by_number),
+        &one(&live.id),
+        "the number finds the live row only",
     );
     let kept = &statuses(&by_number)[0];
     assert_eq!(kept["purged"], false);
@@ -1430,7 +1515,11 @@ async fn a_purged_message_is_found_by_its_id_and_never_by_its_number() {
     // Its id still answers, and says it was purged and shows no recipient.
     let by_id = statuses(&lookup(&support, json!({ "messageId": purged.id })).await);
     assert_eq!(by_id.len(), 1);
-    assert_eq!(by_id[0]["messageId"], purged.id);
+    assert_same(
+        &by_id[0]["messageId"],
+        &purged.id,
+        "the purged row answers by id",
+    );
     assert_eq!(by_id[0]["purged"], true);
     assert!(
         by_id[0]["recipient"].is_null(),
@@ -1484,9 +1573,10 @@ async fn a_lookup_by_number_does_not_reach_back_past_the_retention_period() {
         (now - Duration::days(91), now - Duration::days(5)),
     ] {
         match run(since, until).await {
-            Err(CratestackError::Validation(message)) => assert_eq!(
-                message,
-                "a lookup by number may not start more than 90 days ago"
+            Err(CratestackError::Validation(message)) => assert_same(
+                &message,
+                &"a lookup by number may not start more than 90 days ago",
+                "a window into purged history is refused with the fixed text",
             ),
             other => panic!("a window into purged history was {}", result_kind(&other)),
         }
@@ -1688,7 +1778,7 @@ async fn an_idempotency_key_replays_the_first_answer_and_the_first_call_is_recor
     let second = ask().await;
     assert_status(&first, 200, "the first call");
     assert_status(&second, 200, "the replayed call");
-    assert_eq!(first.json(), second.json(), "the same answer");
+    assert_same(&first.json(), &second.json(), "a replay answers the same");
     // Measured: the layer answers the second call itself, so the procedure ran, and
     // was recorded, once.
     assert_eq!(rig.lookups(&message.id).await.len(), 1);
