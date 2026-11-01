@@ -43,15 +43,20 @@ Four built-in roles carry `sms:read`: `owner`, `admin`, `operator` and `auditor`
 with `jit_role: pending` **a person who signs in for the first time reads no
 message, receipt, part or webhook attempt, and changes nothing, until an owner or
 admin promotes them**: membership of the required group lets someone in, and the
-role decides what they may do. The exceptions are the policies that admit *any*
-signed-in person: a `pending` person still lists **every opted-out phone number
-(`/opt_outs`) and every consent record's phone number (`/consent_records`)**, and
-reads the role table (`/roles`), their own console keys, and `previewMessage`.
-Closing the opt-out and consent exposure (gating a person's read on an opt-out
-permission, as an app key already is) awaits the owner's ruling and is not done. A deployment whose overlay still
-says `jit_role: support` keeps creating people as `support`, which also reads no
-message now, but holds opt-out permissions (it records and searches opt-outs);
-change it to `pending` unless you want that.
+role decides what they may do.
+
+Opted-out numbers and consent records are gated the same way (since migration
+`0014_optout_read_scope`): a person reads them only with `optout:read` (the
+`auditor` holds it) or `optout:manage` (`owner`, `admin`, `operator` and
+`support`), so a `pending` person lists no opt-out (`/opt_outs`) and no consent
+record (`/consent_records`): an empty list, and a `404` for one row. What is left
+that a policy admits to any signed-in person is the role table (`/roles`), their
+own console keys, and `previewMessage`, none of which holds a subscriber number;
+the sender-ID, sender-ID registration and route-validation screens are open too,
+and hold no number either. A deployment whose overlay still says `jit_role: support`
+keeps creating people as `support`, which reads no message, but records and
+searches opt-outs **and reads every opted-out number and consent record**; change
+it to `pending` unless you want that.
 
 Before the migration (`0013_role_read_scope`) runs: if an owner ever created a role
 keyed `pending` and it holds any permission, the migration refuses and rolls back

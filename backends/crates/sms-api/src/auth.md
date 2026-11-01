@@ -11,8 +11,15 @@ A policy can read a claim and cannot read `Role.permissions` or a scope, so a
 read that must follow a permission is a claim. [`Grants::of`] projects the two
 that are needed from the same `perms` and `scope` `require_permission` checks:
 `messageRead` is `granted` when the caller holds `sms:read` (a person's role or
-an app key's effective scope), and `optOutRead` when it holds `optout:read`. A
-context built by [`Principal::into_context`] (the system's, a test's) is
+an app key's effective scope), and `optOutRead` when it holds `optout:read` (a
+person's role or an app key's scope) or, for a **person only**, `optout:manage`:
+the role that may search opt-outs reads them. An app key's `optout:manage` scope
+does not grant it, because `recordOptOut` and `searchOptOutByMsisdn` admit person
+roles only and an opt-out has no tenant to filter by, so counting it would turn a
+scope that does nothing into a read of every tenant's numbers. `OptOut` asks the
+claim alone; `ConsentRecord` asks it of a person (`kind == "user"`) and keeps an
+app's own-app clause, so an app key holding `optout:read` reads every opt-out and
+only its own app's consent records. A context built by [`Principal::into_context`] (the system's, a test's) is
 `denied` on both. A claim is evaluated wherever the policy is, so `?include=`, a
 relation filter, its `totalCount` and a nested include of a message from another
 model are bound by it; a route gate cannot say that.

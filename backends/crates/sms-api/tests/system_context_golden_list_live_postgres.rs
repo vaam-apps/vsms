@@ -925,7 +925,7 @@ async fn seed_and_verify_opt_out(
         opt_out,
         seeded.id,
         "OptOut",
-        "@@allow(\"read\", auth().kind == \"user\" || auth().kind == \"app\")"
+        "@@allow(\"read\", auth().optOutRead == \"granted\" || hasRole('system'))"
     );
     seeded
 }
@@ -1401,8 +1401,8 @@ async fn seed_and_verify_consent_record(
         consent_record,
         seeded.id,
         "ConsentRecord",
-        "@@allow(\"read\", auth().kind == \"user\" || appId == auth().appId || \
-         hasRole('system'))"
+        "@@allow(\"read\", (auth().kind == \"user\" && auth().optOutRead == \"granted\") \
+         || appId == auth().appId || hasRole('system'))"
     );
     seeded
 }

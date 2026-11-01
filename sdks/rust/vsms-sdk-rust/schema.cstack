@@ -1086,13 +1086,16 @@ model OptOut {
 
   @@audit
   @@paged
-  // A person reads opt-outs as any `user` (decision for the owner: no built-in
-  // role holds `optout:read`, and `support` and `operator` manage opt-outs).
-  // An app key reads them only with the `optout:read` scope: each row is a raw
-  // number, and an app has no tenant filter here, so before this clause any
-  // app key of any tenant listed every opted-out number. The system context's
-  // `kind` is "app" too, which the old clause admitted by accident: it is named.
-  @@allow("read", auth().kind == "user" || (auth().kind == "app" && auth().optOutRead == "granted") || hasRole('system'))
+  // Each row is a raw number, and an opt-out has no tenant to filter by. A
+  // caller reads them only when the claim `optOutRead` is granted: a person
+  // whose role holds `optout:read` (the built-in `auditor`) or `optout:manage`
+  // (`owner`, `admin`, `operator` and `support`, the roles that record and
+  // search them), or an app key whose scope holds `optout:read`. An app's
+  // `optout:manage` scope does not count (`Grants::of`): `recordOptOut` admits
+  // person roles only. Before this clause any person, whatever the role,
+  // listed every opted-out number. The system context's `kind` is "app", and
+  // its claims are denied, so it is admitted by role and named.
+  @@allow("read", auth().optOutRead == "granted" || hasRole('system'))
   @@allow("create", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('system'))
   @@allow("delete", hasRole('owner') || hasRole('admin'))
   @@emit(created, deleted)
@@ -1157,16 +1160,20 @@ model ConsentRecord {
   consentedAt DateTime
   evidenceRef String?
 
-  // Mirrors OptOut's own read/create/delete shape exactly (see that
-  // model's comment for the appId difference). No `auth().kind == "app"`
-  // on `create`: like OptOut, no app-level self-service consent-capture
-  // API exists yet (an app's own signup backend recording consent the
-  // instant a user opts in is the obvious future caller) — same status
-  // quo gap OptOut already has for inbound STOP, not a new one this PR
-  // introduces.
+  // Mirrors OptOut's own create/delete shape exactly. Reads differ by the
+  // owner: a consent record has an app, so an app key reads its own app's
+  // records whatever its scope, and a person reads them under the same claim
+  // as an opt-out (`optOutRead`: `optout:read` or `optout:manage`; there is no
+  // `consent:read`), for the same reason: each row is a raw number. The claim
+  // is qualified by `kind == "user"` because an app key holding `optout:read`
+  // reads every tenant's opt-outs, not every tenant's consent. No
+  // `auth().kind == "app"` on `create`: like OptOut, no app-level self-service
+  // consent-capture API exists yet (an app's own signup backend recording
+  // consent the instant a user opts in is the obvious future caller), the same
+  // status quo gap OptOut already has for inbound STOP.
   @@audit
   @@paged
-  @@allow("read", auth().kind == "user" || appId == auth().appId || hasRole('system'))
+  @@allow("read", (auth().kind == "user" && auth().optOutRead == "granted") || appId == auth().appId || hasRole('system'))
   @@allow("create", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('system'))
   @@allow("delete", hasRole('owner') || hasRole('admin'))
   @@emit(created, deleted)

@@ -57,6 +57,7 @@ export const KNOWN_SCOPES = [
   "route:read",
   "sender:manage",
   "webhook:manage",
+  "optout:read",
   "optout:manage",
   "dashboard:read",
   "audit:read",
@@ -77,7 +78,8 @@ export const SCOPE_DESCRIPTIONS: Record<KnownScope, string> = {
   "route:read": "Read routes and simulate routing",
   "sender:manage": "Create and edit sender IDs",
   "webhook:manage": "Manage webhook endpoints, replay deliveries",
-  "optout:manage": "Record and remove opt-outs",
+  "optout:read": "Read every opted-out number (all tenants)",
+  "optout:manage": "No effect for an app key (opt-out changes are person-only)",
   "dashboard:read": "Read dashboard summaries",
   "audit:read": "Read the audit log",
   "user:manage": "Manage users and roles",
@@ -87,7 +89,7 @@ export const SCOPE_DESCRIPTIONS: Record<KnownScope, string> = {
  * The scopes a typical machine client needs — what `scripts/demo.sh` and
  * the getting-started runbook provision the console's own client with.
  * Offered as a one-click starting point rather than making an operator
- * pick fourteen checkboxes to get the common case.
+ * pick fifteen checkboxes to get the common case.
  */
 export const DEFAULT_CLIENT_SCOPES: readonly KnownScope[] = ["sms:send", "sms:read"];
 

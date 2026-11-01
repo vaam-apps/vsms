@@ -404,11 +404,16 @@ async fn an_opted_out_recipient_is_refused_before_persistence() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
-    let (client_id, _app) = seed_app_and_client(&db, 1000, None).await;
+    let (client_id, app) = seed_app_and_client(&db, 1000, None).await;
     let sender = seed_approved_sender(&db).await;
 
     let to = unique_mtn_msisdn();
     let to = to.as_str();
+
+    // Consent is seeded so `ensure_consent_on_file` has nothing to refuse and
+    // only the opt-out check can: without it a `notification` send is refused
+    // for want of consent first, and this test cannot tell the two apart.
+    seed_consent(&db, &app.id, to, MessageClass::notification).await;
 
     db.opt_out()
         .create(schema::CreateOptOutInput {
@@ -435,7 +440,14 @@ async fn an_opted_out_recipient_is_refused_before_persistence() {
     .await
     .unwrap_err();
 
-    assert!(matches!(error, cratestack::CratestackError::Validation(_)));
+    let message = match error {
+        cratestack::CratestackError::Validation(message) => message,
+        other => panic!("expected a Validation refusal, got {other:?}"),
+    };
+    assert!(
+        message.contains("opted out"),
+        "the refusal must be the opt-out check's, got: {message}"
+    );
 
     let count = db
         .message()

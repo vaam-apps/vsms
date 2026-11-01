@@ -27,10 +27,14 @@
 //!   `Provider` and `Route` read gates, which a `HEAD` used to walk past);
 //! - **the doors through other models**: `GET /apps?include=messages`, a relation
 //!   filter (`?messages.some.msisdn=`) and a nested include
-//!   (`/consent_records?include=app,app.messages`) read `Message` under its own
+//!   (`/app_clients?include=app,app.messages`) read `Message` under its own
 //!   policy, which asks for the `messageRead` claim, so a caller without
 //!   `sms:read` gets no message from them, each with a positive control;
-//! - **opt-outs**: an app key reads them only with `optout:read`.
+//! - **opt-outs and consent records**: a person reads them only with `optout:read`
+//!   or `optout:manage` (`auditor` holds the first since `0014_optout_read_scope`,
+//!   `owner`, `admin`, `operator` and `support` the second; `developer` and
+//!   `pending` neither); an app key reads opt-outs only with `optout:read` (its
+//!   `optout:manage` scope does not count) and consent records only its own app's.
 //!
 //! Ignored by default, like this workspace's other live suites:
 //!
@@ -519,8 +523,8 @@ fn assert_refused_naming_sms_read(reply: &Reply, rig: &Rig, who: &str, probe: &P
     }
 }
 
-/// What `0013_role_read_scope` leaves in the `roles` table of a database that has
-/// run every migration, read through the generated client. The tests below rely
+/// What `0013_role_read_scope` and `0014_optout_read_scope` leave in the `roles`
+/// table of a database that has run every migration, read through the generated client. The tests below rely
 /// on it rather than set it, so a migration that stopped doing it fails here and
 /// in every one of them, and not by being papered over by a fixture.
 #[tokio::test]
@@ -563,6 +567,27 @@ async fn the_migrated_seed_is_the_owners_decision() {
         " ",
         "pending holds no permission at all"
     );
+    // `0014_optout_read_scope`: the auditor reads opt-outs by `optout:read`, the
+    // four roles that manage them by `optout:manage`; the others hold neither.
+    assert_eq!(
+        permissions("auditor").await,
+        " sms:read app:read provider:read route:read job:read worker:read dashboard:read delivery:read audit:read optout:read ",
+        "the auditor gains optout:read and nothing else"
+    );
+    for key in ["owner", "admin", "operator", "support"] {
+        let held = permissions(key).await;
+        assert!(held.contains(" optout:manage "), "{key} manages opt-outs");
+        assert!(
+            !held.contains(" optout:read "),
+            "{key} is not given optout:read as well"
+        );
+    }
+    for key in ["developer", "pending"] {
+        assert!(
+            !permissions(key).await.contains("optout:"),
+            "{key} holds no opt-out permission"
+        );
+    }
 }
 
 /// Four built-in roles carry `sms:read` (section 5.2), so each reads, by a paired
@@ -975,13 +1000,15 @@ async fn another_models_include_and_filter_read_the_message_under_its_policy() {
     assert_eq!(shut.status, 200, "{}", shut.text());
 }
 
-/// A nested include (`/consent_records?include=app,app.messages`) reaches a
-/// message through two relations. It runs as a caller that LOADS `app`: `App`'s
-/// read policy names built-in roles, so a custom role would get `app: null` and
+/// A nested include (`/app_clients?include=app,app.messages`) reaches a message
+/// through two relations. It runs as a caller that LOADS `app`: `App`'s read
+/// policy names built-in roles, so a custom role would get `app: null` and
 /// `app.messages` would never be reached whatever `Message`'s policy says. The
-/// `developer` (no `sms:read` since 0013) does load it, the app object is asserted present, and an
-/// empty `messages` under it is the message policy's doing: this test fails when
-/// that policy is reverted.
+/// `developer` (no `sms:read` since 0013) does load it, and reads `AppClient` by
+/// role, so the app object is asserted present and an empty `messages` under it
+/// is the message policy's doing: this test fails when that policy is reverted.
+/// (It was `/consent_records` until `0014_optout_read_scope`, which a developer,
+/// holding no opt-out permission, no longer reads.)
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres - see module docs"]
 async fn a_nested_include_reads_the_message_under_its_policy() {
@@ -993,26 +1020,14 @@ async fn a_nested_include_reads_the_message_under_its_policy() {
     let body = body.as_str();
     let stripped = rig.person_by_key("developer").await;
     let granted = rig.person_by_key("owner").await;
-    rig.db
-        .consent_record()
-        .create(schema::CreateConsentRecordInput {
-            appId: mine.to_owned(),
-            msisdnHash: format!("hmac-sha256-v1:consent-{}", suffix()),
-            msisdn: "+237677123456".to_owned(),
-            scope: MessageClass::otp,
-            channel: schema::ConsentChannel::web_form,
-            consentedAt: Utc::now(),
-            evidenceRef: None,
-        })
-        .run(&sys())
-        .await
-        .expect("seeding a consent record");
-    let nested = "include=app,app.messages";
+    // The app's own key row: an `AppClient` of `mine` to include through.
+    rig.app_key(mine, " sms:send ").await;
+    let nested = format!("include=app,app.messages&appId={mine}");
 
     // Control: a caller who may read sees the message through the nested include.
     let with = granted
-        .request("GET", "/consent_records")
-        .query(nested)
+        .request("GET", "/app_clients")
+        .query(&nested)
         .send()
         .await;
     assert_eq!(with.status, 200, "{}", with.text());
@@ -1023,8 +1038,8 @@ async fn a_nested_include_reads_the_message_under_its_policy() {
     );
 
     let shut = stripped
-        .request("GET", "/consent_records")
-        .query(nested)
+        .request("GET", "/app_clients")
+        .query(&nested)
         .send()
         .await;
     assert_eq!(shut.status, 200, "{}", shut.text());
@@ -1032,7 +1047,7 @@ async fn a_nested_include_reads_the_message_under_its_policy() {
         .as_array()
         .and_then(|items| items.iter().find(|item| item["appId"] == mine))
         .cloned()
-        .expect("the seeded consent record is listed");
+        .expect("the seeded app client is listed");
     assert_eq!(
         record["app"]["id"], mine,
         "the include loaded the app, so the probe reaches app.messages: {record}"
@@ -1075,24 +1090,27 @@ async fn list_messages_page_asks_for_the_claim() {
     );
 }
 
-/// A person reads opt-outs as any `user` (the owner's decision to take: no
-/// built-in role holds `optout:read`); an app key reads them only with the
-/// `optout:read` scope, because each row is a raw number and the model has no
-/// owning app to scope by. Before, any app key of any tenant listed them all.
-#[tokio::test]
-#[ignore = "needs a live, fully migrated Postgres - see module docs"]
-async fn an_app_key_reads_opt_outs_only_with_optout_read() {
-    let _guard = TEST_MUTEX.lock().await;
-    let rig = rig().await;
+/// One opt-out and one consent record (of `rig.mine`'s app) on the same number.
+struct OptFixture {
+    number: String,
+    opt_out_id: String,
+    opt_out_hash: String,
+    consent_id: String,
+    consent_hash: String,
+}
+
+async fn seed_opt_out_and_consent(rig: &Rig) -> OptFixture {
     let number = format!(
         "+23767{:07}",
         u128::from_le_bytes(*cratestack::uuid::Uuid::new_v4().as_bytes()) % 10_000_000
     );
-    let row = rig
+    let opt_out_hash = format!("hmac-sha256-v1:optout-{}", suffix());
+    let consent_hash = format!("hmac-sha256-v1:consent-{}", suffix());
+    let opt_out = rig
         .db
         .opt_out()
         .create(schema::CreateOptOutInput {
-            msisdnHash: format!("hmac-sha256-v1:optout-{}", suffix()),
+            msisdnHash: opt_out_hash.clone(),
             msisdn: number.clone(),
             source: schema::OptOutSource::inbound_stop,
             scope: "all".to_owned(),
@@ -1102,38 +1120,364 @@ async fn an_app_key_reads_opt_outs_only_with_optout_read() {
         .run(&sys())
         .await
         .expect("seeding the opt-out");
+    let consent = rig
+        .db
+        .consent_record()
+        .create(schema::CreateConsentRecordInput {
+            appId: rig.mine.app_id.clone(),
+            msisdnHash: consent_hash.clone(),
+            msisdn: number.clone(),
+            scope: MessageClass::otp,
+            channel: schema::ConsentChannel::web_form,
+            consentedAt: Utc::now(),
+            evidenceRef: None,
+        })
+        .run(&sys())
+        .await
+        .expect("seeding the consent record");
+    OptFixture {
+        number,
+        opt_out_id: opt_out.id,
+        opt_out_hash,
+        consent_id: consent.id,
+        consent_hash,
+    }
+}
 
-    // An app of another tenant, with every scope but `optout:read`.
-    let other_tenant = rig
-        .app_key(&rig.other.app_id, " sms:send sms:read job:read ")
+/// A caller by either door: a paired key (sealed) or a person's bearer token.
+enum Caller<'a> {
+    Key(&'a SealedClient),
+    Token { base: &'a str, token: &'a str },
+}
+
+impl Caller<'_> {
+    /// `GET` of `collection` (`/opt_outs`), one row when `id` is given, with an
+    /// optional query. Returns the status and the answer's text.
+    async fn get(&self, collection: &str, id: Option<&str>, query: Option<&str>) -> (u16, String) {
+        match self {
+            Self::Key(api) => {
+                let one = format!("{collection}/{{id}}");
+                let mut request = match id {
+                    Some(id) => api.request("GET", &one).params(&[id]),
+                    None => api.request("GET", collection),
+                };
+                if let Some(query) = query {
+                    request = request.query(query);
+                }
+                let reply = request.send().await;
+                (reply.status, reply.text())
+            }
+            Self::Token { base, token } => {
+                let mut path = collection.to_owned();
+                if let Some(id) = id {
+                    path = format!("{path}/{id}");
+                }
+                if let Some(query) = query {
+                    path = format!("{path}?{query}");
+                }
+                bearer_get((*base).to_owned(), (*token).to_owned(), path).await
+            }
+        }
+    }
+
+    /// The `HEAD` of one row: its status. Only a key can seal one.
+    async fn head_status(&self, collection: &str, id: &str) -> Option<u16> {
+        match self {
+            Self::Key(api) => Some(
+                deliver(
+                    api.request("HEAD", &format!("{collection}/{{id}}"))
+                        .params(&[id]),
+                    "HEAD",
+                )
+                .await
+                .status,
+            ),
+            Self::Token { .. } => None,
+        }
+    }
+}
+
+fn items_of(body: &str) -> (usize, serde_json::Value) {
+    let json: serde_json::Value = serde_json::from_str(body).expect("a JSON list");
+    (
+        json["items"].as_array().map_or(usize::MAX, Vec::len),
+        json["totalCount"].clone(),
+    )
+}
+
+/// `who` reads `collection` (opt-outs or consent records): the list filtered to
+/// the seeded row finds it, the row is a 200, a `HEAD` of it is a 200.
+async fn assert_reads(
+    who: &str,
+    caller: &Caller<'_>,
+    collection: &str,
+    id: &str,
+    hash: &str,
+    number: &str,
+) {
+    let (status, body) = caller
+        .get(collection, None, Some(&format!("msisdnHash={hash}")))
         .await;
-    let list = other_tenant.request("GET", "/opt_outs").send().await;
-    assert_eq!(list.status, 200, "{}", list.text());
+    assert_eq!(status, 200, "{who}: GET {collection}?msisdnHash -> {body}");
+    let (items, total) = items_of(&body);
     assert!(
-        !list.text().contains(&number) && list.json()["items"].as_array().map(Vec::len) == Some(0),
-        "an app without optout:read listed a number: {}",
-        list.text()
+        body.contains(number) && items == 1 && total.as_i64().is_some_and(|t| t >= 1),
+        "{who} should read {collection}: {body}"
     );
-    let one = other_tenant
-        .request("GET", "/opt_outs/{id}")
-        .params(&[row.id.as_str()])
-        .send()
-        .await;
-    assert_eq!(one.status, 404, "{}", one.text());
+    let (status, body) = caller.get(collection, Some(id), None).await;
+    assert_eq!(status, 200, "{who}: GET {collection}/{{id}} -> {body}");
+    assert!(body.contains(number), "{who}: {collection} detail: {body}");
+    if let Some(head) = caller.head_status(collection, id).await {
+        assert_eq!(head, 200, "{who}: HEAD {collection}/{{id}}");
+    }
+}
 
-    let reader = rig.app_key(&rig.other.app_id, " optout:read ").await;
-    let list = reader.request("GET", "/opt_outs").send().await;
-    assert!(list.text().contains(&number), "control: {}", list.text());
-
-    for role in ["support", "operator"] {
-        let api = rig.person_by_key(role).await;
-        let list = api.request("GET", "/opt_outs").send().await;
+/// `who` reads nothing of `collection`: a 200 and an empty list (`totalCount`
+/// 0) however it is asked, a 404 for the row, by `GET` and by `HEAD`, and the
+/// number appears nowhere.
+async fn assert_refused(
+    who: &str,
+    caller: &Caller<'_>,
+    collection: &str,
+    id: &str,
+    hash: &str,
+    number: &str,
+) {
+    for query in [None, Some(format!("msisdnHash={hash}"))] {
+        let (status, body) = caller.get(collection, None, query.as_deref()).await;
+        assert_eq!(status, 200, "{who}: GET {collection} {query:?} -> {body}");
+        let (items, total) = items_of(&body);
         assert!(
-            list.text().contains(&number),
-            "{role} still reads opt-outs: {}",
-            list.text()
+            !body.contains(number) && items == 0 && total == 0,
+            "{who} read {collection} {query:?}: {body}"
         );
     }
+    let (status, body) = caller.get(collection, Some(id), None).await;
+    assert_eq!(status, 404, "{who}: GET {collection}/{{id}} -> {body}");
+    assert!(!body.contains(number), "{who}: {body}");
+    if let Some(head) = caller.head_status(collection, id).await {
+        assert_eq!(head, 404, "{who}: HEAD {collection}/{{id}}");
+    }
+}
+
+impl OptFixture {
+    async fn assert_reads_both(&self, who: &str, caller: &Caller<'_>) {
+        assert_reads(
+            who,
+            caller,
+            "/opt_outs",
+            &self.opt_out_id,
+            &self.opt_out_hash,
+            &self.number,
+        )
+        .await;
+        assert_reads(
+            who,
+            caller,
+            "/consent_records",
+            &self.consent_id,
+            &self.consent_hash,
+            &self.number,
+        )
+        .await;
+    }
+
+    async fn assert_refused_both(&self, who: &str, caller: &Caller<'_>) {
+        assert_refused(
+            who,
+            caller,
+            "/opt_outs",
+            &self.opt_out_id,
+            &self.opt_out_hash,
+            &self.number,
+        )
+        .await;
+        assert_refused(
+            who,
+            caller,
+            "/consent_records",
+            &self.consent_id,
+            &self.consent_hash,
+            &self.number,
+        )
+        .await;
+    }
+}
+
+/// Every permission a built-in role holds except the two that read opt-outs: a
+/// role with all of them is still refused, so the permission decides and not
+/// how powerful the role is.
+const EVERYTHING_BUT_OPT_OUT: [&str; 20] = [
+    "sms:read",
+    "sms:send",
+    "message:cancel",
+    "app:read",
+    "app:write",
+    "client:provision",
+    "provider:read",
+    "provider:update",
+    "route:read",
+    "route:write",
+    "sender:manage",
+    "webhook:manage",
+    "job:read",
+    "job:enqueue",
+    "worker:read",
+    "dashboard:read",
+    "audit:read",
+    "delivery:read",
+    "user:manage",
+    "role:manage",
+];
+
+/// A person reads `OptOut` and `ConsentRecord` only with `optout:read` or
+/// `optout:manage` (the claim `optOutRead`): the roles that manage opt-outs
+/// (`owner`, `admin`, `operator`, `support`) and the auditor, which
+/// `0014_optout_read_scope` gave `optout:read`, read them; a custom role holding
+/// either permission reads them; `developer`, `pending` and a custom role with
+/// every other permission get an empty list and a 404, by key and by token.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn a_person_reads_opt_outs_and_consent_records_only_with_an_opt_out_permission() {
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = rig().await;
+    let fx = seed_opt_out_and_consent(&rig).await;
+
+    // `owner` and `admin` are device-only: a paired key, never a token.
+    for role in ["owner", "admin"] {
+        let api = rig.person_by_key(role).await;
+        fx.assert_reads_both(&format!("{role} by key"), &Caller::Key(&api))
+            .await;
+    }
+    for role in ["support", "operator", "auditor"] {
+        let api = rig.person_by_key(role).await;
+        fx.assert_reads_both(&format!("{role} by key"), &Caller::Key(&api))
+            .await;
+        let token = rig.person_by_token(role).await;
+        fx.assert_reads_both(
+            &format!("{role} by token"),
+            &Caller::Token {
+                base: &rig.base,
+                token: &token,
+            },
+        )
+        .await;
+    }
+    for (label, permissions) in [
+        ("a custom role holding optout:read", &["optout:read"]),
+        ("a custom role holding optout:manage", &["optout:manage"]),
+    ] {
+        let role = custom_role(&rig.db, permissions).await;
+        let api = rig.person_by_key(&role).await;
+        fx.assert_reads_both(&format!("{label} by key"), &Caller::Key(&api))
+            .await;
+        let token = rig.person_by_token(&role).await;
+        fx.assert_reads_both(
+            &format!("{label} by token"),
+            &Caller::Token {
+                base: &rig.base,
+                token: &token,
+            },
+        )
+        .await;
+    }
+
+    let everything_else = custom_role(&rig.db, &EVERYTHING_BUT_OPT_OUT).await;
+    for role in ["developer", "pending", everything_else.as_str()] {
+        let who = if role == everything_else {
+            "a custom role with every other permission"
+        } else {
+            role
+        };
+        let api = rig.person_by_key(role).await;
+        fx.assert_refused_both(&format!("{who} by key"), &Caller::Key(&api))
+            .await;
+        let token = rig.person_by_token(role).await;
+        fx.assert_refused_both(
+            &format!("{who} by token"),
+            &Caller::Token {
+                base: &rig.base,
+                token: &token,
+            },
+        )
+        .await;
+    }
+}
+
+/// An app key reads opt-outs only with the `optout:read` scope (each row is a
+/// raw number and the model has no owning app to scope by), and an app's
+/// `optout:manage` scope does not count: `recordOptOut` admits person roles only,
+/// so counting it would make a scope that does nothing a read of every tenant's
+/// numbers. Consent records are the app's own whatever its scope, and the scope
+/// does not widen that to another tenant's.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn an_app_key_reads_opt_outs_only_with_optout_read_and_its_own_consent_records() {
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = rig().await;
+    let fx = seed_opt_out_and_consent(&rig).await;
+
+    // Another tenant, with every scope but the two opt-out ones.
+    let neither = rig
+        .app_key(&rig.other.app_id, " sms:send sms:read job:read ")
+        .await;
+    fx.assert_refused_both("another tenant without optout:read", &Caller::Key(&neither))
+        .await;
+
+    // The scope that would manage them reads nothing.
+    let manager = rig.app_key(&rig.other.app_id, " optout:manage ").await;
+    fx.assert_refused_both("another tenant with optout:manage", &Caller::Key(&manager))
+        .await;
+    // A look-alike is not the scope.
+    let lookalike = rig.app_key(&rig.other.app_id, " optout:readall ").await;
+    fx.assert_refused_both(
+        "another tenant with optout:readall",
+        &Caller::Key(&lookalike),
+    )
+    .await;
+
+    // `optout:read` reads every opt-out, and none of another app's consent.
+    let reader = rig.app_key(&rig.other.app_id, " optout:read ").await;
+    assert_reads(
+        "another tenant with optout:read",
+        &Caller::Key(&reader),
+        "/opt_outs",
+        &fx.opt_out_id,
+        &fx.opt_out_hash,
+        &fx.number,
+    )
+    .await;
+    assert_refused(
+        "another tenant with optout:read",
+        &Caller::Key(&reader),
+        "/consent_records",
+        &fx.consent_id,
+        &fx.consent_hash,
+        &fx.number,
+    )
+    .await;
+
+    // The app that holds the consent record reads it with any scope, and the
+    // opt-out only with the opt-out scope.
+    let owner_app = rig.app_key(&rig.mine.app_id, " sms:send ").await;
+    assert_reads(
+        "the consenting app with sms:send",
+        &Caller::Key(&owner_app),
+        "/consent_records",
+        &fx.consent_id,
+        &fx.consent_hash,
+        &fx.number,
+    )
+    .await;
+    assert_refused(
+        "the consenting app with sms:send",
+        &Caller::Key(&owner_app),
+        "/opt_outs",
+        &fx.opt_out_id,
+        &fx.opt_out_hash,
+        &fx.number,
+    )
+    .await;
 }
 
 /// A webhook endpoint of `app_id` (the full number in its payloads) and one
@@ -1249,30 +1593,22 @@ async fn a_webhook_attempt_is_message_data_and_asks_for_the_claim() {
     assert_eq!(own.status, 200, "{}", own.text());
 }
 
-/// What a `pending` person can still read, and why each is not message data.
-/// Every other collection a person can GET is a 403 or an empty page for it.
-/// Each entry must really be readable (below), so closing one fails the test
-/// until the entry is deleted: an allowance that matches nothing is stale.
-const PENDING_CAN_READ: [(&str, &str); 3] = [
-    (
-        "/opt_outs",
-        "a person reads opt-outs as any role (the owner's follow-up: persons' opt-out read access)",
-    ),
-    (
-        "/consent_records",
-        "a person reads consent records as any role, with the same follow-up",
-    ),
-    (
-        "/roles",
-        "the role table (keys, labels, permission sets) is readable by any person: not message data",
-    ),
-];
+/// What a `pending` person can still read, and why each is not message data
+/// or a phone number. Every other collection a person can GET is a 403 or an
+/// empty page for it. Each entry must really be readable (below), so closing one
+/// fails the test until the entry is deleted: an allowance that matches nothing
+/// is stale.
+const PENDING_CAN_READ: [(&str, &str); 1] = [(
+    "/roles",
+    "the role table (keys, labels, permission sets) is readable by any person: not message data",
+)];
 
 /// `pending` holds no permission, so a first sign-in reads no message: every
-/// collection a person can GET is a 403 or an empty page for it, except the three
-/// above (which any signed-in person reads, opted-out and consented phone numbers
-/// among them: the owner has yet to rule on those) and the person's own paired
-/// console keys. Run by a paired key and by a bearer token, which are the same
+/// collection a person can GET is a 403 or an empty page for it, except the role
+/// table above (which any signed-in person reads, and which holds no phone
+/// number) and the person's own paired console keys. Opt-outs and consent records
+/// are in the list of empty pages since `0014_optout_read_scope`: they are raw
+/// numbers, and `pending` holds neither opt-out permission. Run by a paired key and by a bearer token, which are the same
 /// person, over every `GET` collection route the schema generated, with rows
 /// seeded behind the ones that could hold something.
 #[tokio::test]

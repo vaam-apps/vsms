@@ -84,6 +84,20 @@ impl Principal {
 /// read a message". `router::MESSAGE_READ_ROUTES` asks the same literal.
 pub const MESSAGE_READ_PERMISSION: &str = "sms:read";
 
+/// The permission (a person's role) or scope (an app key's) that means "may
+/// read every opted-out number and consent record". `Grants::of` projects it
+/// into the claim `optOutRead`.
+pub const OPT_OUT_READ_PERMISSION: &str = "optout:read";
+
+/// The permission that means "may record, remove and search opt-outs", the job
+/// of `owner`, `admin`, `operator` and `support`. A **person** holding it also
+/// reads opt-outs (a role that may search them reads them); an **app key's**
+/// scope of the same name does not, because `recordOptOut` and
+/// `searchOptOutByMsisdn` admit person roles only and an opt-out has no tenant:
+/// counting it would turn a scope that does nothing into a read of every
+/// tenant's numbers.
+pub const OPT_OUT_MANAGE_PERMISSION: &str = "optout:manage";
+
 /// What a policy may be told a caller holds: the two permissions the schema
 /// asks for by claim rather than by role, because a policy can read a claim
 /// and cannot read `Role.permissions`. Built from the same `perms` / `scope`
@@ -93,8 +107,11 @@ pub struct Grants {
     /// `sms:read`: the claim `messageRead`, asked by `Message`, `MessagePart`,
     /// `DeliveryReceipt` and `listMessagesPage`.
     pub message_read: bool,
-    /// `optout:read`: the claim `optOutRead`, asked of an **app** by `OptOut`.
-    /// No built-in role holds it (a person reads opt-outs as `kind == "user"`).
+    /// `optout:read` (a person's role or an app key's scope) or, for a person
+    /// only, `optout:manage`: the claim `optOutRead`, asked by `OptOut` and,
+    /// of a person, by `ConsentRecord`. The built-in `auditor` holds
+    /// `optout:read`; `owner`, `admin`, `operator` and `support` hold
+    /// `optout:manage`.
     pub opt_out_read: bool,
 }
 
@@ -112,7 +129,12 @@ impl Grants {
         };
         Self {
             message_read: holds(MESSAGE_READ_PERMISSION),
-            opt_out_read: holds("optout:read"),
+            opt_out_read: holds(OPT_OUT_READ_PERMISSION)
+                || crate::rbac::holds(
+                    perms.iter().map(String::as_str),
+                    None,
+                    OPT_OUT_MANAGE_PERMISSION,
+                ),
         }
     }
 }
@@ -454,6 +476,34 @@ mod tests {
         assert!(!Grants::of(&[], &scope(" sms:readall ")).message_read);
         assert!(!Grants::of(&perms, &Value::Null).opt_out_read);
         assert!(Grants::of(&[], &scope(" optout:read ")).opt_out_read);
+    }
+
+    #[test]
+    fn opt_out_read_is_optout_read_or_a_persons_optout_manage_and_nothing_near_them() {
+        let person = |perms: &[&str]| {
+            let perms: Vec<String> = perms.iter().map(|p| (*p).to_owned()).collect();
+            Grants::of(&perms, &Value::Null).opt_out_read
+        };
+        let app = |scope: &str| Grants::of(&[], &Value::String(scope.to_owned())).opt_out_read;
+        // A person: either permission, wherever it sits in the set.
+        assert!(person(&["optout:read"]));
+        assert!(person(&["optout:manage"]));
+        assert!(person(&["sms:read", "optout:manage", "delivery:read"]));
+        assert!(person(&["audit:read", "optout:read"]));
+        // Neither, or a neighbour of one.
+        assert!(!person(&[]));
+        assert!(!person(&["sms:read"]));
+        assert!(!person(&["optout:manager"]));
+        assert!(!person(&["optout:readall", "xoptout:manage"]));
+        // An app key: its scope's `optout:read`, never its `optout:manage`.
+        assert!(app(" optout:read "));
+        assert!(app(" sms:send optout:read job:read "));
+        assert!(!app(" optout:manage "));
+        assert!(!app(" sms:send optout:manage "));
+        assert!(!app(" optout:readall "));
+        assert!(!app(" xoptout:read "));
+        assert!(!app(" sms:send "));
+        assert!(!Grants::of(&[], &Value::Null).opt_out_read);
     }
 
     #[test]
