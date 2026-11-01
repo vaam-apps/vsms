@@ -76,3 +76,12 @@ export function emptyCaveat(kind: LookupKind): string {
 
 /** Shown where the recipient would be on a purged row. */
 export const PURGED_LABEL = "Purged";
+
+/** An app's name by id, for the results' App column; an app the list does not
+ * carry (a role that cannot list apps) is simply absent, and the column falls
+ * back to the id. */
+export function appNameIndex(
+  apps: readonly { id: string; name: string }[],
+): Record<string, string> {
+  return Object.fromEntries(apps.map((app) => [app.id, app.name]));
+}

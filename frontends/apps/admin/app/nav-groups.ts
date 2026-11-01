@@ -23,6 +23,7 @@ import {
   MessageSquare,
   Route,
   ScrollText,
+  SearchCheck,
   Server,
   Settings,
   SquarePen,
@@ -61,6 +62,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { label: "Jobs", href: "/jobs", icon: ListChecks },
       { label: "Workers", href: "/workers", icon: Cpu },
       { label: "Opt-outs", href: "/opt-outs", icon: UserX },
+      { label: "Delivery lookup", href: "/delivery-lookup", icon: SearchCheck },
     ],
   },
   {

@@ -4,6 +4,7 @@ import {
   defaultValues,
   earliestFrom,
   FIELD_MESSAGES,
+  isLookupReady,
   type LookupFormValues,
   lookupSchema,
   MAX_WINDOW_DAYS,
@@ -208,5 +209,14 @@ describe("the URL's kind", () => {
     expect(parseKind("number")).toBe("number");
     expect(parseKind("msisdn")).toBe("id");
     expect(parseKind(null)).toBe("id");
+  });
+});
+
+describe("isLookupReady", () => {
+  it("is false until the chosen kind's field is filled, and ignores the others", () => {
+    expect(isLookupReady(values(), "number", NOW)).toBe(false);
+    expect(isLookupReady(values({ msisdn: "677123456" }), "number", NOW)).toBe(true);
+    expect(isLookupReady(values({ msisdn: "677123456" }), "id", NOW)).toBe(false);
+    expect(isLookupReady(values({ messageId: ID }), "id", NOW)).toBe(true);
   });
 });

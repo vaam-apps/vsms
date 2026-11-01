@@ -192,3 +192,9 @@ export function parseKind(value: string | null | undefined): LookupKind {
     ? (value as LookupKind)
     : DEFAULT_KIND;
 }
+
+/** Whether the form could be sent as it stands: what keeps the submit button
+ * disabled until there is something valid to ask. */
+export function isLookupReady(values: LookupFormValues, kind: LookupKind, now: Date): boolean {
+  return lookupSchema(kind, now).safeParse(values).success;
+}

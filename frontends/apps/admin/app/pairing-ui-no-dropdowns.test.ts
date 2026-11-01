@@ -1,8 +1,11 @@
-// The pairing and key screens are new, and the rule that binds them is vaam's:
-// no dropdown menus and no dialogs, a choice is shown (buttons) or asked inline
-// (`InlineConfirm`). The rest of this console predates the rule and still has
-// `Select`s and `Dialog`s, which this file does not touch; it holds the files
-// VS-5b wrote to it, so the next edit to one of them cannot reach for a menu.
+// The pairing and key screens, and the screens written after them, are new, and
+// the rule that binds them is vaam's: no dropdown menus and no dialogs, a choice
+// is shown (buttons, a radio group, chips) or asked inline (`InlineConfirm`).
+// The rest of this console predates the rule and still has `Select`s and
+// `Dialog`s, which this file does not touch; it holds the files written to the
+// rule, so the next edit to one of them cannot reach for a menu. A new screen
+// that follows the rule adds its files here. The scan reads copy as well as
+// code, so a label says "Choose", never the banned control's own name.
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -21,6 +24,14 @@ const FILES = [
   "console/console-key-screen.tsx",
   "console/components/console-key-panel.tsx",
   "../components/qr-code.tsx",
+  "delivery-lookup/page.tsx",
+  "delivery-lookup/delivery-lookup-screen.tsx",
+  "delivery-lookup/lookup-query.ts",
+  "delivery-lookup/lookup-error.ts",
+  "delivery-lookup/lookup-labels.ts",
+  "delivery-lookup/components/lookup-form.tsx",
+  "delivery-lookup/components/lookup-results.tsx",
+  "delivery-lookup/components/lookup-detail-fields.tsx",
 ];
 
 const FORBIDDEN = [
@@ -35,7 +46,7 @@ const FORBIDDEN = [
   /role=["'](?:menu|listbox|combobox)["']/,
 ];
 
-describe("the pairing and key screens", () => {
+describe("the pairing and key screens, and the screens written after them", () => {
   for (const file of FILES) {
     it(`${file} has no dropdown, popover or dialog`, () => {
       const source = readFileSync(`${HERE}${file}`, "utf8");

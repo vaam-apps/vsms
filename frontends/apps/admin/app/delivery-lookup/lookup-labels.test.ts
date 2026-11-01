@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+  appNameIndex,
   BUDGET_NOTE,
   emptyCaveat,
   KIND_OPTIONS,
@@ -71,5 +72,17 @@ describe("the summary and notes", () => {
     expect(BUDGET_NOTE).toContain("delivery:read");
     expect(BUDGET_NOTE).toContain("60 an hour");
     expect(BUDGET_NOTE).toContain("recorded against your account");
+  });
+});
+
+describe("appNameIndex", () => {
+  it("looks an app's name up by id, and has nothing for an app it was not given", () => {
+    const index = appNameIndex([
+      { id: "capp1", name: "Mobile money" },
+      { id: "capp2", name: "Shop" },
+    ]);
+    expect(index.capp2).toBe("Shop");
+    expect(index.capp3).toBeUndefined();
+    expect(appNameIndex([])).toEqual({});
   });
 });
