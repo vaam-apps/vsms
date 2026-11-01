@@ -88,11 +88,19 @@ fn has_role_literals(text: &str) -> BTreeSet<String> {
     found
 }
 
+/// Where a migration inserts into `roles`, however it is spelled: any case, with
+/// or without the `public.` schema (`INSERT INTO public.roles` is the same table).
+fn insert_into_roles(sql: &str) -> Option<usize> {
+    let lower = sql.to_ascii_lowercase();
+    ["insert into roles", "insert into public.roles"]
+        .iter()
+        .filter_map(|needle| lower.find(needle))
+        .min()
+}
+
 /// The keys of the roles the bootstrap migration seeds.
 fn seeded_role_keys(sql: &str) -> BTreeSet<String> {
-    let start = sql
-        .find("INSERT INTO roles")
-        .expect("the bootstrap seeds the roles");
+    let start = insert_into_roles(sql).expect("the bootstrap seeds the roles");
     let block = &sql[start..];
     let end = block.find(';').expect("the INSERT ends");
     block[..end]
@@ -162,9 +170,7 @@ fn role_seeding_migrations() -> Vec<(String, BTreeSet<String>)> {
     dirs.iter()
         .filter_map(|dir| {
             let sql = std::fs::read_to_string(dir.join("up.sql")).ok()?;
-            if !sql.contains("INSERT INTO roles") {
-                return None;
-            }
+            insert_into_roles(&sql)?;
             let name = dir.file_name()?.to_string_lossy().into_owned();
             Some((name, seeded_role_keys(&sql)))
         })
@@ -250,5 +256,11 @@ fn the_scan_finds_a_new_role_literal() {
     assert_eq!(
         seeded_role_keys(seed).into_iter().collect::<Vec<_>>(),
         ["owner", "root"]
+    );
+    // Another spelling of the same insert is found too, not skipped.
+    let seed = "insert into public.roles (key) values\n    ('superadmin', 'z');";
+    assert_eq!(
+        seeded_role_keys(seed).into_iter().collect::<Vec<_>>(),
+        ["superadmin"]
     );
 }

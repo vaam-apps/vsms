@@ -817,7 +817,7 @@ async fn a_first_sign_in_provisions_a_least_privilege_user_and_reaches_an_authen
     );
 }
 
-/// **A first sign-in under `jit_role: pending` waits there and reads nothing.**
+/// **A first sign-in under `jit_role: pending` waits there and reads no message.**
 ///
 /// The person is created in the built-in `pending` role (`0013_role_read_scope`:
 /// no permission at all), and the token that sign-in earns reads no message, no

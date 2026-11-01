@@ -1639,7 +1639,8 @@ fn the_refused_roles_are_the_four_a_sign_in_must_never_create() {
     assert_eq!(
         sms_config::REFUSED_JIT_ROLES,
         ["system", "app", "owner", "admin"]
-    ); // `pending` (migration 0013_role_read_scope) is the recommended value: it holds
+    );
+    // `pending` (migration 0013_role_read_scope) is the recommended value: it holds
     // no permission, and the example in config/application.yml names it.
     assert!(!sms_config::REFUSED_JIT_ROLES.contains(&"pending"));
     assert_eq!(

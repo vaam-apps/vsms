@@ -12,12 +12,18 @@
 //!   byte-identical, `updated_at` included.
 //! - **A custom role is never touched.** A role an owner created (not built in),
 //!   whatever it is called and holds, and a built-in-flagged row under any other
-//!   key keep `sms:read`; and a `pending` role an owner already made is left as
-//!   it is, not overwritten and not an error.
-//! - **The removal is robust to the packed format.** The permission at the start,
+//!   key keep `sms:read`.
+//! - **A `pending` role an owner made is never kept with permissions.** One that
+//!   holds any makes the migration refuse and roll back whole (`jit_role: pending`
+//!   would hand them to every first sign-in), nothing is overwritten; an empty
+//!   one is accepted and left as it is.
+//! - **The removal is robust to the format.** The permission at the start,
 //!   middle or end of the set, alone, repeated, beside a longer permission it is
-//!   a prefix of (`sms:readonly`) or a suffix of (`xsms:read`): never a double
-//!   space, never a dangling separator, never a different permission eaten.
+//!   a prefix of (`sms:readonly`) or a suffix of (`xsms:read`), and in a set that
+//!   is not sentinel-packed (tabs, a doubled space, no leading or trailing
+//!   space), which the Rust side reads with `split_whitespace` all the same:
+//!   never a double space, never a dangling separator, never a different
+//!   permission eaten, and the result is always packed.
 //! - **Idempotent.** The second run changes no row at all (the whole `roles`
 //!   table, `updated_at` included, is compared).
 //! - **`down.sql`** gives the permission back and removes `pending`, except
@@ -131,6 +137,17 @@ impl Scratch {
 
     fn up(&self) {
         apply(&self.url, &this_migration().join("up.sql"));
+    }
+
+    /// The same, expected to be refused: `psql`'s stderr.
+    fn up_refused(&self) -> String {
+        let file = this_migration().join("up.sql");
+        let (ok, _, stderr) = psql(
+            &self.url,
+            &["-1", "-f", file.to_str().expect("a UTF-8 path")],
+        );
+        assert!(!ok, "the migration was accepted, but must be refused");
+        stderr
     }
 
     fn down(&self) {
@@ -289,12 +306,15 @@ async fn running_it_twice_changes_nothing_the_second_time() {
 }
 
 /// The packed format `' a b c '` loses the permission and one neighbouring
-/// space, whatever the position, and never anything longer or shorter.
+/// space, whatever the position, and never anything longer or shorter. A set the
+/// Rust side would read the same (`split_whitespace`) but that is not packed
+/// (tabs, newlines, doubled spaces, no sentinel) loses it too, and comes out
+/// packed.
 #[tokio::test]
 #[ignore = "needs a live Postgres and psql - see module docs"]
 async fn the_removal_leaves_no_double_space_and_eats_no_other_permission() {
     let db = Scratch::before_0013("format").await;
-    let cases: [(&str, &str, i64); 11] = [
+    let cases: [(&str, &str, i64); 21] = [
         (" sms:read ", " ", 1),
         (" sms:read app:read ", " app:read ", 1),
         (" app:read sms:read ", " app:read ", 1),
@@ -303,10 +323,21 @@ async fn the_removal_leaves_no_double_space_and_eats_no_other_permission() {
         (" x:y sms:read sms:read ", " x:y ", 1),
         (" xsms:read sms:read ", " xsms:read ", 1),
         (" sms:readonly sms:read ", " sms:readonly ", 1),
-        // Nothing to remove: untouched, and not a version bump.
+        // Not sentinel-packed: removed all the same, and rewritten packed.
+        ("sms:read app:read", " app:read ", 1),
+        ("app:read sms:read", " app:read ", 1),
+        ("sms:read", " ", 1),
+        ("app:read\tsms:read\tsms:send", " app:read sms:send ", 1),
+        (" sms:read\tapp:read ", " app:read ", 1),
+        (" app:read\nsms:read\n", " app:read ", 1),
+        ("  app:read   sms:read  x:y ", " app:read x:y ", 1),
+        ("\tsms:read\t", " ", 1),
+        // Nothing to remove: untouched (as written), and not a version bump.
         (" sms:readonly app:read ", " sms:readonly app:read ", 0),
         (" xsms:read ", " xsms:read ", 0),
         (" app:read ", " app:read ", 0),
+        ("app:read\tx:y", "app:read\tx:y", 0),
+        (" ", " ", 0),
     ];
     for (input, expected, version) in cases {
         db.set_permissions("developer", input);
@@ -323,11 +354,14 @@ async fn the_removal_leaves_no_double_space_and_eats_no_other_permission() {
     }
 }
 
-/// A `pending` role an owner made before this migration is theirs: it is not
-/// overwritten and the migration does not fail on it.
+/// A `pending` role holding any permission was made by an owner, and
+/// `jit_role: pending` would hand it to every first sign-in: the migration
+/// refuses (and its transaction rolls back, so the `UPDATE` before it is undone
+/// too), whatever the role's flags, and overwrites nothing. An empty one, from a
+/// tab-and-space blank to the packed `' '`, is accepted and left as it is.
 #[tokio::test]
 #[ignore = "needs a live Postgres and psql - see module docs"]
-async fn a_pending_role_that_already_exists_is_left_as_it_is() {
+async fn a_pending_role_that_holds_permissions_stops_the_migration_and_an_empty_one_does_not() {
     let db = Scratch::before_0013("pending_exists").await;
     sql(
         &db.url,
@@ -335,15 +369,45 @@ async fn a_pending_role_that_already_exists_is_left_as_it_is() {
            ('pending', 'My pending', 'made by hand', false, ' app:read ', 4)",
     );
     let before = db.dump();
-    db.up();
-    let after = db.dump();
-    let line = |dump: &str| {
-        dump.lines()
-            .find(|l| l.starts_with("pending|"))
-            .map(str::to_owned)
-    };
-    assert_eq!(line(&before), line(&after));
-    assert_eq!(db.role("developer").0, NEW_DEVELOPER, "the rest still ran");
+    let stderr = db.up_refused();
+    assert!(
+        stderr.contains("a role keyed pending already exists and holds permissions"),
+        "{stderr}"
+    );
+    assert_eq!(before, db.dump(), "a refused migration changes nothing");
+    assert_eq!(
+        db.role("developer"),
+        (OLD_DEVELOPER.to_owned(), 0),
+        "the UPDATE ahead of the refusal rolled back"
+    );
+
+    // Built in or not, a role holding anything is refused.
+    sql(
+        &db.url,
+        "UPDATE roles SET builtin = true WHERE key = 'pending'",
+    );
+    db.up_refused();
+
+    // Emptied by its owner, the same database migrates, and the row is theirs.
+    for blank in [" ", "", " \t "] {
+        db.set_permissions("pending", blank);
+        let kept = db.dump();
+        db.up();
+        let line = |dump: &str| {
+            dump.lines()
+                .find(|l| l.starts_with("pending|"))
+                .map(str::to_owned)
+        };
+        assert_eq!(
+            line(&kept),
+            line(&db.dump()),
+            "an empty pending is kept as it is"
+        );
+        assert_eq!(db.role("developer").0, NEW_DEVELOPER, "the rest ran");
+        // Back to the old seed for the next blank.
+        db.set_permissions("developer", OLD_DEVELOPER);
+        db.set_permissions("support", OLD_SUPPORT);
+    }
 }
 
 /// `down.sql` gives the permission back (once) and removes `pending`, unless a

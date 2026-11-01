@@ -11,7 +11,8 @@
 //!   not since `0013_role_read_scope` (`developer`, `support`) and are refused
 //!   like any custom role without it; a custom role without it is refused on all
 //!   six routes with a 403 that names the permission; a custom role holding only
-//!   `sms:read` reads; `pending` (holds nothing) reads nothing it should not;
+//!   `sms:read` reads; `pending` (holds nothing) reads no message and nothing but the three
+//!   collections open to any person;
 //! - **the other doors to a message are shut too**: `GET /delivery_receipts` and
 //!   `GET /message_parts` with `?include=message` return the whole `Message`
 //!   row (body and number) under `Message`'s own policy, so a role refused
@@ -1267,9 +1268,10 @@ const PENDING_CAN_READ: [(&str, &str); 3] = [
     ),
 ];
 
-/// `pending` holds no permission, so a first sign-in reads nothing it could not
-/// before signing in as anything: every collection a person can GET is a 403 or
-/// an empty page for it, except the three above, and the person's own paired
+/// `pending` holds no permission, so a first sign-in reads no message: every
+/// collection a person can GET is a 403 or an empty page for it, except the three
+/// above (which any signed-in person reads, opted-out and consented phone numbers
+/// among them: the owner has yet to rule on those) and the person's own paired
 /// console keys. Run by a paired key and by a bearer token, which are the same
 /// person, over every `GET` collection route the schema generated, with rows
 /// seeded behind the ones that could hold something.

@@ -40,12 +40,24 @@ policy admitted any signed-in person, so any role read every app's messages.
 Four built-in roles carry `sms:read`: `owner`, `admin`, `operator` and `auditor`.
 `developer` and `support` do not (since migration `0013_role_read_scope`), and
 `pending`, the role a first sign-in should wait in, holds no permission at all. So
-with `jit_role: pending` **a person who signs in for the first time reads nothing
-until an owner or admin promotes them**: membership of the required group lets
-someone in, and the role decides what they may do. A deployment whose overlay still
+with `jit_role: pending` **a person who signs in for the first time reads no
+message, receipt, part or webhook attempt, and changes nothing, until an owner or
+admin promotes them**: membership of the required group lets someone in, and the
+role decides what they may do. The exceptions are the policies that admit *any*
+signed-in person: a `pending` person still lists **every opted-out phone number
+(`/opt_outs`) and every consent record's phone number (`/consent_records`)**, and
+reads the role table (`/roles`), their own console keys, and `previewMessage`.
+Closing the opt-out and consent exposure (gating a person's read on an opt-out
+permission, as an app key already is) awaits the owner's ruling and is not done. A deployment whose overlay still
 says `jit_role: support` keeps creating people as `support`, which also reads no
 message now, but holds opt-out permissions (it records and searches opt-outs);
 change it to `pending` unless you want that.
+
+Before the migration (`0013_role_read_scope`) runs: if an owner ever created a role
+keyed `pending` and it holds any permission, the migration refuses and rolls back
+(naming the role), because `jit_role: pending` would hand those permissions to every
+first sign-in. Rename the role, or empty its permissions in the console, and run the
+migrate Job again. An empty `pending` is accepted and kept as it is.
 
 To promote a person: an `owner` or `admin` opens the console, Users, picks the
 person (they appear as soon as they have signed in once) and changes their role.
