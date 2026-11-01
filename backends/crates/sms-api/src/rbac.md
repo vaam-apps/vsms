@@ -25,6 +25,11 @@ asks for the `messageRead` claim, and a `deliveryRead` claim there would widen
 the rest. `permission_vocabulary.rs` names it, so removing the call fails a test
 and not only a printed note.
 
+The console's Delivery lookup page tells a missing permission from an exhausted
+budget by this primitive's `missing required permission` prefix, matched in
+`frontends/apps/admin/app/delivery-lookup/lookup-error.ts`: rewording it means
+changing that file too.
+
 # Fail closed, per §5.2's own words
 
 *"An omitted `scope` yields `scope: None`, which your check must treat
