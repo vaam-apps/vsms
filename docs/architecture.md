@@ -2435,13 +2435,65 @@ Who loses what: a person in a **custom** role that lacks `sms:read` (and, since 
 **The role table is now what decides who reads messages, and `0013_role_read_scope` made it say who the owner meant** (his decision, after #469: `owner`, `admin`, `operator` and `auditor` keep `sms:read`; `developer` and `support` lose it; a zero-permission `pending` role is added; nothing else changes). Who loses what from it:
 
 - **`developer`** reads no message, receipt, part or webhook attempt through the console, and a `?include=messages` on `/apps` (which `developer` passes, because `App`'s read policy names the role) returns the apps and no message. A developer reads **its own app's** messages through an app key whose scope holds `sms:read` (the `appId` clause on `Message` is unchanged). `developer` also **can no longer replay a webhook attempt from the console**: `replayWebhookAttempt` reads the attempt as the caller first (`@authorize`), the attempt's policy asks for the claim, and a developer has none; `owner` and `admin` replay. A developer cannot list attempts either, so the loss is consistent, and `webhook:manage` is deliberately not made to satisfy the attempt's policy (that would reopen the payloads, which are message data). Webhook endpoints, secret rotation and the delivery mode are unaffected (`webhook:manage`).
-- **`support`** loses the Messages, Receipts and Parts screens and the webhook attempts' history; it keeps `optout:manage` (so it still records and searches opt-outs) and `delivery:read`, which nothing checks yet. A body-free delivery-status lookup for support, gated on `delivery:read`, is a follow-up and not built here.
+- **`support`** loses the Messages, Receipts and Parts screens and the webhook attempts' history; it keeps `optout:manage` (so it still records and searches opt-outs) and `delivery:read`, which `lookupDeliveryStatus` checks: "Implementation, delivery lookups (`delivery:read`)" below is how support still answers "did it arrive?".
 - **A custom role is untouched**: the migration updates only the built-in rows named `developer` and `support`, so a role an owner made keeps what it holds, `sms:read` included.
 - **A deployment whose overlay says `human_login.sso.jit_role: support`** keeps creating first sign-ins as `support`, which now reads no message; it needs no change to stay safe, and should name `pending` to stop creating people with a permission at all.
 
 **`pending` is the role a first sign-in waits in.** It holds no permission (`' '`, the empty packed set) and nothing in the schema names it (`hasRole('pending')` appears nowhere; `device_only_roles.rs` holds that, and puts `pending` on its allow-list with the reason), so a person in it reads no message and changes nothing. It does **not** read nothing at all: a person in it passes the policies that admit *any* `user`. Since `0014_optout_read_scope` that no longer includes a phone number: what is left is the role table (`message_read_live_postgres.rs` lists it with its reason), the person's own paired keys, and `previewMessage`, and also `SenderId`, `SenderIdRegistration` and `RouteValidation`, which a person of any role reads and which hold no subscriber number (listed here, not ruled on: the owner may want them gated too). Every other `GET` collection is a `403` or an empty page for it, run over every route the schema generated. `pending` is not in `REFUSED_JIT_ROLES` (`owner`, `admin`, `system`, `app`) and it is the recommended `human_login.sso.jit_role` (the example in §4.10 and `config/application.yml`); the key stays required, with no Rust-side default. An owner or admin promotes the person in the console under Users and roles; the new role takes effect within the 60-second standing cache. `serve` checks the role row exists at boot, which `0013` guarantees for any database that migrated.
 
-**Left for later, by the owner's decision:** a body-free delivery-status lookup for `support`, gated on `delivery:read`; a body-free replay (a `ReplayResult` checked through the endpoint, so a developer could replay without reading the payload); a route gate for opt-outs and consent records that answers a `403` naming the permission (the claim answers an empty list and a `404` today, and a `RoutePermission` names one permission, so it cannot say "either of two"); and `auditLog` showing `DeliveryReceipt.rawPayload` unredacted to an `auditor`.
+**Left for later, by the owner's decision:** a body-free replay (a `ReplayResult` checked through the endpoint, so a developer could replay without reading the payload); a route gate for opt-outs and consent records that answers a `403` naming the permission (the claim answers an empty list and a `404` today, and a `RoutePermission` names one permission, so it cannot say "either of two"); and `auditLog` showing `DeliveryReceipt.rawPayload` unredacted to an `auditor`.
+
+**Implementation, delivery lookups (`delivery:read`).** `lookupDeliveryStatus` answers "did this message arrive?" for a person who may not read the message: `support` holds `delivery:read` and, since `0013_role_read_scope`, no `sms:read`. It is a procedure with types of its own (`DeliveryStatusQuery`, `DeliveryStatus`, `DeliveryStatusResult`) and not a route on `Message`, because every route on `Message` answers with the model, and the model carries the body. Six rules, each held by a test that reads a file (`tests/delivery_status_guards.rs`) or a database (`tests/delivery_status_live_postgres.rs`):
+
+- **The answer has no body.** A `DeliveryStatus` is the masked recipient (`+237*******56`, `null` once the message is purged), the operator, sender, class, encoding, segment count, `state`, `attempts`, the lifecycle timestamps (`acceptedAt` is `Message.createdAt`) and `lastReceipt`, the newest receipt as the existing `DeliveryReceiptSummary`. It never carries `body`, `bodyHash` (an OTP is brute-forceable from its hash if the pepper leaks), `bodyLength`, `msisdnHash`, the full number (not even the one the caller typed), `costXaf`, `stateReason` (free text a provider's error put there), `clientRef` or `idempotencyKey`, `providerMessageRef*`, the routing columns or a receipt's `rawPayload`. The type is pinned field for field, and the forbidden names are checked on their own.
+- **One key per call.** A message id; an app's client reference (a person names the app with `appId`, an app key's own is implied); or the whole recipient number. A number is matched by **equality on `Message.msisdnHash`** (the keyed hash, `messages_msisdn_hash_idx`), so the procedure cannot be asked "which numbers have you messaged": a prefix, a suffix or a partial number is a `422`, and the national form of a number is the same number. As with `searchOptOutByMsisdn`, a rotated pepper finds nothing and the answer cannot say so. The window is the last seven days for a number or a reference and at most 90 days wide (the retention period); an id is exact and unbounded unless the caller names a window. `limit` is 1 to 50, default 10, newest first, and `truncated` says more matched.
+- **No new claim, no `@authorize`.** `Message`'s `@@allow` asks for `messageRead` and must not learn a `deliveryRead`: a claim there would let everyone holding `delivery:read` list `GET /messages`, bodies included (`delivery_status_guards.rs` fails on any policy that says `delivery`, and on a claim in `auth.rs`). `@authorize(Message, detail, ...)` would run the caller's `Message` policy, which `delivery:read` does not satisfy. The procedure's `@allow` admits a person or an app key; the gate is the first statement of its body, `require_permission(ctx, "delivery:read")`, so a custom role holding it works too.
+- **The read is the body's to scope.** It runs under `system_context("sms-api:delivery-lookup")`, so the model's policy decides nothing. An app key's every query therefore carries `appId == its own`, an app key naming another app is a `422` (refused, not ignored), and an app key with no app is a `403`. A foreign id is an empty answer, as if it did not exist. An app key reaches this with `delivery:read` in its scope (`docs/runbooks/deployment.adoc`).
+- **Owner, admin and operator do not hold `delivery:read`** (the owner's decision: delivery status is a support tool). `auditor` and `support` do, and a custom role may be given it. A test pins `operator` as refused: it holds `sms:read` and still cannot ask.
+- **Every answered call is accounted for, and the call fails if it cannot be.** Before it answers, the procedure writes one `DeliveryLookup` row (`@@internal("all")`, `@@audit`, system-only, kept indefinitely, forward migration `0015_delivery_lookups`): who asked (`actorSub`, kind, role, app), which kind of key, how many messages came back. `keyValue` is the message id, or the keyed hash of the number or of the client reference, **never the thing typed**: a client reference is hashed because `purge_retention` nulls `Message.clientRef` at 90 days as personal data, and this table is kept. Answering "who looked up this number?" therefore needs the pepper (hash the number, then match `keyValue`), the same limit `msisdnHash` has. The same rows are the budget: a caller's by-number lookups in the last hour are counted, and the 61st is refused with a `403` whose message is `delivery lookup budget exhausted: 60 number lookups per hour` (`MSISDN_LOOKUPS_PER_HOUR`, self-imposed; the framework has no `429`). Lookups by id or reference are not counted. The count and the insert are two statements, so concurrent calls from one caller can overshoot by the number in flight at once. A repeated `Idempotency-Key` is answered by the idempotency layer with the first answer, without running the procedure (measured: one row for two calls), so it adds neither a row nor a count; the bytes are the same, so nothing new is learned.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Caller
+    participant R as Router
+    participant P as lookupDeliveryStatus
+    participant D as Database
+    C->>R: sealed POST with one key
+    R->>P: Layer 1 admits a person or an app key
+    P->>P: require_permission delivery:read
+    P->>P: validate the query and scope an app key to its own app
+    alt by number
+        P->>D: count this caller's number lookups in the last hour
+        D-->>P: used
+        P-->>C: 403 budget exhausted when used reaches 60
+    end
+    P->>D: read messages as system by id, client reference or msisdnHash
+    P->>D: read the newest receipt of each
+    P->>D: create one DeliveryLookup row holding the key hash
+    D-->>P: stored, or an error that fails the call
+    P-->>C: statuses without body and truncated
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> Received
+    Received --> Refused: delivery:read missing
+    Received --> Validating
+    Validating --> Rejected: not exactly one key, a partial number, a foreign app, or a bad window
+    Validating --> OverBudget: by number and 60 already this hour
+    Validating --> Reading
+    OverBudget --> [*]
+    Reading --> Recording: messages and receipts read
+    Recording --> Answered: the DeliveryLookup row is stored
+    Recording --> Failed: the row cannot be stored, nothing is answered
+    Refused --> [*]
+    Rejected --> [*]
+    Answered --> [*]
+    Failed --> [*]
+```
+
+Digest and contract: `cratestack contract digest` gains exactly one line (`POST /$procs/lookupDeliveryStatus`) and no other moves; `DeliveryLookup` is `@@internal("all")`, so it has no route, no RPC arm and no client stub (140 digest lines become 141, and `sms-gateway routes` grows by that one procedure). vsms keeps no contracts lock. The console has no screen for this yet: API and both SDKs only; a "Delivery lookup" page next to the opt-outs page is the follow-up, and so is an auditor-facing "who looked up this number" procedure (it would hash the number server-side, as `searchOptOutByMsisdn` does).
 
 `system` deserves emphasis. It's the context the send procedure and the worker bind internally — `bind_auth(json!({"sub":"system","kind":"system","role":"system","appId":""}))` — to write past the `hasRole('system')` gates. `role` must be `"system"`; `hasRole` never looks at `kind`. It must be constructible only inside a process: `system` is not a row in `roles`, and the signer directory refuses a `Role` keyed `system` or `app` (§2.10).
 

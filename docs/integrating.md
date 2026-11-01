@@ -148,6 +148,22 @@ Two of these need care, and both are deliberate rather than accidental:
 - **`uncertain` is never resubmitted.** When a submit's outcome is genuinely unknown, vsms chooses a possibly-lost message over a possibly-duplicated one. For OTP traffic that is the right trade — a user re-requests a code far more cheaply than they get two. A background job eventually resolves the message to a terminal state.
 - **`undelivered` currently has no retry driver** ([#122](https://github.com/vymalo/vsms/issues/122)). A message that receives exactly one retryable-failure receipt and no follow-up stays there. If your application needs a retry, implement it on your side against `clientRef` — do not assume vsms will re-send.
 
+### Asking whether a message arrived, without reading it
+
+`GET /messages/{id}` returns the whole `Message`, body included, and needs `sms:read`. If your key should only be able to ask *whether* a message arrived, give it the `delivery:read` scope instead (`sms-gateway register-client --scope sms:send --scope delivery:read`) and call `lookupDeliveryStatus`: `POST /$procs/lookupDeliveryStatus` with `{"args": {...}}`, in the Rust SDK `VsmsClient::lookup_delivery_status` and in the Node SDK `lookupDeliveryStatus`.
+
+Name exactly one key. Your key is scoped to your own `App`, so you never send `appId` (sending another app's is a `422`):
+
+| Key         | Matches                                                                  |
+| ----------- | ------------------------------------------------------------------------ |
+| `messageId` | The id `sendMessage` answered with. Another app's id is an empty answer. |
+| `clientRef` | The `clientRef` you sent, inside your app.                               |
+| `msisdn`    | The whole recipient number, exactly: never a prefix or a suffix.         |
+
+A number or `clientRef` lookup covers the last seven days unless you pass `since` and `until` (at most 90 days apart); `limit` is 1 to 50 (default 10), newest first, and `truncated` says more matched. Each answer in `statuses` is a `DeliveryStatus`: `messageId`, `appId`, `recipient` (masked, `+237*******56`, and `null` once the message is purged), `operator`, `senderIdValue`, `class`, `encoding`, `segments`, `state`, `attempts`, `acceptedAt`, `scheduledAt`, `submittedAt`, `finalizedAt`, `expiresAt`, `purged` and `lastReceipt` (the newest carrier receipt: `outcome`, `rawStatus`, `errorCode`, `networkCode`, `receivedAt`, `occurredAt`). It never contains the body, a hash, the full number, the cost or the carrier's own text.
+
+Lookups by number are limited to **60 per hour** per key. The 61st is a `403` whose message is `delivery lookup budget exhausted: 60 number lookups per hour` (the gateway has no `429` for it); lookups by id or `clientRef` are not counted. Every answered lookup is recorded, with a hash of what you asked for and never the number or reference itself.
+
 ## 5. Idempotency: `Idempotency-Key` vs `clientRef`
 
 Two different layers protecting against two different problems. Use both.

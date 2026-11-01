@@ -209,3 +209,23 @@ fn granted_permissions_nothing_checks_are_reported() {
         );
     }
 }
+
+/// `delivery:read` was granted to `auditor` and `support` from the first seed and
+/// checked by nothing, which is the lie `granted_permissions_nothing_checks_are_reported`
+/// exists to make visible. `lookupDeliveryStatus` is its first check. Named here so
+/// that removing the `require_permission` call turns a printed note into a failure.
+#[test]
+fn delivery_read_is_granted_and_enforced() {
+    let enforced = enforced_by_require_permission();
+    let granted = granted_by_seeded_roles();
+    assert!(
+        granted.contains("delivery:read"),
+        "0002_bootstrap no longer grants delivery:read to any role: {granted:?}"
+    );
+    assert!(
+        enforced.contains("delivery:read"),
+        "nothing checks delivery:read any more: lookupDeliveryStatus's \
+         `require_permission(ctx, \"delivery:read\")` is gone, so every role that holds \
+         it holds a control that does not exist. Enforced: {enforced:?}"
+    );
+}

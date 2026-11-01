@@ -16,7 +16,7 @@ use cratestack::cose::{
     request_digest, CoseEnvelope, CoseMode, CoseVerifyKey, Ed25519Signer, StaticVerifierResolver,
 };
 use cratestack::{Binding, BoundHeaders, InMemoryNonceStore, PathParams, ResponseBinding};
-use vsms_sdk::schema::SendMessageInput;
+use vsms_sdk::schema::{DeliveryStatusQuery, SendMessageInput};
 use vsms_sdk::{SdkError, ServerKeys, SigningKey, VsmsClient};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
@@ -101,6 +101,51 @@ async fn send_message_is_sealed_and_carries_no_bearer() {
     assert!(
         serde_json::from_slice::<serde_json::Value>(&request.body).is_err(),
         "the body is a COSE message, not a plain JSON document"
+    );
+}
+
+/// The delivery-status lookup goes through the generated procedures client, which
+/// seals every call it makes: its own route, a COSE body, no bearer.
+#[tokio::test]
+async fn lookup_delivery_status_is_sealed_to_its_own_route() {
+    let gateway = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/$procs/lookupDeliveryStatus"))
+        .respond_with(unsigned_401())
+        .mount(&gateway)
+        .await;
+    let client =
+        VsmsClient::signed(gateway.uri(), SigningKey::generate(), keys()).expect("a client");
+
+    let error = client
+        .lookup_delivery_status(DeliveryStatusQuery {
+            messageId: Some("cmessage1".to_owned()),
+            appId: None,
+            clientRef: None,
+            msisdn: None,
+            since: None,
+            until: None,
+            limit: None,
+        })
+        .await
+        .expect_err("an unsigned answer is never a success");
+    assert!(error.is_unauthorized(), "{error}");
+
+    let requests = gateway.received_requests().await.expect("recorded");
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    assert_eq!(request.url.path(), "/$procs/lookupDeliveryStatus");
+    assert_eq!(
+        request
+            .headers
+            .get("content-type")
+            .map(|value| value.to_str().unwrap()),
+        Some("application/cose; cose-type=\"cose-sign1\"")
+    );
+    assert!(request.headers.get("authorization").is_none());
+    assert!(
+        serde_json::from_slice::<serde_json::Value>(&request.body).is_err(),
+        "the body is a COSE message, not the plain query"
     );
 }
 

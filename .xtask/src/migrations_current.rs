@@ -68,7 +68,7 @@ const REWRITTEN_BY_LATER: [(&str, &str); 2] = [
 /// generator loses them for the restore - and [`check_restoring_migrations`]
 /// holds the pair to what makes that true: the restoring migration sorts after
 /// the dropping one, and never drops the table itself.
-const ADDED_BY_LATER: [(&str, &[&str]); 5] = [
+const ADDED_BY_LATER: [(&str, &[&str]); 6] = [
     (
         "backends/migrations/postgres/0005_sso_federation",
         &["federated_links"],
@@ -88,6 +88,10 @@ const ADDED_BY_LATER: [(&str, &[&str]); 5] = [
     (
         "backends/migrations/postgres/0012_restore_openid_provider",
         OPENID_PROVIDER_TABLES,
+    ),
+    (
+        "backends/migrations/postgres/0015_delivery_lookups",
+        &["delivery_lookups"],
     ),
 ];
 

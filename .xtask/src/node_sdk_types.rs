@@ -12,8 +12,9 @@
 //! the schema does not" shape AGENTS.md's own doc-drift section records
 //! repeatedly — just on a hand-curated SDK type instead of prose.
 //!
-//! Four enums are checked, the ones this SDK actually re-exposes:
-//! `Encoding`, `OperatorCode`, `MessageClass`, `MessageState`. Both sides
+//! Five enums are checked, the ones this SDK actually re-exposes:
+//! `Encoding`, `OperatorCode`, `MessageClass`, `MessageState` and (since the
+//! delivery-status lookup) `DeliveryOutcome`. Both sides
 //! are parsed with the same line-based approach `parity.rs` already uses
 //! for the state-machine diagrams — this schema format is simple enough
 //! (one bare identifier per line inside `enum Name { ... }`) that a real
@@ -32,7 +33,13 @@ const TYPES_TS: &str = "sdks/node/vsms-sdk-node/src/types.ts";
 /// one to `types.ts` needs a matching entry here — there is no way to
 /// derive "which enums does the SDK expose" from the schema itself, the
 /// whole point of the SDK being a curated subset.
-const CHECKED_ENUMS: &[&str] = &["Encoding", "OperatorCode", "MessageClass", "MessageState"];
+const CHECKED_ENUMS: &[&str] = &[
+    "Encoding",
+    "OperatorCode",
+    "MessageClass",
+    "MessageState",
+    "DeliveryOutcome",
+];
 
 /// Every bare variant name inside `enum <name> { ... }` in `schema.cstack`.
 fn schema_enum_variants(schema: &str, name: &str) -> Option<BTreeSet<String>> {

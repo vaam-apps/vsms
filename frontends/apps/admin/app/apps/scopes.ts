@@ -49,6 +49,7 @@
 export const KNOWN_SCOPES = [
   "sms:send",
   "sms:read",
+  "delivery:read",
   "job:read",
   "job:enqueue",
   "worker:read",
@@ -70,6 +71,7 @@ export type KnownScope = (typeof KNOWN_SCOPES)[number];
 export const SCOPE_DESCRIPTIONS: Record<KnownScope, string> = {
   "sms:send": "Send messages",
   "sms:read": "Read messages and delivery receipts",
+  "delivery:read": "Look up whether a message arrived, without reading it (own app)",
   "job:read": "Read the job queue",
   "job:enqueue": "Re-enqueue a dead job",
   "worker:read": "Read worker leases",

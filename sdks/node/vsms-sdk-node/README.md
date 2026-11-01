@@ -70,6 +70,20 @@ const message = await client.getMessage(outcome.result.messageId);
 console.log("Status:", message.state);
 ```
 
+## Asking whether a message arrived, without reading it
+
+A key holding the `delivery:read` scope (and not `sms:read`) can look up where a message stands without being able to read it. `lookupDeliveryStatus` seals `POST /$procs/lookupDeliveryStatus`; name exactly one of `messageId`, `clientRef` or `msisdn` (an app key is scoped to its own app, so leave `appId` out):
+
+```typescript
+const { statuses, truncated } = await client.lookupDeliveryStatus({ messageId });
+for (const status of statuses) {
+  // The masked recipient, the state and the newest receipt. No body.
+  console.log(status.recipient, status.state, status.lastReceipt?.outcome);
+}
+```
+
+Lookups by number are limited to 60 per hour: the 61st rejects with an `SdkError` of kind `remote` and `httpStatus` 403 whose message starts `delivery lookup budget exhausted`. The keys, the window and the fields are in `docs/integrating.md`, "Asking whether a message arrived, without reading it".
+
 ## The gateway's address
 
 `baseUrl` is an `http:` or `https:` origin with an optional path prefix (`https://sms.example.com`, `https://example.com/sms/`). A query string, a fragment or credentials (`user:password@`) in it is a `config` error: each would let the URL a request goes to differ from the route the signature binds, and credentials would make Node add an `Authorization: Basic` header, which a keypair-only client never sends. Before a request is sent, the URL is checked against the target that was signed; an id of `.` or `..` is refused for the same reason.

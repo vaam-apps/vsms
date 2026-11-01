@@ -5,6 +5,8 @@ import { SdkError } from "./error.js";
 import { type IdentityOptions, resolveSealer } from "./identity.js";
 import { type CallContext, type OpenedAnswer, performSealedCall } from "./sealed-call.js";
 import type {
+  DeliveryStatusQuery,
+  DeliveryStatusResult,
   Message,
   PreviewInput,
   PreviewResult,
@@ -158,6 +160,25 @@ export class VsmsClient {
       body: JSON.stringify({ args: input }),
     });
     return this.#decode<PreviewResult>(answer.text, answer.status, "previewMessage");
+  }
+
+  /**
+   * `POST /$procs/lookupDeliveryStatus`, sealed: did a message arrive, without
+   * reading it. Needs the `delivery:read` scope. Name exactly one of `messageId`,
+   * `clientRef` or `msisdn`; an app key is scoped to its own app.
+   *
+   * The answer has each message's masked recipient, state, lifecycle timestamps
+   * and newest receipt, and no body. A lookup by number is counted: the gateway
+   * refuses the 61st in an hour with a 403 (`SdkError` kind `remote`, `httpStatus`
+   * 403) whose message starts `delivery lookup budget exhausted`.
+   */
+  async lookupDeliveryStatus(query: DeliveryStatusQuery): Promise<DeliveryStatusResult> {
+    const answer = await this.#call("lookupDeliveryStatus", {
+      method: "POST",
+      route: "/$procs/lookupDeliveryStatus",
+      body: JSON.stringify({ args: query }),
+    });
+    return this.#decode<DeliveryStatusResult>(answer.text, answer.status, "lookupDeliveryStatus");
   }
 
   /** `GET /messages/{id}`, sealed. */

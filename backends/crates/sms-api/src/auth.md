@@ -24,6 +24,14 @@ only its own app's consent records. A context built by [`Principal::into_context
 relation filter, its `totalCount` and a nested include of a message from another
 model are bound by it; a route gate cannot say that.
 
+There is deliberately **no claim for `delivery:read`**. `lookupDeliveryStatus`
+checks that permission itself (`require_permission`, the first statement of its
+body) and reads under the system context, so no model's policy needs to know it;
+a `deliveryRead` claim, once it existed, could be added to `Message`'s `@@allow`
+and widen `GET /messages` to everyone who holds the permission.
+`tests/delivery_status_guards.rs` fails on a policy that mentions delivery and on
+a delivery claim in this file.
+
 A context a test builds by hand must go through [`GatewayAuth::context_for`], or
 [`Principal::into_context_granting`] with [`Grants::of`] over the `perms` / `scope`
 it also sets, to hold the claims; a bare [`Principal::into_context`] reads no

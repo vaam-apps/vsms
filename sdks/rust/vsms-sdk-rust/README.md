@@ -56,6 +56,37 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
+## Asking whether a message arrived, without reading it
+
+A key holding the `delivery:read` scope (and not `sms:read`) can look up where a
+message stands without being able to read it. `lookup_delivery_status` seals
+`POST /$procs/lookupDeliveryStatus`; name exactly one of `messageId`,
+`clientRef` or `msisdn` (an app key is scoped to its own app, so leave `appId`
+out):
+
+```rust
+let answer = client
+    .lookup_delivery_status(vsms_sdk::schema::DeliveryStatusQuery {
+        messageId: Some(message_id),
+        appId: None,
+        clientRef: None,
+        msisdn: None,
+        since: None,
+        until: None,
+        limit: None,
+    })
+    .await?;
+for status in &answer.statuses {
+    // The masked recipient, the state and the newest receipt. No body.
+    println!("{:?} {:?}", status.recipient, status.state);
+}
+```
+
+Lookups by number are limited to 60 per hour: the 61st is a `403` whose message
+starts `delivery lookup budget exhausted` (`SdkError` carries the status). The
+keys, the window and the fields are in `docs/integrating.md`, "Asking whether a
+message arrived, without reading it".
+
 ## How a call is made
 
 Every request is a COSE_Sign1 envelope bound to one route, one audience and one

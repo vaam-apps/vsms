@@ -83,6 +83,61 @@ test("previewMessage seals its own operation", async () => {
   );
 });
 
+test("lookupDeliveryStatus seals its own operation and sends the query as the args", async () => {
+  const answer = {
+    statuses: [
+      {
+        messageId: "m1",
+        appId: "a1",
+        recipient: "+237*******56",
+        operator: "orange",
+        senderIdValue: "VYMALO",
+        class: "otp",
+        encoding: "gsm7",
+        segments: 1,
+        state: "delivered",
+        attempts: 1,
+        acceptedAt: "2026-11-01T12:00:00Z",
+        scheduledAt: null,
+        submittedAt: null,
+        finalizedAt: null,
+        expiresAt: "2026-11-01T12:15:00Z",
+        purged: false,
+        lastReceipt: null,
+      },
+    ],
+    truncated: false,
+  };
+  await withServer(
+    () => ok(answer),
+    async (server, client) => {
+      assert.deepEqual(await client.lookupDeliveryStatus({ messageId: "m1" }), answer);
+      const [seen] = server.opened;
+      assert.equal(seen?.method, "POST");
+      assert.equal(seen?.route, "/$procs/lookupDeliveryStatus");
+      assert.deepEqual(JSON.parse(seen?.payload ?? ""), { args: { messageId: "m1" } });
+    },
+  );
+});
+
+test("a refused delivery lookup is the gateway's 403, with its message", async () => {
+  await withServer(
+    () => ({
+      status: 403,
+      body: JSON.stringify({
+        code: "FORBIDDEN",
+        message: "delivery lookup budget exhausted: 60 number lookups per hour",
+      }),
+    }),
+    async (_server, client) => {
+      const error = await rejection(client.lookupDeliveryStatus({ msisdn: "+237677123456" }));
+      assert.equal(error.kind, "remote");
+      assert.equal(error.httpStatus, 403);
+      assert.match(error.message, /^delivery lookup budget exhausted/);
+    },
+  );
+});
+
 test("getMessage binds the id the URL carries, whatever characters it holds", async () => {
   await withServer(
     () => ok({ id: "a/b c" }),
