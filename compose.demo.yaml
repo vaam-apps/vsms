@@ -167,7 +167,7 @@ services:
   # this is the same image `deploy/docker-compose.yml`'s `migrate` service
   # runs, just pulled from GHCR instead of built from source.
   migrate:
-    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-apps}/vsms-migrate:${VSMS_IMAGE_TAG:-v0.9.0} # x-release-please-version
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-apps}/vsms-migrate:${VSMS_IMAGE_TAG:-v0.10.0} # x-release-please-version
     # Every tag through v0.5.0 was built by a release.yml that published one
     # architecture (amd64) with no multi-arch manifest. Releases cut after
     # images.yml landed are amd64 + arm64, so these pins can go once the
@@ -205,7 +205,7 @@ services:
   # seconds of startup time for never hitting this race instead of
   # hoping not to.
   seed-dispatch:
-    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-apps}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.9.0} # x-release-please-version
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-apps}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.10.0} # x-release-please-version
     platform: linux/amd64
     command: ['seed-dispatch']
     environment:
@@ -236,7 +236,7 @@ services:
   # sibling that seeds the endpoint, only when `demo-app` is actually
   # part of the stack.
   seed-demo-app:
-    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-apps}/vsms/demo:${VSMS_DEMO_IMAGE_TAG:-v0.9.0} # x-release-please-version
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-apps}/vsms/demo:${VSMS_DEMO_IMAGE_TAG:-v0.10.0} # x-release-please-version
     platform: linux/amd64
     environment:
       DATABASE_URL: postgres://vsms:vsms-demo-only@postgres:5432/vsms
@@ -276,7 +276,7 @@ services:
   # time — accepted, since the fix is "use a newer tag," not something
   # this file can paper over for an older one.
   seed-demo-webhook:
-    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-apps}/vsms/demo:${VSMS_DEMO_IMAGE_TAG:-v0.9.0} # x-release-please-version
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-apps}/vsms/demo:${VSMS_DEMO_IMAGE_TAG:-v0.10.0} # x-release-please-version
     platform: linux/amd64
     profiles: [demo]
     command:
@@ -306,7 +306,7 @@ services:
   # Chained after `seed-demo-app` (it needs the `App`), like every seed/register
   # step — see `seed-dispatch`'s own comment.
   register-composer:
-    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-apps}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.9.0} # x-release-please-version
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-apps}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.10.0} # x-release-please-version
     platform: linux/amd64
     command:
       - register-client
@@ -336,7 +336,7 @@ services:
   # `just demo-up` sets. `profiles: [demo]`: a stack without `demo-app`
   # registers no key for it.
   register-demo-app:
-    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-apps}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.9.0} # x-release-please-version
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-apps}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.10.0} # x-release-please-version
     platform: linux/amd64
     command:
       - register-client
@@ -367,7 +367,7 @@ services:
   # Depends on `register-composer`, not just `migrate` — the last of the
   # chained seed/register one-shots.
   provision-user:
-    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-apps}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.9.0} # x-release-please-version
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-apps}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.10.0} # x-release-please-version
     platform: linux/amd64
     command:
       - provision-user
@@ -406,7 +406,7 @@ services:
   # (below), the Helm chart, and `deploy/`, so renaming them is a separate
   # decision with real blast radius the maintainer hasn't made yet.
   sms-fake-orange:
-    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-apps}/vsms/sms-fake-orange:${VSMS_FAKE_ORANGE_IMAGE_TAG:-v0.9.0} # x-release-please-version
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-apps}/vsms/sms-fake-orange:${VSMS_FAKE_ORANGE_IMAGE_TAG:-v0.10.0} # x-release-please-version
     platform: linux/amd64
     restart: unless-stopped
     command:
@@ -418,7 +418,7 @@ services:
       - '+2370000'
 
   sms-gateway:
-    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-apps}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.9.0} # x-release-please-version
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-apps}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.10.0} # x-release-please-version
     platform: linux/amd64
     restart: unless-stopped
     environment:
@@ -470,7 +470,7 @@ services:
       - 127.0.0.1:${VSMS_DEMO_GATEWAY_PORT:-8280}:8080
 
   sms-worker:
-    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-apps}/vsms-sms-worker:${VSMS_IMAGE_TAG:-v0.9.0} # x-release-please-version
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-apps}/vsms-sms-worker:${VSMS_IMAGE_TAG:-v0.10.0} # x-release-please-version
     platform: linux/amd64
     restart: unless-stopped
     environment:
@@ -517,7 +517,7 @@ services:
   # healthy with this service never started at all
   # (`docker compose -f compose.demo.yaml up -d`, no `--profile console`).
   admin:
-    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-apps}/vsms-admin:${VSMS_IMAGE_TAG:-v0.9.0} # x-release-please-version
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-apps}/vsms-admin:${VSMS_IMAGE_TAG:-v0.10.0} # x-release-please-version
     platform: linux/amd64
     restart: unless-stopped
     profiles: [console]
@@ -639,7 +639,7 @@ services:
   # used while the process is up so `docker compose ps` can show
   # `healthy` mid-run) — that's a liveness signal, not a restart policy.
   demo-app:
-    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-apps}/vsms/demo-app:${VSMS_DEMO_APP_IMAGE_TAG:-v0.9.0} # x-release-please-version
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-apps}/vsms/demo-app:${VSMS_DEMO_APP_IMAGE_TAG:-v0.10.0} # x-release-please-version
     platform: linux/amd64
     profiles: [demo]
     restart: 'no'
