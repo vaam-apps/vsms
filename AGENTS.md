@@ -1100,8 +1100,11 @@ so there is nothing on the JavaScript side to move.
 **Two source edits, both the changelog's "Migrating" notes and nothing else:**
 
 - `sms-api/src/rbac.rs`: `error_response` builds a `CratestackErrorResponse` by struct literal,
-  which gained `extra` (#1208). It is `Default::default()`: the gateway never sets an extra
-  member, and an envelope without one encodes byte for byte as before.
+  which gained `extra` (#1208). It is `BTreeMap::default()`: the gateway never sets an extra
+  member, and an envelope without one encodes byte for byte as before. Not
+  `Default::default()`: `ci.yml` lints with the stable toolchain (clippy 1.99.0 on 2026-11-02),
+  whose `default_trait_access` refuses it under `-D warnings`, and the 1.98.1 a laptop is
+  pinned to lets it through.
 - `vsms-sdk-rust/src/client.rs`: `send_message` builds a `ClientError::Remote` by hand, to read
   the response headers the generated wrapper discards. `error` is now
   `Option<Box<CratestackErrorResponse>>` (`parsed.map(Box::new)`) and the variant gained
