@@ -44,11 +44,12 @@ describe("the pass-through serves the schema's operations", () => {
       ["DELETE", "/apps/a1"],
       ["POST", "/$procs/sendMessage"],
       ["POST", "/$procs/authorizeComposition"],
+      ["POST", "/$procs/lookupDeliveryStatus"],
       ["GET", "/sender_ids"],
     ] as const) {
       expect((await handle(post(path, method))).status, `${method} ${path}`).toBe(200);
     }
-    expect(upstream).toHaveBeenCalledTimes(7);
+    expect(upstream).toHaveBeenCalledTimes(8);
   });
 
   it("refuses every route the gateway does not seal, and a made-up one, without opening a connection", async () => {

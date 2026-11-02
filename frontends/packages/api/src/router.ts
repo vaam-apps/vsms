@@ -4,6 +4,7 @@ import { auditLogRouter } from "./routers/audit-log";
 import { composeRouter } from "./routers/compose";
 import { consoleKeyRouter } from "./routers/console-key";
 import { dashboardRouter } from "./routers/dashboard";
+import { deliveryStatusRouter } from "./routers/delivery-status";
 import { jobsRouter } from "./routers/jobs";
 import { messagesRouter } from "./routers/messages";
 import { optOutsRouter } from "./routers/opt-outs";
@@ -21,6 +22,7 @@ export const appRouter = router({
   compose: composeRouter,
   consoleKey: consoleKeyRouter,
   dashboard: dashboardRouter,
+  deliveryStatus: deliveryStatusRouter,
   messages: messagesRouter,
   jobs: jobsRouter,
   workers: workersRouter,

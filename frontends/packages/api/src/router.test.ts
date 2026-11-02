@@ -339,4 +339,75 @@ describe("the router in the page", () => {
       expect(status).not.toBe(200);
     });
   });
+
+  describe("deliveryStatus.lookup is a mutation: it spends budget and writes an audit row", () => {
+    it("sends a POST to the lookup procedure and nothing else", async () => {
+      const requests: { url: string; method: string | undefined; body: unknown }[] = [];
+      configureGatewayFetch(async (u, init) => {
+        requests.push({
+          url: String(u),
+          method: init?.method,
+          body: JSON.parse(String(init?.body)),
+        });
+        return json(200, { statuses: [], truncated: false });
+      });
+
+      const { result } = await call(
+        "deliveryStatus.lookup",
+        { messageId: "cmsg0000000000000000001" },
+        "POST",
+      );
+
+      expect(result.result).toBeDefined();
+      expect(requests).toHaveLength(1);
+      expect(new URL(requests[0]?.url ?? "").pathname).toBe("/$procs/lookupDeliveryStatus");
+      expect(requests[0]?.method).toBe("POST");
+      expect(requests[0]?.body).toEqual({ args: { messageId: "cmsg0000000000000000001" } });
+    });
+
+    it("refuses to run as a query, so nothing can refetch or retry it", async () => {
+      const fetcher = vi.fn<GatewayFetch>(async () =>
+        json(200, { statuses: [], truncated: false }),
+      );
+      configureGatewayFetch(fetcher);
+
+      const { status, result } = await call(
+        "deliveryStatus.lookup",
+        { messageId: "cmsg0000000000000000001" },
+        "GET",
+      );
+
+      expect(status).not.toBe(200);
+      expect(result.result).toBeUndefined();
+      expect(fetcher).not.toHaveBeenCalled();
+    });
+
+    it("keeps FORBIDDEN and the server's text for an exhausted budget", async () => {
+      vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const text = "delivery lookup budget exhausted: 60 an hour";
+      configureGatewayFetch(async () => json(403, { code: "FORBIDDEN", message: text }));
+
+      const { status, result } = await call(
+        "deliveryStatus.lookup",
+        { msisdn: "+237677123456" },
+        "POST",
+      );
+
+      expect(status).toBe(403);
+      expect(result.error?.json.data.code).toBe("FORBIDDEN");
+      expect((result.error?.json as { message?: string } | undefined)?.message).toBe(text);
+    });
+
+    it("sends no limit, whatever the caller tries to add", async () => {
+      const bodies: unknown[] = [];
+      configureGatewayFetch(async (_u, init) => {
+        bodies.push(JSON.parse(String(init?.body)));
+        return json(200, { statuses: [], truncated: false });
+      });
+
+      await call("deliveryStatus.lookup", { msisdn: "+237677123456", limit: 500 }, "POST");
+
+      expect(bodies).toEqual([{ args: { msisdn: "+237677123456" } }]);
+    });
+  });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { locate } from "./nav-groups";
+import { locate, NAV_GROUPS } from "./nav-groups";
 
 describe("locate", () => {
   it("names the dashboard at the root with no section", () => {
@@ -24,6 +24,17 @@ describe("locate", () => {
 
   it("lists the console's own key screen under Admin", () => {
     expect(locate("/console")).toEqual({ section: "Admin", page: "This console" });
+  });
+
+  it("lists the delivery lookup under Operations, after Opt-outs", () => {
+    expect(locate("/delivery-lookup")).toEqual({ section: "Operations", page: "Delivery lookup" });
+    const operations = NAV_GROUPS.find((group) => group.label === "Operations");
+    expect(operations?.items.map((item) => item.label)).toEqual([
+      "Jobs",
+      "Workers",
+      "Opt-outs",
+      "Delivery lookup",
+    ]);
   });
 
   it("returns undefined for a path the navigation does not list", () => {

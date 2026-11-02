@@ -86,4 +86,25 @@ is marked `answered` with its count. Those are the only updates a row takes, and
 `delivery_lookups_update_guard` refuses any other. A lookup that is not budgeted is
 written once, as `answered`.
 
+The console's Delivery lookup page reads these refusals by their words, so the
+texts below are a contract with `frontends/apps/admin/app/delivery-lookup/lookup-error.ts`
+and its test. Rewording any of them means updating both in the same change. Every
+text the console matches:
+
+- Forbidden, by prefix: `delivery lookup budget exhausted` (the spent hourly
+  budget) and `missing required permission` (from `rbac.rs`'s
+  `require_permission`, shared with every permission check; see `rbac.md`).
+- Validation, by exact text, each placed on the field it names:
+  `msisdn is not a valid mobile number`,
+  `a lookup by number may not start more than 90 days ago`,
+  `the window may not be wider than 90 days`, `since is after until`,
+  `messageId is not an id`, `appId is not an id`, `clientRef must not be blank`
+  and `a clientRef belongs to one app: name it with appId`.
+
+Only some of them are pinned by a test here: the number's reach and the
+`msisdn` text by equality, the window's width and order by a `contains`, and the
+four id and reference texts not at all. A text the console does not recognise is
+shown as the server's own words in a banner, so a reworded refusal reads less
+kindly and is never lost.
+
 <!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->

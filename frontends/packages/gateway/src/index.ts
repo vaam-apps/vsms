@@ -81,6 +81,12 @@ export type {
   OperatorDeliveryStats,
 } from "./dashboard";
 export { dashboardSummary } from "./dashboard";
+export type {
+  DeliveryStatus,
+  DeliveryStatusQuery,
+  DeliveryStatusResult,
+} from "./delivery-status";
+export { lookupDeliveryStatus } from "./delivery-status";
 export type { GatewayFieldErrors, GatewayTrpcCode } from "./errors";
 export { GatewayError, isStaleWriteError, mapGatewayError } from "./errors";
 export type {
