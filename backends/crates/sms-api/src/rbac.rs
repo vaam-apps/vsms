@@ -108,6 +108,7 @@ pub(crate) fn error_response(error: &CratestackError) -> Response {
         code: error.code().to_owned(),
         message: error.public_message().into_owned(),
         details: None,
+        extra: Default::default(),
     };
     (status, Json(body)).into_response()
 }

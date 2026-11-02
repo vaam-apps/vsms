@@ -66,7 +66,7 @@ That brings up a scratch Postgres, the gateway, the worker, a fake Orange, and t
 
 ## Stack
 
-- **Rust** for the gateway and worker, on [CrateStack](https://cratestack.dev/) `=0.11.0` — schema-first, `.cstack` generates the model layer, policies, audit, events and REST surface. Pinned exactly, and the installed CLI must match the pin; see `AGENTS.md`.
+- **Rust** for the gateway and worker, on [CrateStack](https://cratestack.dev/) `=0.17.2` — schema-first, `.cstack` generates the model layer, policies, audit, events and REST surface. Pinned exactly, and the installed CLI must match the pin; see `AGENTS.md`.
 - **A signed transport** on CrateStack's envelope layer. Every request is a COSE_Sign1 message under a key the caller generated and every answer is signed back — no tokens, no shared secrets anywhere in the system. Humans use the console with a browser key a vaam admin phone paired; there is no login and no OpenID provider (`docs/architecture.md` §4).
 - **PostgreSQL 16** as the only coordination mechanism — system of record, claim loops via optimistic CAS on `@version` (`SKIP LOCKED` isn't expressible through the framework), leader election via advisory locks, and the state machines enforced by triggers. No broker, no Redis, no consensus library.
 - **TypeScript / Next.js 15** for the admin console — messages and state timelines, an operator dashboard, jobs, workers, providers, routes, and a route simulator. Partly built; see [the roadmap](docs/roadmap.md).

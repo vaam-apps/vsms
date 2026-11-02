@@ -13,8 +13,8 @@
 //! headers the typed wrapper discards.
 
 use cratestack::client_rust::{
-    ClientConfig, ClientEnvelope, ClientError, CratestackClient, EnvelopeError, JsonCodec,
-    RouteRef, SealCall,
+    Challenges, ClientConfig, ClientEnvelope, ClientError, CratestackClient, EnvelopeError,
+    JsonCodec, RouteRef, SealCall,
 };
 use cratestack::cose::{CoseEnvelope, CoseMode, CoseVerifyKey, StaticVerifierResolver};
 use cratestack::{CratestackError, CratestackErrorResponse};
@@ -302,10 +302,13 @@ fn decode_send_message_response(
         None if !body.is_empty() => String::from_utf8_lossy(body).trim().to_owned(),
         None => format!("unexpected error body for status {status}"),
     };
+    // No challenges: the gateway never answers `WWW-Authenticate`, and a
+    // response header is not covered by the seal (see `SendMessageOutcome`).
     Err(SdkError::Client(ClientError::Remote {
         status,
-        error: parsed,
+        error: parsed.map(Box::new),
         message,
+        challenges: Challenges::default(),
     }))
 }
 

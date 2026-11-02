@@ -48,7 +48,7 @@ responder = []
 # in step. `=` rather than `~`: this crate publishes nothing, so there is no
 # consumer graph for an exact pin to veto (`cargo xtask cratestack-pin-check`
 # holds it to the workspace pin).
-cratestack = { package = "cratestack-client", version = "=0.16.0", default-features = false, features = [
+cratestack = { package = "cratestack-client", version = "=0.17.2", default-features = false, features = [
   "codec-json",
   "decimal-rust-decimal",
   "cose",
