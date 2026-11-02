@@ -1083,6 +1083,82 @@ a code_verifier that doesn't match the original code_challenge must be refused, 
 
 A real, live-minted access token and `id_token` came back — proof the test would have silently passed through a real PKCE bypass had this guard not been checking the right thing. Reverted immediately (`git diff --stat` on the file confirmed byte-identical to its pre-sabotage state before re-running), and the real command re-run clean: `test a_wrong_pkce_code_verifier_is_refused_at_the_token_exchange ... ok`.
 
+## cratestack bumped to `=0.17.2` (from `=0.16.0`)
+
+Three releases in one step (0.17.0, 0.17.1, 0.17.2). `cratestack-pg`,
+`cratestack-codec-json`, the unpublished e2e `cratestack-client` manifest and the Node SDK's
+`vsms-sdk-wasm` move to `0.17.2`; the published SDK keeps its `~` range, now `~0.17.2`
+(`>=0.17.2, <0.18.0`, so its floor tracks the root pin and a consumer's lock picks the patch
+above it); `ci/runner/Dockerfile`'s `ARG CRATESTACK_VERSION` and both `install-cratestack-cli`
+refs in `ci.yml` (now the commit of the `v0.17.2` tag, `ec92825bbbe3...`) follow, and
+`cargo xtask cratestack-pin-check` reads all five copies. Lockfiles moved: the root,
+`sdks/rust`, `ci/e2e-integration` and `examples/rust` (which inherits the SDK by path);
+`deploy/backup-tool` has no cratestack and is untouched. MSRV is unchanged (1.98.0, the same
+floor 0.17.2 declares). No npm `@cratestack/*` package is declared anywhere in the workspace,
+so there is nothing on the JavaScript side to move.
+
+**Two source edits, both the changelog's "Migrating" notes and nothing else:**
+
+- `sms-api/src/rbac.rs`: `error_response` builds a `CratestackErrorResponse` by struct literal,
+  which gained `extra` (#1208). It is `Default::default()`: the gateway never sets an extra
+  member, and an envelope without one encodes byte for byte as before.
+- `vsms-sdk-rust/src/client.rs`: `send_message` builds a `ClientError::Remote` by hand, to read
+  the response headers the generated wrapper discards. `error` is now
+  `Option<Box<CratestackErrorResponse>>` (`parsed.map(Box::new)`) and the variant gained
+  `challenges` (#1243), left empty: the gateway never answers `WWW-Authenticate`, and the SDK's
+  own doc says a response header is not covered by the seal. The generated path
+  (`get_message`, `lookup_delivery_status`) fills `challenges` from the headers it reads, so the
+  two paths differ only for a server that sent one.
+
+**Nothing on the wire moved, and this was measured rather than read off the changelog.**
+
+- `cratestack contract digest --schema schemas/vsms.cstack` prints the same 140 per-operation
+  digests and the same client contract digest under the 0.16.0 CLI and the 0.17.2 CLI
+  (`diff` of the two outputs is empty). `BINDING_VERSION` is `2` in both tags and
+  `cratestack-cose`'s contract vectors are unchanged between them (only the two tests that
+  build an error body gained `extra`). vsms keeps no contracts lock (that is a vaam file), so
+  there is no generation to add.
+- `cratestack migrate diff` over `schemas/vsms.cstack` writes a byte-identical `up.sql`,
+  `down.sql` and `schema.snapshot.json` under both CLIs, so `0001_init` and
+  `cargo xtask migrations-current` have nothing new to compare. `IDEMPOTENCY_TABLE_DDL` is
+  unchanged between the tags (`idempotency_table_ddl_matches_cratestack` pins it).
+- The schema and the SDK's vendored copy are byte-identical and unchanged; `cratestack check`
+  says `schema OK` under 0.17.2.
+
+**One behaviour moved, in the database and not on the wire: the audit actor.** `@@audit` fills
+`cratestack_audit.actor->>'id'` from the context. Through 0.16 that read an `id` claim, which
+this gateway's `auth Principal` does not declare (it declares `sub`), so every audit row vsms
+wrote had a null actor id and only the `claims` snapshot named the caller. From 0.17.0 the id
+is the principal contract's `subject()`: `sub`, then `actor.id`, then `id` (#1243). New rows
+therefore carry the caller's `sub` (a user id, or an app client id), and the audit-log
+screen's `actor_id` filter (`audit_log::AuditLogFilter`) finds them. Rows already written keep
+their null, and the hash chain is taken over stored rows, so it is unaffected. A new live
+test, `sms-api/tests/audit_actor_live_postgres.rs`, pins it.
+
+What else was checked against the 0.17 changelog, none of it needing a change:
+
+- **The reserved claims.** The `auth Principal` block declares `sub`, `kind`, `role`, `appId`,
+  `messageRead` and `optOutRead`. `sub` and `role` are `String`, the contract's types, so the
+  new reserved-name check passes; nothing declares or sets `actor`, `roles`, `tenant`,
+  `auth_time`, `amr`, `acr`, `cnf`, `key_role` or `exp`, so the reinterpretation of a claim
+  named `actor` as `actor.id`/`actor.role` has nothing to collide with. `hasRole('x')` is now
+  also true for a `roles` list or an `actor.role`; the gateway sets neither, so it still means
+  `role == 'x'`.
+- **`principal_actor_id()` returning a `Cow`** is not called anywhere here (the audit layer
+  calls it inside cratestack). `GatewayAuth` is vsms's own `AuthProvider`; none of
+  `CoseAuthProvider`, `SignedRequestAuthProvider` or `principal_to_cratestack_context`,
+  whose claims changed, is used.
+- **0.17.2's idempotency change** (#1261): a refusal the generated dispatch makes before a
+  procedure body runs (`GatewayAuth` refusing, an `@allow`/`@deny`, an `@authn`) now releases its
+  `Idempotency-Key` instead of storing the 401 or 403, so the documented retry of a 401 under
+  the same key can complete. vsms's fingerprint layers sit outside the generated router and are
+  unchanged, and a refusal of our own middleware (`enforce_route_permission`, the owner-grant
+  guard) is not a generated-dispatch refusal and is recorded as before. Read from the changelog
+  and the code; no live test of ours exercises it.
+- **Strict defaults and the embedded runtime** (0.17.0, breaking upstream): `cratestack check`
+  accepts the schema, and `@default(dbgenerated())` is untouched; vsms generates no embedded
+  or Dart client.
+
 ## cratestack bumped to `=0.16.0` (from `=0.15.0`), `envelope` and `cose` enabled (VS-1)
 
 One minor line. `cratestack-pg`, `cratestack-codec-json` and the unpublished e2e
