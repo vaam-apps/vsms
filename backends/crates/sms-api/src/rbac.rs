@@ -1,5 +1,7 @@
 #![doc = include_str!("rbac.md")]
 
+use std::collections::BTreeMap;
+
 use cratestack::axum::Json;
 use cratestack::axum::extract::{Request, State};
 use cratestack::axum::http::Method;
@@ -108,6 +110,7 @@ pub(crate) fn error_response(error: &CratestackError) -> Response {
         code: error.code().to_owned(),
         message: error.public_message().into_owned(),
         details: None,
+        extra: BTreeMap::default(),
     };
     (status, Json(body)).into_response()
 }

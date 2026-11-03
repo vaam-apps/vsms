@@ -170,8 +170,8 @@ sms-fake-oidc = { path = "./backends/crates/sms-fake-oidc" }
 # (`cratestack::envelope_layer`, COSE_Sign1 requests) into the server; `cose`
 # implies `envelope`, both are named so the intent reads. Nothing mounts the
 # layer yet, so they change no behaviour — see AGENTS.md's 0.16.0 section.
-cratestack = { package = "cratestack-pg", version = "=0.16.0", features = ["envelope", "cose"] }
-cratestack-codec-json = "=0.16.0"
+cratestack = { package = "cratestack-pg", version = "=0.17.2", features = ["envelope", "cose"] }
+cratestack-codec-json = "=0.17.2"
 
 # VSA-3a restored the authkestra family below exactly as #446 removed it, at
 # 0.8.0: the newest release (0.13.1, which vpay runs) carries the same
@@ -337,7 +337,7 @@ hex = "0.4"
 # short message. cratestack-cose keeps its own verifier crate-private (it
 # verifies COSE structures, not a bare signature), so the one check is made
 # with the RustCrypto crate it is built on. 0.14 with `ecdsa` is exactly
-# cratestack-cose 0.16.0's own requirement, so Cargo.lock gains no new crate.
+# cratestack-cose 0.17.2's own requirement, so Cargo.lock gains no new crate.
 p256 = { version = "0.14", default-features = false, features = ["ecdsa"] }
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
