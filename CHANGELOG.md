@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.11.0](https://github.com/vaam-apps/vsms/compare/v0.10.0...v0.11.0) (2026-11-03)
+
+
+### ⚠ BREAKING CHANGES
+
+* **deps:** bump cratestack 0.16.0 to 0.17.2 ([#474](https://github.com/vaam-apps/vsms/issues/474))
+
+### Chores
+
+* **deps:** bump cratestack 0.16.0 to 0.17.2 ([#474](https://github.com/vaam-apps/vsms/issues/474)) ([b243dff](https://github.com/vaam-apps/vsms/commit/b243dff2af98e2d8478ad744f1af7ed740d6abbb))
+
 ## [0.10.0](https://github.com/vaam-apps/vsms/compare/v0.9.0...v0.10.0) (2026-11-02)
 
 
